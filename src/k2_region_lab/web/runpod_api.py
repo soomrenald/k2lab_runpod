@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from k2_region_lab.web.domain import WorkspaceError
 
@@ -41,6 +41,11 @@ class RunPodGpuAvailability(BaseModel):
     gpu_type_id: str = Field(alias="gpuTypeId")
     display_name: str = Field(alias="displayName")
     stock_status: str = Field(alias="stockStatus")
+
+    @field_validator("stock_status", mode="before")
+    @classmethod
+    def normalize_missing_stock_status(cls, value: Any) -> str:
+        return "None" if value is None else str(value)
 
 
 class RunPodDatacenter(BaseModel):

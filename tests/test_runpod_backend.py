@@ -368,6 +368,11 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
                                             "gpuTypeId": "NVIDIA A40",
                                             "displayName": "A40",
                                             "stockStatus": "High",
+                                        },
+                                        {
+                                            "gpuTypeId": "NVIDIA L40S",
+                                            "displayName": "L40S",
+                                            "stockStatus": None,
                                         }
                                     ],
                                 }
@@ -405,6 +410,7 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         await client.delete_network_volume(created.id)
 
         self.assertEqual(datacenters[0].gpu_availability[0].gpu_type_id, "NVIDIA A40")
+        self.assertEqual(datacenters[0].gpu_availability[1].stock_status, "None")
         self.assertEqual(volumes[0].size_gb, 100)
         self.assertIn(("DELETE", "/v1/networkvolumes/volume-2"), observed)
 
