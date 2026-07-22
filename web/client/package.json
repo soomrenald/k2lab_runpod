@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test:project": "node --experimental-strip-types scripts/studio-project-contract.mjs",
+    "test:ui": "node --experimental-strip-types scripts/studio-ui-contract.mjs",
     "typecheck": "tsc -b"
   },
   "dependencies": {

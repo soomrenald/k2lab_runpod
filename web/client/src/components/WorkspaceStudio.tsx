@@ -6,6 +6,7 @@ import { Inspector } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
 import { SetupPanel } from "./SetupPanel";
+import { DraftNumberInput } from "./DraftNumberInput";
 import { uploadWorkspaceFile } from "../uploads";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
 import {
@@ -990,7 +991,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
                     {!migrationVolumeId && (
                       <label className="number-field">
                         <span>Target capacity</span>
-                        <span className="number-input-wrap"><input type="number" min={50} max={4000} value={migrationDiskGb} onChange={(event) => setMigrationDiskGb(Math.max(50, Math.min(4000, Number(event.target.value))))} /><small>GB</small></span>
+                        <span className="number-input-wrap"><DraftNumberInput min={50} max={4000} value={migrationDiskGb} onCommit={setMigrationDiskGb} /><small>GB</small></span>
                       </label>
                     )}
                   </div>
