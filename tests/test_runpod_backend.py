@@ -323,6 +323,21 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inventory[0].secure_price.uninterruptible_price, 0.6)
         self.assertTrue(inventory[0].community_price.one_gpu_available)
 
+    async def test_parses_current_gpu_inventory_when_available_counts_are_null(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            item = GPU_FIXTURE.model_dump(by_alias=True)
+            item["securePrice"]["stockStatus"] = "Medium"
+            item["securePrice"]["availableGpuCounts"] = None
+            item["communityPrice"]["stockStatus"] = None
+            item["communityPrice"]["availableGpuCounts"] = None
+            return httpx.Response(200, json={"data": {"gpuTypes": [item]}})
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        inventory = await client.list_gpu_types()
+
+        self.assertTrue(inventory[0].secure_price.one_gpu_available)
+        self.assertFalse(inventory[0].community_price.one_gpu_available)
+
     async def test_provider_errors_do_not_echo_provider_body(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"error": "secret-runpod-key"})
