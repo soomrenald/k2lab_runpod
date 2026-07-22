@@ -11,6 +11,7 @@ import type {
 } from "../api";
 import { controlPlane } from "../api";
 import { Icon } from "./Icon";
+import { DraftNumberInput } from "./DraftNumberInput";
 
 interface Props {
   capabilities: CapabilityManifest;
@@ -432,8 +433,7 @@ function NumberField({ label, suffix, value, min, max, onChange }: {
     <label className="number-field">
       <span>{label}</span>
       <span className="number-input-wrap">
-        <input type="number" min={min} max={max} value={value}
-          onChange={(event) => onChange(Math.max(min, Math.min(max, Number(event.target.value))))} />
+        <DraftNumberInput min={min} max={max} value={value} onCommit={onChange} />
         <small>{suffix}</small>
       </span>
     </label>

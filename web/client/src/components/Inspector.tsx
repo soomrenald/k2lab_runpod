@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
+import { DraftNumberInput } from "./DraftNumberInput";
 import {
   COMFYUI_SAMPLERS,
   COMFYUI_SCHEDULERS,
@@ -206,7 +207,6 @@ export function Inspector(props: Props) {
               <textarea className="prompt-area identity-area" value={selected.faceIdentityPrompt}
                 placeholder="Stable facial identity, person class, face, and hair…"
                 onChange={(event) => updateSelected({ faceIdentityPrompt: event.target.value })} />
-              <div className="inline-actions"><button className="tiny-button" onClick={() => moveSelected(-1)}>Move forward</button><button className="tiny-button" onClick={() => moveSelected(1)}>Move backward</button></div>
             </> : <div className="empty-inspector"><Icon name="layers" /><span>Select a region to edit its prompt.</span></div>}
           </div>}
           {emphasisAvailable && <div className="inspector-section emphasis-panel">
@@ -215,7 +215,7 @@ export function Inspector(props: Props) {
             <div className="inline-actions"><button className="tiny-button" onClick={() => addEmphasis("__global__", globalPromptRef.current)}>Emphasize global selection</button>{selected && <button className="tiny-button" onClick={() => addEmphasis(selected.id, regionPromptRef.current)}>Region selection</button>}</div>
             {emphases.map((item) => <div className={`emphasis-row ${emphasisMatches(item) ? "" : "invalid"}`} key={item.id}>
               <span>{item.scopeId === "__global__" ? "Global" : regions.find((region) => region.id === item.scopeId)?.name ?? "Missing region"}: “{item.phrase}”</span>
-              <input type="number" min="0" max="2" step="0.1" value={item.strength} onChange={(event) => setEmphases(emphases.map((entry) => entry.id === item.id ? { ...entry, strength: Number(event.target.value) } : entry))} />
+              <DraftNumberInput min={0} max={2} step={0.1} value={item.strength} onCommit={(strength) => setEmphases(emphases.map((entry) => entry.id === item.id ? { ...entry, strength } : entry))} />
               <button className="icon-button danger" onClick={() => setEmphases(emphases.filter((entry) => entry.id !== item.id))}><Icon name="trash" /></button>
             </div>)}
           </div>}
@@ -243,7 +243,13 @@ export function Inspector(props: Props) {
             <input type="checkbox" aria-label={`Enable ${region.name}`} checked={region.enabled} onClick={(event) => event.stopPropagation()} onChange={(event) => onRegions(regions.map((item) => item.id === region.id ? { ...item, enabled: event.target.checked } : item))} />
           </button>)}</div>
           {visibleRegions.length === 0 && <div className="empty-inspector"><Icon name="plus" /><span>Draw a box on the canvas to add a region.</span></div>}
-          {selected && <button className="danger-text-button" onClick={removeSelectedRegion}><Icon name="trash" /> Remove selected region</button>}
+          {selected && <>
+            <div className="inline-actions region-depth-actions">
+              <button className="tiny-button" disabled={visibleRegions[0]?.id === selected.id} onClick={() => moveSelected(-1)}>↑ Move forward</button>
+              <button className="tiny-button" disabled={visibleRegions[visibleRegions.length - 1]?.id === selected.id} onClick={() => moveSelected(1)}>↓ Move backward</button>
+            </div>
+            <button className="danger-text-button" onClick={removeSelectedRegion}><Icon name="trash" /> Remove selected region</button>
+          </>}
         </div>}
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
@@ -377,7 +383,7 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
 function ProjectorPanel({ projector, onChange }: { projector: ProjectorSettings; onChange: (value: ProjectorSettings) => void }) {
   return <><SectionTitle text="Projector" /><Check label="Apply global projector vector" checked={projector.enabled} onChange={(enabled) => onChange({ ...projector, enabled })} />{projector.enabled && <>
     <Choice label="Preset" value={projector.preset} options={[["filter_bypass2", "FilterBypass2"], ["filter_bypass3", "FilterBypass3"], ["skc3vo", "skc3vo"], ["z0jglf", "z0jglf"], ["custom", "Custom values"]]} onChange={(preset) => onChange({ ...projector, preset, values: PROJECTOR_PRESETS[preset] ? [...PROJECTOR_PRESETS[preset]] : projector.values })} />
-    <div className="projector-grid">{projector.values.map((value, index) => <input key={index} aria-label={`Projector vector ${index + 1}`} type="number" step="0.0001" min="-1000" max="1000" value={value} onChange={(event) => { const values = [...projector.values]; values[index] = Number(event.target.value); onChange({ ...projector, preset: "custom", values }); }} />)}</div>
+    <div className="projector-grid">{projector.values.map((value, index) => <DraftNumberInput key={index} ariaLabel={`Projector vector ${index + 1}`} step={0.0001} min={-1000} max={1000} value={value} onCommit={(next) => { const values = [...projector.values]; values[index] = next; onChange({ ...projector, preset: "custom", values }); }} />)}</div>
     <LinkedValue label="Global multiplier" value={projector.multiplier} min={-20} max={20} step={0.1} onChange={(multiplier) => onChange({ ...projector, multiplier })} />
     <LinkedValue label="Face identity protection" value={projector.identityProtection} min={0} max={1} step={0.05} onChange={(identityProtection) => onChange({ ...projector, identityProtection })} />
   </>}</>;
@@ -390,5 +396,5 @@ function Check({ label, checked, onChange }: { label: string; checked: boolean; 
 function SectionTitle({ text }: { text: string }) { return <div className="advanced-section-title">{text}</div>; }
 function LinkedValue({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
   function change(next: number) { if (Number.isFinite(next)) onChange(Math.max(min, Math.min(max, next))); }
-  return <div className="linked-value"><div className="linked-label"><span>{label}</span><input type="number" value={value} min={min} max={max} step={step} onChange={(event) => change(Number(event.target.value))} /></div><input className="range-input" type="range" value={value} min={min} max={max} step={step} onChange={(event) => change(Number(event.target.value))} /></div>;
+  return <div className="linked-value"><div className="linked-label"><span>{label}</span><DraftNumberInput value={value} min={min} max={max} step={step} onCommit={change} /></div><input className="range-input" type="range" value={value} min={min} max={max} step={step} onChange={(event) => change(Number(event.target.value))} /></div>;
 }
