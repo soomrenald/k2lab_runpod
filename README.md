@@ -85,7 +85,7 @@ From a checkout, the recommended single-user path is:
 
 ```bash
 ./scripts/k2lab-runpod \
-  --image 'ghcr.io/OWNER/k2-region-lab-workspace@sha256:64_HEX_DIGEST'
+  --image 'ghcr.io/OWNER/k2lab-runpod-workspace@sha256:64_HEX_DIGEST'
 ```
 
 The launcher uses `uv` to install the web dependencies when needed. It generates a persistent
