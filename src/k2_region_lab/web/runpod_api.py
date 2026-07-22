@@ -14,11 +14,13 @@ class RunPodPrice(BaseModel):
 
     stock_status: str | None = Field(default=None, alias="stockStatus")
     uninterruptible_price: float | None = Field(default=None, alias="uninterruptablePrice")
-    available_gpu_counts: list[int] = Field(default_factory=list, alias="availableGpuCounts")
+    available_gpu_counts: list[int] | None = Field(default=None, alias="availableGpuCounts")
 
     @property
     def one_gpu_available(self) -> bool:
-        return self.stock_status not in {None, "None"} and 1 in self.available_gpu_counts
+        if self.stock_status in {None, "None"}:
+            return False
+        return self.available_gpu_counts is None or 1 in self.available_gpu_counts
 
 
 class RunPodGpuType(BaseModel):
