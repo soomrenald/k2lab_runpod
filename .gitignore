@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+node_modules/
+*.tsbuildinfo
+*.egg-info/
+experiments/
+artifacts/
+*.log
+*.k2lab.json
+/krea_region_project/
+/outputs/*
+!/outputs/.gitkeep
