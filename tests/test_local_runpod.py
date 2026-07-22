@@ -22,7 +22,7 @@ except ImportError:
     WEB_AVAILABLE = False
 
 
-IMAGE = f"ghcr.io/example/k2-region-lab-workspace@sha256:{'a' * 64}"
+IMAGE = f"ghcr.io/example/k2lab-runpod-workspace@sha256:{'a' * 64}"
 
 
 @unittest.skipUnless(WEB_AVAILABLE, "web dependencies are not installed")
