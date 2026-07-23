@@ -24,4 +24,45 @@ for (const relativePath of [
   assert.ok(!/type="number"[^>]*onChange=/.test(source), `${relativePath} bypasses draft-safe numeric input`);
 }
 
+const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
+assert.ok(
+  workspaceStudio.includes('href="https://console.runpod.io/pods"'),
+  "Cloud workspace status must link to RunPod's Docker startup progress",
+);
+assert.ok(
+  workspaceStudio.includes("workspace.provider_resource_id"),
+  "RunPod startup progress must identify the provider Pod",
+);
+assert.ok(
+  workspaceStudio.includes("startWithoutTimeLimit")
+    && workspaceStudio.includes("continue running and billing until you manually stop it"),
+  "Restarting a Pod must offer an explicitly warned unlimited lease",
+);
+assert.ok(
+  workspaceStudio.includes("Connect migrated Pod")
+    && workspaceStudio.includes("controlPlane.connectMigratedPod")
+    && workspaceStudio.includes("Verify and connect"),
+  "Stopped persistent workspaces must support verified RunPod console migration reassociation",
+);
+
+const onboarding = await readFile(new URL("../src/components/CloudOnboarding.tsx", import.meta.url), "utf8");
+assert.ok(
+  onboarding.includes("request.lease_unlimited")
+    && onboarding.includes("keep running and billing until you manually stop it"),
+  "Initial Pod creation must offer an explicitly warned unlimited lease",
+);
+assert.ok(
+  workspaceStudio.includes('setUtilityPanel("assets")')
+    && workspaceStudio.includes('setUtilityPanel("transfers")')
+    && workspaceStudio.includes('setUtilityPanel("events")')
+    && workspaceStudio.includes('setUtilityPanel("setup")'),
+  "Utility rail panels must replace one another instead of stacking",
+);
+
+const transferPanel = await readFile(new URL("../src/components/TransferPanel.tsx", import.meta.url), "utf8");
+assert.ok(transferPanel.includes("controlPlane.transfers(workspaceId)"), "Provider transfer history must restore when the panel opens");
+
+const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
+assert.ok(assetPanel.includes("controlPlane.uploads(workspaceId)"), "Local upload history must restore when the panel opens");
+
 console.log("Studio UI contract passed");

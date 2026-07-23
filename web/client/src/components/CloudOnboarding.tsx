@@ -37,6 +37,7 @@ const defaultRequest: WorkspacePlanRequest = {
   workspace_disk_gb: 200,
   idle_timeout_seconds: 900,
   hard_deadline_seconds: 28_800,
+  lease_unlimited: false,
   network_volume_id: null,
   datacenter_priority_ids: [],
 };
@@ -331,6 +332,11 @@ export function CloudOnboarding({
               <NumberField label="Workspace volume" suffix="GB" value={request.workspace_disk_gb} min={50} max={4000}
                 onChange={(value) => { setPlan(null); setRequest({ ...request, workspace_disk_gb: value }); }} />
             </div>
+            <label className="check-row warning-check">
+              <input type="checkbox" checked={request.lease_unlimited}
+                onChange={(event) => { setPlan(null); setRequest({ ...request, lease_unlimited: event.target.checked }); }} />
+              <span><strong>No time limit</strong><small>The Pod will keep running and billing until you manually stop it.</small></span>
+            </label>
             {portable && (
               <div className="two-fields">
                 <label className="number-field">
@@ -400,7 +406,7 @@ export function CloudOnboarding({
             <div><dt>Preferred GPU</dt><dd>{plan?.selected_gpu.display_name ?? selectedGpus[0]?.display_name ?? "Select one"}</dd></div>
             <div><dt>Compute</dt><dd>{plan ? `$${plan.estimated_compute_per_hour.toFixed(2)}/hr` : "Calculated on review"}</dd></div>
             <div><dt>Persistent storage</dt><dd>{plan ? `$${plan.estimated_storage_per_month.toFixed(2)}/mo` : `${request.workspace_disk_gb} GB`}</dd></div>
-            <div><dt>Idle stop</dt><dd>{request.idle_timeout_seconds / 60} minutes</dd></div>
+            <div><dt>Lease</dt><dd>{request.lease_unlimited ? "No time limit — manual stop required" : `${request.idle_timeout_seconds / 60} minute idle stop`}</dd></div>
           </dl>
           {plan?.warnings.map((warning) => <div className="warning-line" key={warning}>{warning}</div>)}
           {error && <div className="error-banner">{error}</div>}

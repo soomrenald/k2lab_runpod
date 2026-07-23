@@ -40,9 +40,11 @@ if WEB_PROVIDER_AVAILABLE:
     from k2_region_lab.web.domain import (
         CloudType,
         WorkspaceCreateRequest,
+        WorkspaceConnectPodRequest,
         WorkspaceMigrationCreateRequest,
         WorkspaceMode,
         WorkspacePlanRequest,
+        WorkspaceStartRequest,
     )
     from k2_region_lab.web.runpod_api import (
         RunPodApiClient,
@@ -93,6 +95,7 @@ class FakeRunPodApi:
                 }
             )
         }
+        self.pod_responses: dict[str, dict[str, Any]] = {}
 
     async def validate_credentials(self) -> None:
         self.validated = True
@@ -153,6 +156,8 @@ class FakeRunPodApi:
         }
 
     async def get_pod(self, pod_id: str) -> dict[str, Any]:
+        if pod_id in self.pod_responses:
+            return self.pod_responses[pod_id]
         return {"id": pod_id, "desiredStatus": self.status}
 
     async def start_pod(self, _pod_id: str) -> dict[str, Any]:
@@ -414,6 +419,57 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(volumes[0].size_gb, 100)
         self.assertIn(("DELETE", "/v1/networkvolumes/volume-2"), observed)
 
+    async def test_start_pod_resumes_one_gpu_through_graphql(self) -> None:
+        observed: list[tuple[str, str, dict[str, Any]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            observed.append((request.method, request.url.path, body))
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "podResume": {"id": "pod-1", "desiredStatus": "RUNNING"}
+                    }
+                },
+            )
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        pod = await client.start_pod("pod-1")
+
+        self.assertEqual(pod["id"], "pod-1")
+        self.assertEqual(pod["desiredStatus"], "RUNNING")
+        self.assertEqual(len(observed), 1)
+        method, path, body = observed[0]
+        self.assertEqual((method, path), ("POST", "/graphql"))
+        self.assertIn("podResume", body["query"])
+        self.assertEqual(body["variables"]["input"], {"podId": "pod-1", "gpuCount": 1})
+
+    async def test_start_pod_maps_graphql_capacity_errors(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"errors": [{"message": "No instances available for this GPU"}]},
+            )
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        with self.assertRaisesRegex(Exception, "no compatible GPU capacity") as caught:
+            await client.start_pod("pod-1")
+        self.assertEqual(caught.exception.code, "provider_capacity_unavailable")
+
+    async def test_start_pod_maps_unknown_graphql_rejection_without_502(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"errors": [{"message": "The resume operation was rejected"}]},
+            )
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        with self.assertRaisesRegex(Exception, "assigned GPU or datacenter") as caught:
+            await client.start_pod("pod-1")
+        self.assertEqual(caught.exception.code, "provider_resume_rejected")
+        self.assertEqual(caught.exception.status_code, 409)
+
 
 @unittest.skipUnless(WEB_PROVIDER_AVAILABLE, "web provider dependencies are not installed")
 class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
@@ -523,6 +579,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped.state, "stopped")
         started = await self.backend.start_workspace(workspace.id)
         self.assertEqual(started.state, "starting")
+        self.assertFalse(started.lease_unlimited)
         deleted = await self.backend.terminate_workspace(workspace.id, "Portrait lab")
         self.assertEqual(deleted.state, "deleted")
         self.assertIsNone(deleted.provider_resource_id)
@@ -585,10 +642,81 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret-runpod-key", json.dumps(events))
             restored_transfer = await reopened_store.get_transfer(transfer.id)
             self.assertEqual(restored_transfer, (workspace.id, transfer))
+            self.assertEqual(await reopened_store.list_transfers(workspace.id), [transfer])
             restored_job = await reopened_store.get_generation_job(job.id)
             self.assertEqual(restored_job, (workspace.id, job))
         finally:
             await reopened_store.close()
+
+    async def test_connects_verified_console_migrated_pod_without_provider_mutation(
+        self,
+    ) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(gpu_priority_ids=["NVIDIA RTX A6000"])
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Migrated lab")
+        )
+        workspace = await self.backend.stop_workspace(workspace.id)
+        agent_secret = await self.vault.retrieve(f"agent:{workspace.id}")
+        self.assertIsNotNone(agent_secret)
+        self.api.pod_responses["pod-migrated"] = {
+            "id": "pod-migrated",
+            "desiredStatus": "EXITED",
+            "imageName": "ghcr.io/example/k2lab@sha256:" + "a" * 64,
+            "volumeMountPath": "/workspace",
+            "volumeInGb": workspace.workspace_disk_gb,
+            "machine": {"gpuTypeId": workspace.gpu.id, "dataCenterId": "US-GA-2"},
+            "env": {
+                "K2LAB_WORKSPACE_ID": workspace.id,
+                "K2LAB_AGENT_SESSION_TOKEN": agent_secret,
+                "K2LAB_IMAGE_VERSION": "0.1.0",
+            },
+        }
+
+        connected = await self.backend.connect_workspace_pod(
+            workspace.id,
+            WorkspaceConnectPodRequest(pod_id="pod-migrated"),
+        )
+
+        self.assertEqual(connected.provider_resource_id, "pod-migrated")
+        self.assertEqual(connected.state, "stopped")
+        self.assertEqual(self.api.stopped_pods, ["pod-1"])
+        events = await self.state_store.audit_events()
+        self.assertEqual(events[-1]["action"], "runpod.workspace.connect_pod")
+        self.assertEqual(events[-1]["context"]["previous_pod_id"], "pod-1")
+
+    async def test_rejects_migrated_pod_with_different_workspace_identity(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(gpu_priority_ids=["NVIDIA RTX A6000"])
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Protected lab")
+        )
+        workspace = await self.backend.stop_workspace(workspace.id)
+        self.api.pod_responses["pod-other"] = {
+            "id": "pod-other",
+            "desiredStatus": "EXITED",
+            "imageName": "ghcr.io/example/k2lab@sha256:" + "a" * 64,
+            "volumeMountPath": "/workspace",
+            "volumeInGb": workspace.workspace_disk_gb,
+            "env": {
+                "K2LAB_WORKSPACE_ID": "another-workspace",
+                "K2LAB_AGENT_SESSION_TOKEN": "not-this-workspace",
+                "K2LAB_IMAGE_VERSION": "0.1.0",
+            },
+        }
+
+        with self.assertRaisesRegex(Exception, "does not belong"):
+            await self.backend.connect_workspace_pod(
+                workspace.id,
+                WorkspaceConnectPodRequest(pod_id="pod-other"),
+            )
+        restored = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(restored.provider_resource_id, "pod-1")
+        self.assertEqual(restored.error_code, "pod_identity_mismatch")
 
     async def test_expired_lease_is_discoverable_for_reaper(self) -> None:
         await self.backend.validate_credentials("secret-runpod-key")
@@ -613,6 +741,22 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped, [workspace.id])
         restored = await self.state_store.get_workspace(workspace.id)
         self.assertEqual(restored.state, "stopped")
+
+        unlimited = await self.backend.start_workspace(
+            workspace.id, WorkspaceStartRequest(lease_unlimited=True)
+        )
+        self.assertTrue(unlimited.lease_unlimited)
+        unlimited = unlimited.model_copy(
+            update={"lease_expires_at": workspace.created_at - timedelta(seconds=1)}
+        )
+        await self.state_store.save_workspace(
+            unlimited,
+            image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
+        )
+        self.assertEqual(
+            await self.state_store.expired_workspace_ids(workspace.created_at), []
+        )
+        self.assertEqual(await WorkspaceLeaseReaper(self.backend).run_once(), [])
 
     async def test_database_vault_survives_backend_reconstruction(self) -> None:
         encryption_key = Fernet.generate_key()

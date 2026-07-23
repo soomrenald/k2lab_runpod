@@ -44,6 +44,7 @@ export interface WorkspacePlanRequest {
   workspace_disk_gb: number;
   idle_timeout_seconds: number;
   hard_deadline_seconds: number;
+  lease_unlimited: boolean;
   network_volume_id: string | null;
   datacenter_priority_ids: string[];
 }
@@ -98,6 +99,7 @@ export interface WorkspaceRecord {
   hard_deadline_seconds: number;
   lease_expires_at: string;
   hard_expires_at: string;
+  lease_unlimited: boolean;
   created_at: string;
   updated_at: string;
   provider_resource_id: string | null;
@@ -174,6 +176,8 @@ export interface UploadSession {
   chunk_count: number;
   completed_chunks: number[];
   state: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export type RemoteProvider = "civitai" | "huggingface";
@@ -355,9 +359,15 @@ export const controlPlane = {
       method: "POST",
       body: JSON.stringify({ plan_id: planId, name }),
     }),
-  startWorkspace: (workspaceId: string) =>
+  startWorkspace: (workspaceId: string, leaseUnlimited = false) =>
     request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}/start`, {
       method: "POST",
+      body: JSON.stringify({ lease_unlimited: leaseUnlimited }),
+    }),
+  connectMigratedPod: (workspaceId: string, podId: string, leaseUnlimited = false) =>
+    request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}/connect-pod`, {
+      method: "POST",
+      body: JSON.stringify({ pod_id: podId, lease_unlimited: leaseUnlimited }),
     }),
   stopWorkspace: (workspaceId: string) =>
     request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}/stop`, {
@@ -396,6 +406,8 @@ export const controlPlane = {
   }) => request<UploadSession>(`/api/v1/workspaces/${workspaceId}/uploads`, {
     method: "POST", body: JSON.stringify(payload),
   }),
+  uploads: (workspaceId: string) =>
+    request<UploadSession[]>(`/api/v1/workspaces/${workspaceId}/uploads`),
   uploadStatus: (workspaceId: string, uploadId: string) =>
     request<UploadSession>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}`),
   uploadChunk: (workspaceId: string, uploadId: string, index: number, content: ArrayBuffer, sha256: string) =>
@@ -436,6 +448,8 @@ export const controlPlane = {
   }),
   transfer: (workspaceId: string, transferId: string) =>
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}`),
+  transfers: (workspaceId: string) =>
+    request<RemoteTransfer[]>(`/api/v1/workspaces/${workspaceId}/transfers`),
   cancelTransfer: (workspaceId: string, transferId: string) =>
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }),
   submitJob: (workspaceId: string, payload: {

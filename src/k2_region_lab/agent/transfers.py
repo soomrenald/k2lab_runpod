@@ -98,6 +98,18 @@ class TransferManager:
         async with self._lock:
             return self._read_session(upload_id)
 
+    async def list_uploads(self) -> list[UploadSession]:
+        async with self._lock:
+            sessions: list[UploadSession] = []
+            for path in self._upload_directory.glob("*.json"):
+                try:
+                    sessions.append(
+                        UploadSession.model_validate_json(path.read_text(encoding="utf-8"))
+                    )
+                except (OSError, ValueError):
+                    continue
+            return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+
     async def write_chunk(
         self, upload_id: str, index: int, content: bytes, supplied_sha256: str
     ) -> ChunkReceipt:
@@ -147,7 +159,7 @@ class TransferManager:
                 )
             existing = self._find_by_sha256(session.sha256)
             if existing is not None:
-                self._remove_upload(session.id)
+                self._finish_upload(session, "completed")
                 return UploadCompleteResponse(file=existing, duplicate=True)
 
             destination = self._layout.resolve_child(
@@ -182,13 +194,12 @@ class TransferManager:
             temporary.replace(destination)
             record = self._record_file(session.destination_kind, destination, session.sha256)
             self._upsert_record(record)
-            self._remove_upload(session.id)
+            self._finish_upload(session, "completed")
             return UploadCompleteResponse(file=record)
 
     async def cancel_upload(self, upload_id: str) -> None:
         async with self._lock:
-            self._read_session(upload_id)
-            self._remove_upload(upload_id)
+            self._finish_upload(self._read_session(upload_id), "cancelled")
 
     async def resolve_file(
         self, file_id: str, *, required_kind: FileKind | None = None
@@ -414,9 +425,11 @@ class TransferManager:
         temporary.write_text(session.model_dump_json(), encoding="utf-8")
         temporary.replace(path)
 
-    def _remove_upload(self, upload_id: str) -> None:
-        (self._upload_directory / f"{upload_id}.json").unlink(missing_ok=True)
-        shutil.rmtree(self._chunk_directory(upload_id), ignore_errors=True)
+    def _finish_upload(self, session: UploadSession, state: str) -> None:
+        shutil.rmtree(self._chunk_directory(session.id), ignore_errors=True)
+        self._write_session(
+            session.model_copy(update={"state": state, "updated_at": datetime.now(UTC)})
+        )
 
     def _chunk_directory(self, upload_id: str) -> Path:
         return self._incomplete_directory / upload_id

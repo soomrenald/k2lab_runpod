@@ -6,7 +6,8 @@ import hashlib
 import os
 import re
 import shutil
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -33,7 +34,9 @@ from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.model import read_safetensors_header
 
 
-CIVITAI_SOURCE_HOSTS = frozenset({"civitai.com", "www.civitai.com"})
+CIVITAI_SOURCE_HOSTS = frozenset(
+    {"civitai.com", "www.civitai.com", "civitai.red", "www.civitai.red"}
+)
 CIVITAI_DOWNLOAD_HOSTS = frozenset(
     {"civitai.com", "www.civitai.com", "files.civitai.com"}
 )
@@ -50,6 +53,16 @@ HUGGINGFACE_REPO_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 class CivitaiSource:
     model_id: str | None
     version_id: str | None
+    file_id: str | None = None
+
+    @property
+    def canonical_download_url(self) -> str | None:
+        if self.version_id is None or self.file_id is None:
+            return None
+        return (
+            f"https://civitai.com/api/download/models/{self.version_id}"
+            f"?fileId={self.file_id}"
+        )
 
 
 @dataclass(frozen=True)
@@ -67,8 +80,17 @@ def parse_civitai_url(value: str) -> CivitaiSource:
     parts = [unquote(part) for part in parsed.path.split("/") if part]
     model_id: str | None = None
     version_id: str | None = None
-    if len(parts) >= 4 and parts[:3] == ["api", "download", "models"]:
+    file_id: str | None = None
+    if len(parts) == 4 and parts[:3] == ["api", "download", "models"]:
         version_id = parts[3]
+        file_values = query.get("fileId", [])
+        file_id = file_values[0] if len(file_values) == 1 else None
+        alias_host = (parsed.hostname or "").casefold() in {"civitai.red", "www.civitai.red"}
+        if (file_values or alias_host) and (not file_id or not file_id.isdigit()):
+            raise TransferError(
+                "download_url_invalid",
+                "A Civitai download URL must include one numeric fileId.",
+            )
     elif len(parts) >= 2 and parts[0] == "models":
         model_id = parts[1].split("-", 1)[0]
         version_values = query.get("modelVersionId", [])
@@ -82,7 +104,7 @@ def parse_civitai_url(value: str) -> CivitaiSource:
             "download_url_invalid",
             "Enter a Civitai model or model-version download URL.",
         )
-    return CivitaiSource(model_id=model_id, version_id=version_id)
+    return CivitaiSource(model_id=model_id, version_id=version_id, file_id=file_id)
 
 
 def parse_huggingface_url(value: str) -> HuggingFaceSource:
@@ -136,7 +158,8 @@ class RemoteDownloadManager:
         self._hf_repo_info = hf_repo_info
         self._state_directory = layout.state_directory / "transfers"
         self._incomplete_directory = layout.root / "downloads" / "incomplete"
-        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._queue: deque[tuple[str, Callable[[], Awaitable[None]]]] = deque()
+        self._queue_worker: asyncio.Task[None] | None = None
         self._cancel: dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
         self._state_directory.mkdir(parents=True, exist_ok=True)
@@ -145,7 +168,7 @@ class RemoteDownloadManager:
     async def preview_civitai(self, source_url: str, token: str | None) -> CivitaiPreview:
         source = parse_civitai_url(source_url)
         metadata = await self._civitai_metadata(source, token)
-        return self._civitai_preview(metadata)
+        return self._civitai_preview(metadata, source)
 
     async def preview_huggingface(
         self, source_url: str, token: str | None, allow_patterns: list[str]
@@ -192,7 +215,7 @@ class RemoteDownloadManager:
         )
         self._launch(
             transfer.id,
-            self._run_civitai(transfer.id, request, token),
+            lambda: self._run_civitai(transfer.id, request, token),
         )
         return transfer
 
@@ -209,7 +232,7 @@ class RemoteDownloadManager:
         )
         self._launch(
             transfer.id,
-            self._run_huggingface(transfer.id, request, token),
+            lambda: self._run_huggingface(transfer.id, request, token),
         )
         return transfer
 
@@ -227,11 +250,10 @@ class RemoteDownloadManager:
             return transfer
 
     async def close(self) -> None:
-        tasks = list(self._tasks.values())
         for event in self._cancel.values():
             event.set()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._queue_worker is not None:
+            await asyncio.gather(self._queue_worker, return_exceptions=True)
 
     async def _prepare_transfer(
         self,
@@ -274,18 +296,29 @@ class RemoteDownloadManager:
             self._cancel[transfer.id] = asyncio.Event()
             return transfer
 
-    def _launch(self, transfer_id: str, coroutine: Any) -> None:
-        task = asyncio.create_task(coroutine)
-        self._tasks[transfer_id] = task
-        task.add_done_callback(lambda _task: self._tasks.pop(transfer_id, None))
+    def _launch(
+        self, transfer_id: str, operation: Callable[[], Awaitable[None]]
+    ) -> None:
+        self._queue.append((transfer_id, operation))
+        if self._queue_worker is None or self._queue_worker.done():
+            self._queue_worker = asyncio.create_task(self._drain_queue())
+
+    async def _drain_queue(self) -> None:
+        while self._queue:
+            transfer_id, operation = self._queue.popleft()
+            if self._cancelled(transfer_id):
+                await self._set_state(transfer_id, TransferState.CANCELLED)
+                continue
+            await operation()
 
     async def _run_civitai(
         self, transfer_id: str, request: CivitaiDownloadRequest, token: str | None
     ) -> None:
         try:
             await self._set_state(transfer_id, TransferState.RESOLVING)
-            metadata = await self._civitai_metadata(parse_civitai_url(request.source_url), token)
-            preview = self._civitai_preview(metadata)
+            source = parse_civitai_url(request.source_url)
+            metadata = await self._civitai_metadata(source, token)
+            preview = self._civitai_preview(metadata, source)
             selected = next((file for file in preview.files if file.id == request.file_id), None)
             if selected is None:
                 raise TransferError("download_file_missing", "The selected Civitai file is missing.", 404)
@@ -348,6 +381,7 @@ class RemoteDownloadManager:
         self, transfer_id: str, request: HuggingFaceDownloadRequest, token: str | None
     ) -> None:
         staging_directory = self._incomplete_directory / transfer_id
+        download_directory = staging_directory / "source"
         try:
             source = parse_huggingface_url(request.source_url)
             await self._set_state(transfer_id, TransferState.RESOLVING)
@@ -363,12 +397,27 @@ class RemoteDownloadManager:
             )
             if self._cancelled(transfer_id):
                 raise TransferError("transfer_cancelled", "The transfer was cancelled.", 409)
-            downloaded = await asyncio.to_thread(
-                self._call_huggingface,
-                source,
-                token,
-                request.allow_patterns,
+            download_directory.mkdir(parents=True, exist_ok=True)
+            download_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._call_huggingface,
+                    source,
+                    token,
+                    request.allow_patterns,
+                    download_directory,
+                )
             )
+            while not download_task.done():
+                await asyncio.sleep(0.5)
+                downloaded_bytes = await asyncio.to_thread(
+                    self._directory_size, download_directory
+                )
+                await self._set_state(
+                    transfer_id,
+                    TransferState.DOWNLOADING,
+                    bytes_complete=min(downloaded_bytes, preview.required_bytes),
+                )
+            downloaded = await download_task
             if self._cancelled(transfer_id):
                 raise TransferError("transfer_cancelled", "The transfer was cancelled.", 409)
             source_root = Path(str(downloaded))
@@ -379,9 +428,11 @@ class RemoteDownloadManager:
             )
             if not source_files:
                 raise TransferError("download_file_missing", "The repository contains no files.", 404)
-            staging_directory.mkdir(exist_ok=True)
-            await self._set_state(transfer_id, TransferState.VERIFYING)
-            bytes_complete = 0
+            await self._set_state(
+                transfer_id,
+                TransferState.VERIFYING,
+                bytes_complete=preview.required_bytes,
+            )
             staged_downloads: list[tuple[Path, FileKind, str, str]] = []
             for source_file in source_files:
                 relative = (
@@ -414,10 +465,6 @@ class RemoteDownloadManager:
                 staged_downloads.append(
                     (staged, request.destination_kind, relative, digest)
                 )
-                bytes_complete += staged.stat().st_size
-                await self._set_state(
-                    transfer_id, TransferState.VERIFYING, bytes_complete=bytes_complete
-                )
             installed_results = await self._transfers.install_download_batch(
                 staged_downloads
             )
@@ -431,7 +478,7 @@ class RemoteDownloadManager:
             await self._set_state(
                 transfer_id,
                 TransferState.COMPLETED,
-                bytes_complete=bytes_complete,
+                bytes_complete=preview.required_bytes,
                 files=installed,
             )
         except TransferError as error:
@@ -585,16 +632,25 @@ class RemoteDownloadManager:
             current = urljoin(current, location)
         raise TransferError("redirect_unsafe", "The provider sent too many redirects.", 502)
 
-    def _civitai_preview(self, metadata: dict[str, Any]) -> CivitaiPreview:
+    def _civitai_preview(
+        self, metadata: dict[str, Any], source: CivitaiSource | None = None
+    ) -> CivitaiPreview:
         raw_files = metadata.get("files")
         if not isinstance(raw_files, list):
             raise TransferError("provider_response_invalid", "Civitai returned invalid file metadata.", 502)
+        metadata_version_id = str(metadata.get("id") or "")
         files: list[CivitaiFilePreview] = []
         for raw in raw_files:
             if not isinstance(raw, dict):
                 continue
+            file_id = str(raw.get("id"))
             filename = str(raw.get("name") or "")
-            download_url = str(raw.get("downloadUrl") or "")
+            explicitly_selected = bool(source and source.file_id == file_id)
+            download_url = (
+                f"https://civitai.com/api/download/models/{metadata_version_id}?fileId={file_id}"
+                if metadata_version_id.isdigit() and file_id.isdigit()
+                else str(raw.get("downloadUrl") or "")
+            )
             if (
                 not filename
                 or Path(filename).name != filename
@@ -609,7 +665,7 @@ class RemoteDownloadManager:
             size_kb = raw.get("sizeKB")
             files.append(
                 CivitaiFilePreview(
-                    id=str(raw.get("id")),
+                    id=file_id,
                     filename=filename,
                     size_bytes=round(float(size_kb) * 1024) if size_kb is not None else None,
                     format=str(metadata_value.get("format")) if metadata_value.get("format") else None,
@@ -617,12 +673,22 @@ class RemoteDownloadManager:
                     pickle_scan=str(raw.get("pickleScanResult")) if raw.get("pickleScanResult") else None,
                     virus_scan=str(raw.get("virusScanResult")) if raw.get("virusScanResult") else None,
                     download_url=download_url,
-                    preferred=bool(raw.get("primary")) or suffix == ".safetensors",
+                    preferred=(
+                        explicitly_selected
+                        if source and source.file_id
+                        else bool(raw.get("primary")) or suffix == ".safetensors"
+                    ),
                     requires_unsafe_confirmation=suffix in UNSAFE_MODEL_EXTENSIONS,
                 )
             )
         if not files:
             raise TransferError("download_file_missing", "The Civitai version has no downloadable files.", 404)
+        if source and source.file_id and not any(file.id == source.file_id for file in files):
+            raise TransferError(
+                "download_file_missing",
+                "The Civitai fileId is not part of this model version.",
+                404,
+            )
         model = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
         return CivitaiPreview(
             model_id=str(model.get("id") or metadata.get("modelId") or "unknown"),
@@ -640,6 +706,7 @@ class RemoteDownloadManager:
         source: HuggingFaceSource,
         token: str | None,
         allow_patterns: list[str],
+        download_directory: Path,
     ) -> Any:
         file_download = self._hf_file_download
         snapshot_download = self._hf_snapshot_download
@@ -653,11 +720,23 @@ class RemoteDownloadManager:
             "repo_type": None if source.repo_type == "model" else source.repo_type,
             "revision": source.revision,
             "cache_dir": self._layout.root / "cache" / "huggingface",
+            "local_dir": download_directory,
             "token": token,
         }
         if source.filename is not None:
             return file_download(filename=source.filename, **common)
         return snapshot_download(allow_patterns=allow_patterns or None, **common)
+
+    @staticmethod
+    def _directory_size(directory: Path) -> int:
+        total = 0
+        for path in directory.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return total
 
     def _huggingface_metadata(
         self,

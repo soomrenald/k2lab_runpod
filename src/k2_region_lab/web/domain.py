@@ -122,6 +122,7 @@ class WorkspacePlanRequest(BaseModel):
     workspace_disk_gb: int = Field(default=200, ge=50, le=4_000)
     idle_timeout_seconds: int = Field(default=900, ge=300, le=86_400)
     hard_deadline_seconds: int = Field(default=28_800, ge=900, le=604_800)
+    lease_unlimited: bool = False
     network_volume_id: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$"
     )
@@ -160,6 +161,15 @@ class WorkspacePlan(BaseModel):
 class WorkspaceCreateRequest(BaseModel):
     plan_id: str
     name: str = Field(default="K2 Cloud Workspace", min_length=1, max_length=80)
+
+
+class WorkspaceStartRequest(BaseModel):
+    lease_unlimited: bool = False
+
+
+class WorkspaceConnectPodRequest(BaseModel):
+    pod_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,190}$")
+    lease_unlimited: bool = False
 
 
 class WorkspaceTerminateRequest(BaseModel):
@@ -201,6 +211,7 @@ class WorkspaceRecord(BaseModel):
     hard_deadline_seconds: int
     lease_expires_at: datetime
     hard_expires_at: datetime
+    lease_unlimited: bool = False
     created_at: datetime
     updated_at: datetime
     provider_resource_id: str | None = None
@@ -308,7 +319,14 @@ class WorkspaceBackend(Protocol):
     async def get_workspace_status(self, workspace_id: str) -> WorkspaceRecord: ...
 
     @abstractmethod
-    async def start_workspace(self, workspace_id: str) -> WorkspaceRecord: ...
+    async def start_workspace(
+        self, workspace_id: str, request: WorkspaceStartRequest | None = None
+    ) -> WorkspaceRecord: ...
+
+    @abstractmethod
+    async def connect_workspace_pod(
+        self, workspace_id: str, request: WorkspaceConnectPodRequest
+    ) -> WorkspaceRecord: ...
 
     @abstractmethod
     async def stop_workspace(self, workspace_id: str) -> WorkspaceRecord: ...
@@ -358,6 +376,8 @@ class WorkspaceBackend(Protocol):
 
     async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession: ...
 
+    async def list_uploads(self, workspace_id: str) -> list[UploadSession]: ...
+
     async def write_upload_chunk(
         self,
         workspace_id: str,
@@ -398,6 +418,8 @@ class WorkspaceBackend(Protocol):
     ) -> RemoteTransfer: ...
 
     async def get_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer: ...
+
+    async def list_transfers(self, workspace_id: str) -> list[RemoteTransfer]: ...
 
     async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer: ...
 

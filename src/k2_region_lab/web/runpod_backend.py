@@ -46,6 +46,7 @@ from k2_region_lab.web.domain import (
     NetworkVolumeOption,
     StorageTier,
     WorkspaceCreateRequest,
+    WorkspaceConnectPodRequest,
     WorkspaceError,
     WorkspaceMode,
     WorkspaceMigrationCreateRequest,
@@ -53,6 +54,7 @@ from k2_region_lab.web.domain import (
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
+    WorkspaceStartRequest,
     WorkspaceState,
     WorkspaceOutput,
     utc_now,
@@ -260,6 +262,10 @@ class RunPodPersistentPodBackend:
             ]
         if request.interruptible:
             warnings.append("Interruptible Pods may stop without notice.")
+        if request.lease_unlimited:
+            warnings.append(
+                "No time limit: the Pod keeps running and billing until you manually stop it."
+            )
         plan = WorkspacePlan(
             id=uuid4().hex,
             request=request,
@@ -368,6 +374,7 @@ class RunPodPersistentPodBackend:
             hard_deadline_seconds=plan.request.hard_deadline_seconds,
             lease_expires_at=now + timedelta(seconds=plan.request.idle_timeout_seconds),
             hard_expires_at=now + timedelta(seconds=plan.request.hard_deadline_seconds),
+            lease_unlimited=plan.request.lease_unlimited,
             created_at=now,
             updated_at=now,
             provider_resource_id=provider_id,
@@ -408,7 +415,10 @@ class RunPodPersistentPodBackend:
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
         return updated.model_copy(deep=True)
 
-    async def start_workspace(self, workspace_id: str) -> WorkspaceRecord:
+    async def start_workspace(
+        self, workspace_id: str, request: WorkspaceStartRequest | None = None
+    ) -> WorkspaceRecord:
+        request = request or WorkspaceStartRequest()
         await self._ensure_no_active_migration(workspace_id)
         workspace = await self.state_store.claim_workspace_transition(
             workspace_id,
@@ -438,6 +448,7 @@ class RunPodPersistentPodBackend:
                 "updated_at": now,
                 "lease_expires_at": now + timedelta(seconds=workspace.idle_timeout_seconds),
                 "hard_expires_at": now + timedelta(seconds=workspace.hard_deadline_seconds),
+                "lease_unlimited": request.lease_unlimited,
                 "readiness": self._readiness(status),
                 "error_code": None,
                 "error_message": None,
@@ -446,7 +457,78 @@ class RunPodPersistentPodBackend:
         )
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
         await self.state_store.append_audit(
-            action="runpod.workspace.start", result="success", workspace_id=workspace_id
+            action="runpod.workspace.start",
+            result="success",
+            workspace_id=workspace_id,
+            context={"lease_unlimited": request.lease_unlimited},
+        )
+        return updated.model_copy(deep=True)
+
+    async def connect_workspace_pod(
+        self, workspace_id: str, request: WorkspaceConnectPodRequest
+    ) -> WorkspaceRecord:
+        await self._ensure_no_active_migration(workspace_id)
+        workspace = await self.state_store.claim_workspace_transition(
+            workspace_id,
+            allowed_states={WorkspaceState.STOPPED, WorkspaceState.ERROR},
+            claimed_state=WorkspaceState.STARTING,
+        )
+        try:
+            if workspace.mode != WorkspaceMode.PERSISTENT_POD:
+                raise WorkspaceError(
+                    "pod_reconnect_unsupported",
+                    "Only a persistent Pod workspace can connect to a migrated Pod ID.",
+                    status_code=409,
+                )
+            if request.pod_id == workspace.provider_resource_id:
+                raise WorkspaceError(
+                    "pod_reconnect_unchanged",
+                    "Enter the new Pod ID created by RunPod migration.",
+                    status_code=409,
+                )
+            for existing in await self.state_store.list_workspaces():
+                if (
+                    existing.id != workspace.id
+                    and existing.state != WorkspaceState.DELETED
+                    and existing.provider_resource_id == request.pod_id
+                ):
+                    raise WorkspaceError(
+                        "pod_already_connected",
+                        "That RunPod Pod is already connected to another workspace.",
+                        status_code=409,
+                    )
+            provider = await (await self._api()).get_pod(request.pod_id)
+            await self._validate_migrated_pod(workspace, provider, request.pod_id)
+            now = utc_now()
+            candidate = workspace.model_copy(
+                update={
+                    "provider_resource_id": request.pod_id,
+                    "lease_expires_at": now
+                    + timedelta(seconds=workspace.idle_timeout_seconds),
+                    "hard_expires_at": now
+                    + timedelta(seconds=workspace.hard_deadline_seconds),
+                    "lease_unlimited": request.lease_unlimited,
+                    "updated_at": now,
+                    "error_code": None,
+                    "error_message": None,
+                }
+            )
+            updated = await self._workspace_from_provider(candidate, provider)
+        except Exception as error:
+            await self._record_provider_failure(
+                workspace, "runpod.workspace.connect_pod", error
+            )
+            raise
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="runpod.workspace.connect_pod",
+            result="success",
+            workspace_id=workspace_id,
+            context={
+                "previous_pod_id": workspace.provider_resource_id,
+                "provider_resource_id": request.pod_id,
+                "lease_unlimited": request.lease_unlimited,
+            },
         )
         return updated.model_copy(deep=True)
 
@@ -559,6 +641,8 @@ class RunPodPersistentPodBackend:
                 "Only a running workspace has an active compute lease.",
                 status_code=409,
             )
+        if workspace.lease_unlimited:
+            return workspace.model_copy(deep=True)
         now = utc_now()
         updated = workspace.model_copy(
             update={
@@ -1155,6 +1239,9 @@ class RunPodPersistentPodBackend:
     async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession:
         return await (await self._workspace_agent(workspace_id)).upload_status(upload_id)
 
+    async def list_uploads(self, workspace_id: str) -> list[UploadSession]:
+        return await (await self._workspace_agent(workspace_id)).list_uploads()
+
     async def write_upload_chunk(
         self,
         workspace_id: str,
@@ -1258,6 +1345,10 @@ class RunPodPersistentPodBackend:
             await self._touch_workspace_lease(workspace_id)
         return transfer
 
+    async def list_transfers(self, workspace_id: str) -> list[RemoteTransfer]:
+        await self._workspace(workspace_id)
+        return await self.state_store.list_transfers(workspace_id)
+
     async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
         transfer = await (await self._workspace_agent(workspace_id)).cancel_transfer(transfer_id)
         await self.state_store.save_transfer(workspace_id, transfer)
@@ -1278,7 +1369,10 @@ class RunPodPersistentPodBackend:
 
     async def _touch_workspace_lease(self, workspace_id: str) -> None:
         workspace = await self._workspace(workspace_id)
-        if workspace.state not in {WorkspaceState.STARTING, WorkspaceState.READY}:
+        if (
+            workspace.state not in {WorkspaceState.STARTING, WorkspaceState.READY}
+            or workspace.lease_unlimited
+        ):
             return
         now = utc_now()
         updated = workspace.model_copy(
@@ -1377,8 +1471,11 @@ class RunPodPersistentPodBackend:
         state = self._state_from_provider(status)
         readiness = self._readiness(status)
         provider_resource_id = workspace.provider_resource_id
-        error_code = None
-        error_message = None
+        preserve_provider_error = (
+            status == "EXITED" and workspace.state == WorkspaceState.ERROR
+        )
+        error_code = workspace.error_code if preserve_provider_error else None
+        error_message = workspace.error_message if preserve_provider_error else None
         if state == WorkspaceState.DELETED and workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE:
             state = WorkspaceState.STOPPED
             readiness = {}
@@ -1437,6 +1534,84 @@ class RunPodPersistentPodBackend:
                 status_code=401,
             )
         return self._api_factory(key)
+
+    async def _validate_migrated_pod(
+        self,
+        workspace: WorkspaceRecord,
+        provider: dict[str, Any],
+        requested_pod_id: str,
+    ) -> None:
+        if self._required_string(provider, "id") != requested_pod_id:
+            raise WorkspaceError(
+                "pod_identity_mismatch",
+                "RunPod returned a different Pod than the requested migrated Pod.",
+                status_code=502,
+            )
+        if str(provider.get("desiredStatus", "")).upper() == "TERMINATED":
+            raise WorkspaceError(
+                "provider_resource_unavailable",
+                "The migrated RunPod Pod has already been terminated.",
+                status_code=409,
+            )
+        environment = provider.get("env")
+        if not isinstance(environment, dict):
+            raise WorkspaceError(
+                "pod_identity_unverifiable",
+                "The migrated Pod does not expose the workspace identity environment.",
+                status_code=409,
+            )
+        if environment.get("K2LAB_WORKSPACE_ID") != workspace.id:
+            raise WorkspaceError(
+                "pod_identity_mismatch",
+                "The supplied Pod does not belong to this K2 workspace.",
+                status_code=409,
+            )
+        expected_secret = await self._vault.retrieve(f"agent:{workspace.id}")
+        supplied_secret = environment.get("K2LAB_AGENT_SESSION_TOKEN")
+        if (
+            not expected_secret
+            or not isinstance(supplied_secret, str)
+            or not secrets.compare_digest(expected_secret, supplied_secret)
+        ):
+            raise WorkspaceError(
+                "pod_agent_credential_mismatch",
+                "The migrated Pod did not retain this workspace's agent credential.",
+                status_code=409,
+            )
+        if environment.get("K2LAB_IMAGE_VERSION") != self._image_version:
+            raise WorkspaceError(
+                "agent_image_mismatch",
+                "The migrated Pod uses a different K2 workspace image version.",
+                status_code=409,
+            )
+        image_name = provider.get("imageName") or provider.get("image")
+        if image_name != self._image_digest:
+            raise WorkspaceError(
+                "agent_image_mismatch",
+                "The migrated Pod does not use this workspace's immutable image.",
+                status_code=409,
+            )
+        if provider.get("volumeMountPath") != "/workspace":
+            raise WorkspaceError(
+                "pod_storage_layout_mismatch",
+                "The migrated Pod does not mount persistent data at /workspace.",
+                status_code=409,
+            )
+        volume_size = provider.get("volumeInGb")
+        if not isinstance(volume_size, (int, float)) or volume_size < workspace.workspace_disk_gb:
+            raise WorkspaceError(
+                "pod_storage_layout_mismatch",
+                "The migrated Pod's persistent volume is smaller than this workspace expects.",
+                status_code=409,
+            )
+        machine = provider.get("machine")
+        migrated_gpu = machine.get("gpuTypeId") if isinstance(machine, dict) else None
+        if migrated_gpu and migrated_gpu != workspace.gpu.id:
+            raise WorkspaceError(
+                "pod_gpu_mismatch",
+                "The migrated Pod uses a different GPU type than this workspace.",
+                status_code=409,
+            )
 
     @staticmethod
     def _gpu_option(item: RunPodGpuType) -> GpuOption:
@@ -1748,7 +1923,10 @@ class RunPodPersistentPodBackend:
             action=action,
             result="failure",
             workspace_id=workspace.id,
-            context={"error_type": type(error).__name__},
+            context={
+                "error_type": type(error).__name__,
+                "error_code": getattr(error, "code", "provider_operation_failed"),
+            },
         )
 
     @staticmethod

@@ -136,6 +136,14 @@ class RunPodApiClient:
           }
         }
     """
+    POD_RESUME_MUTATION = """
+        mutation ResumePod($input: PodResumeInput!) {
+          podResume(input: $input) {
+            id
+            desiredStatus
+          }
+        }
+    """
 
     def __init__(
         self,
@@ -246,7 +254,34 @@ class RunPodApiClient:
         return self._object_response(await self._rest_request("GET", f"/pods/{pod_id}"))
 
     async def start_pod(self, pod_id: str) -> dict[str, Any]:
-        return self._object_response(await self._rest_request("POST", f"/pods/{pod_id}/start"))
+        # RunPod's documented GraphQL resume operation makes the requested GPU
+        # count explicit and returns the Pod resource. The REST start endpoint
+        # can acknowledge without a usable resource and has returned transient
+        # gateway failures for otherwise resumable stopped Pods.
+        payload = await self._request(
+            "POST",
+            self.GRAPHQL_URL,
+            json={
+                "query": self.POD_RESUME_MUTATION,
+                "variables": {"input": {"podId": pod_id, "gpuCount": 1}},
+            },
+        )
+        if not isinstance(payload, dict):
+            raise WorkspaceError(
+                "provider_response_invalid",
+                "RunPod returned an unexpected Pod resume response.",
+                status_code=502,
+            )
+        if payload.get("errors"):
+            self._raise_resume_error(payload["errors"])
+        try:
+            return self._object_response(payload["data"]["podResume"])
+        except (KeyError, TypeError) as error:
+            raise WorkspaceError(
+                "provider_response_invalid",
+                "RunPod returned an incomplete Pod resume response.",
+                status_code=502,
+            ) from error
 
     async def stop_pod(self, pod_id: str) -> dict[str, Any]:
         return self._object_response(await self._rest_request("POST", f"/pods/{pod_id}/stop"))
@@ -370,3 +405,39 @@ class RunPodApiClient:
                 400,
             )
         raise WorkspaceError(code, message, status_code=client_status)
+
+    @staticmethod
+    def _raise_resume_error(errors: Any) -> None:
+        serialized = str(errors).casefold()
+        if any(
+            term in serialized
+            for term in (
+                "capacity",
+                "instance",
+                "available",
+                "availability",
+                "gpu",
+                "machine",
+                "stock",
+            )
+        ):
+            raise WorkspaceError(
+                "provider_capacity_unavailable",
+                "RunPod has no compatible GPU capacity available for this Pod right now.",
+                status_code=409,
+            )
+        if any(term in serialized for term in ("credit", "fund", "balance")):
+            raise WorkspaceError(
+                "insufficient_runpod_credit",
+                "RunPod reports insufficient account credit.",
+                status_code=409,
+            )
+        raise WorkspaceError(
+            "provider_resume_rejected",
+            (
+                "RunPod rejected the resume operation. The Pod's assigned GPU or "
+                "datacenter may be temporarily unavailable; try again later or open "
+                "the Pod in the RunPod console for provider details."
+            ),
+            status_code=409,
+        )

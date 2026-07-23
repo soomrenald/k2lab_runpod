@@ -29,11 +29,32 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
   const [fileId, setFileId] = useState("");
   const [allowUnsafe, setAllowUnsafe] = useState(false);
   const [transfer, setTransfer] = useState<RemoteTransfer | null>(null);
+  const [history, setHistory] = useState<RemoteTransfer[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [speed, setSpeed] = useState(0);
   const sample = useRef<{ bytes: number; time: number } | null>(null);
   const lastReportedState = useRef<string | null>(null);
+
+  function remember(next: RemoteTransfer) {
+    setTransfer(next);
+    setHistory((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void controlPlane.transfers(workspaceId).then((items) => {
+      if (cancelled) return;
+      setHistory(items);
+      if (items[0]) {
+        setTransfer(items[0]);
+        setProvider(items[0].provider);
+        setDestination(items[0].destination_kind);
+        setSourceUrl(items[0].source_url);
+      }
+    }).catch((caught) => { if (!cancelled) setError(message(caught)); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
 
   useEffect(() => {
     void controlPlane.downloadCredential(provider).then(setCredential).catch(() => setCredential(null));
@@ -49,7 +70,7 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
         const previous = sample.current;
         if (previous && now > previous.time) setSpeed(Math.max(0, (next.bytes_complete - previous.bytes) / ((now - previous.time) / 1000)));
         sample.current = { bytes: next.bytes_complete, time: now };
-        setTransfer(next);
+        remember(next);
         if (next.state !== lastReportedState.current && terminal(next.state)) {
           lastReportedState.current = next.state;
           onEvent?.(next.state === "completed"
@@ -61,6 +82,28 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
     }, 1000);
     return () => window.clearInterval(interval);
   }, [transfer, workspaceId]);
+
+  const backgroundTransferIds = history
+    .filter((item) => item.id !== transfer?.id && !terminal(item.state))
+    .map((item) => item.id)
+    .join(",");
+
+  useEffect(() => {
+    if (!backgroundTransferIds) return undefined;
+    const ids = backgroundTransferIds.split(",");
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const updates = await Promise.all(ids.map((id) => controlPlane.transfer(workspaceId, id)));
+        if (!cancelled) setHistory((current) => current.map((item) => updates.find((next) => next.id === item.id) ?? item));
+      } catch (caught) {
+        if (!cancelled) setError(message(caught));
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 1000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [backgroundTransferIds, workspaceId]);
 
   const selectedFile = useMemo(() => civitaiPreview?.files.find((file) => file.id === fileId) ?? null, [civitaiPreview, fileId]);
 
@@ -101,7 +144,7 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
       const next = provider === "civitai"
         ? await controlPlane.startCivitai(workspaceId, { source_url: sourceUrl, file_id: fileId, destination_kind: destination, allow_unsafe_format: allowUnsafe, resume_transfer_id })
         : await controlPlane.startHuggingFace(workspaceId, { source_url: sourceUrl, destination_kind: destination, allow_patterns: patternList(patterns), allow_unsafe_format: allowUnsafe, resume_transfer_id });
-      setTransfer(next);
+      remember(next);
       lastReportedState.current = next.state;
       onEvent?.(`${resume ? "Resumed" : "Started"} ${provider} transfer into ${destination}.`, "info");
     } catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
@@ -111,7 +154,7 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
   async function cancel() {
     if (!transfer) return;
     setBusy(true);
-    try { setTransfer(await controlPlane.cancelTransfer(workspaceId, transfer.id)); onEvent?.("Provider transfer cancelled; resumable data was retained.", "info"); }
+    try { remember(await controlPlane.cancelTransfer(workspaceId, transfer.id)); onEvent?.("Provider transfer cancelled; resumable data was retained.", "info"); }
     catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
     finally { setBusy(false); }
   }
@@ -126,13 +169,13 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
     <div className="asset-backdrop">
       <section className="asset-panel transfer-panel glass-card" aria-label="Provider downloads">
         <header><div><p className="kicker">Provider-side transfer</p><h2>Download models</h2></div><button className="quiet-button" onClick={onClose}>Close</button></header>
-        <div className="asset-kind-tabs"><button className={provider === "civitai" ? "active" : ""} onClick={() => setProvider("civitai")}>Civitai</button><button className={provider === "huggingface" ? "active" : ""} onClick={() => setProvider("huggingface")}>Hugging Face</button></div>
+        <div className="asset-kind-tabs"><button className={provider === "civitai" ? "active" : ""} onClick={() => { setProvider("civitai"); setTransfer(history.find((item) => item.provider === "civitai") ?? null); }}>Civitai</button><button className={provider === "huggingface" ? "active" : ""} onClick={() => { setProvider("huggingface"); setTransfer(history.find((item) => item.provider === "huggingface") ?? null); }}>Hugging Face</button></div>
         <div className="provider-credential">
           <span>{credential?.configured ? `Token connected ${credential.key_hint ?? ""}` : "Public files work without a token. Add one for private or gated files."}</span>
           {credential?.configured ? <button className="danger-text-button" disabled={busy} onClick={() => void disconnectToken()}>Remove token</button> : <><input className="text-input secret-input" type="password" autoComplete="off" placeholder={provider === "civitai" ? "Download-only token" : "Read-only token"} value={token} onChange={(event) => setToken(event.target.value)} /><button className="quiet-button" disabled={busy || token.length < 8} onClick={() => void saveToken()}>Save encrypted token</button></>}
         </div>
         <div className="download-form">
-          <label><span>Canonical {provider === "civitai" ? "Civitai model" : "Hugging Face repository or file"} URL</span><input className="text-input" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder={`https://${provider === "civitai" ? "civitai.com/models/..." : "huggingface.co/owner/repo/..."}`} /></label>
+          <label><span>{provider === "civitai" ? "Civitai model download" : "Canonical Hugging Face repository or file"} URL</span><input className="text-input" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder={provider === "civitai" ? "https://civitai.red/api/download/models/...?fileId=..." : "https://huggingface.co/owner/repo/..."} /></label>
           <label><span>Install into</span><select className="select-input" value={destination} onChange={(event) => setDestination(event.target.value as FileKind)}>{destinations.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           {provider === "huggingface" && <label><span>Repository file filters</span><input className="text-input" value={patterns} onChange={(event) => setPatterns(event.target.value)} placeholder="*.safetensors, *.json" /><small>Comma-separated allow patterns. File URLs ignore this field.</small></label>}
           <button className="primary-button" disabled={busy || !sourceUrl} onClick={() => void preview()}>Inspect before download</button>
@@ -141,6 +184,7 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
         {huggingFacePreview && <div className="download-preview"><strong>{huggingFacePreview.repo_id}</strong><small>{huggingFacePreview.mirror_repository ? `Repository mirror · ${huggingFacePreview.files.length} files` : huggingFacePreview.filename} · {formatBytes(huggingFacePreview.required_bytes)} required</small>{requiresUnsafe && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}</div>}
         {canStart && !active && transfer?.state !== "completed" && <button className="primary-button" disabled={busy || (requiresUnsafe && !allowUnsafe)} onClick={() => void start(Boolean(transfer))}>{transfer ? "Retry / resume transfer" : "Start provider download"}</button>}
         {transfer && <div className="remote-transfer"><div className="transfer-progress"><div><i style={{ width: `${progress * 100}%` }} /></div><span>{transfer.state} · {formatBytes(transfer.bytes_complete)}{transfer.bytes_total !== null ? ` / ${formatBytes(transfer.bytes_total)}` : ""}{speed > 0 ? ` · ${formatBytes(speed)}/s${eta !== null ? ` · ${Math.ceil(eta)}s remaining` : ""}` : ""}</span></div>{active && <button className="danger-text-button" disabled={busy} onClick={() => void cancel()}>Cancel and keep resumable data</button>}{transfer.state === "completed" && <p className="success-line">Installed {transfer.files.length} verified file{transfer.files.length === 1 ? "" : "s"}.</p>}{transfer.error_message && <div className="error-banner">{transfer.error_message} <small>{transfer.error_code}</small></div>}</div>}
+        {history.length > 0 && <div className="transfer-history"><strong>Recent provider downloads</strong>{history.map((item) => <button key={item.id} className={item.id === transfer?.id ? "selected" : ""} onClick={() => { setTransfer(item); setProvider(item.provider); setDestination(item.destination_kind); setSourceUrl(item.source_url); }}><span><b>{item.filename ?? sourceLabel(item.source_url)}</b><small>{item.provider} · {item.destination_kind.replaceAll("_", " ")}</small></span><em className={item.state}>{item.state}</em></button>)}</div>}
         {error && <div className="error-banner">{error}</div>}
         <p className="field-help">Tokens are encrypted by the control plane and sent to the agent only for one operation. URLs with embedded credentials and redirects to unapproved hosts are rejected.</p>
       </section>
@@ -153,4 +197,5 @@ function terminal(state: string) { return ["completed", "failed", "cancelled", "
 function patternList(value: string) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
 function unsafeName(value: string) { return [".bin", ".ckpt", ".pt", ".pth", ".pkl", ".pickle"].some((suffix) => value.toLowerCase().endsWith(suffix)); }
 function message(caught: unknown) { return caught instanceof Error ? caught.message : "Provider transfer failed"; }
+function sourceLabel(value: string) { try { return decodeURIComponent(new URL(value).pathname.split("/").filter(Boolean).at(-1) ?? value); } catch { return value; } }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`; return `${(value / 1024 ** 3).toFixed(1)} GiB`; }
