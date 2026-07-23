@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from k2_region_lab.worker.entrypoint import model_directories
 from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -69,6 +70,19 @@ def write_compatible_artifacts(root: Path) -> tuple[Path, Path, Path]:
 class WorkerProtocolTests(unittest.TestCase):
     def test_image_edit_has_a_dedicated_worker_command(self) -> None:
         self.assertEqual(CommandKind.EDIT_IMAGE.value, "edit_image")
+
+    def test_lora_directory_is_distinct_from_lora_job_specifications(self) -> None:
+        payload = {
+            "diffusion_models": "/workspace/models/diffusion_models",
+            "text_encoders": "/workspace/models/text_encoders",
+            "vae": "/workspace/models/vae",
+            "lora_directory": "/workspace/models/loras",
+            "loras": [{"id": "character", "path": "/workspace/models/loras/person.safetensors"}],
+        }
+
+        directories = model_directories(payload)
+
+        self.assertEqual(directories.loras, Path("/workspace/models/loras"))
 
     def test_external_worker_probes_validates_and_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

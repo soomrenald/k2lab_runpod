@@ -1267,10 +1267,62 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             [command["kind"] for command in observed_commands],
             ["probe", "load_model", "generate_baseline"],
         )
+        generation_payload = observed_commands[-1]["payload"]
+        self.assertEqual(generation_payload["loras"], [])
+        self.assertEqual(
+            generation_payload["lora_directory"],
+            str(self.root / "models" / "loras"),
+        )
         saved_project = json.loads(
             (self.root / "projects" / "portrait-project.json").read_text(encoding="utf-8")
         )
         self.assertEqual(saved_project["schema"], "k2-region-lab-project")
+
+    async def test_remote_job_exposes_safe_actionable_worker_failure(self) -> None:
+        class FailingExecutor:
+            async def run(self, commands, on_event):
+                await on_event(
+                    {
+                        "command_id": commands[1]["command_id"],
+                        "state": "error",
+                        "message": "private prompt and /workspace/private/model.safetensors",
+                        "payload": {
+                            "exception_type": "TypeError",
+                            "error_code": "model_load_failed",
+                            "command_kind": "load_model",
+                            "prompt": "private prompt",
+                        },
+                    }
+                )
+                return 1
+
+            async def cancel(self):
+                return None
+
+        app = create_agent_app(self.settings, job_executor_factory=lambda: FailingExecutor())
+        app.state.layout.initialize()
+        request = {
+            "command_id": "browser-command-failure",
+            "kind": "generate",
+            "project_id": "failed-project",
+            "project": self._project_document("private prompt"),
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            submitted = await client.post("/v1/jobs", headers=self.headers, json=request)
+            self.assertEqual(submitted.status_code, 202, submitted.text)
+            job = await self._wait_for_job(client, submitted.json()["id"])
+            self.assertEqual(job["state"], "failed")
+            self.assertEqual(job["error_code"], "model_load_failed")
+            self.assertIn("Verify the selected transformer", job["error_message"])
+            events = await client.get(
+                f"/v1/jobs/{job['id']}/events",
+                headers=self.headers,
+            )
+            self.assertIn("Krea 2 model loading failed", events.text)
+            self.assertNotIn("private prompt", events.text)
+            self.assertNotIn("/workspace/private", events.text)
 
     async def test_remote_job_cancellation_stops_isolated_executor(self) -> None:
         started = asyncio.Event()

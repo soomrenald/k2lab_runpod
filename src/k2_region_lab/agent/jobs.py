@@ -28,7 +28,7 @@ from k2_region_lab.agent.storage import WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION, ProjectState, project_state
-from k2_region_lab.worker.protocol import CommandKind
+from k2_region_lab.worker.protocol import CommandKind, WORKER_ERROR_MESSAGES
 
 
 class JobError(RuntimeError):
@@ -289,8 +289,15 @@ class JobManager:
                     if output_id is not None and output_id not in output_ids:
                         output_ids.append(output_id)
                     if str(raw.get("state")) == "error":
+                        raw_payload = (
+                            raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+                        )
                         worker_errors.append(
-                            str(raw.get("payload", {}).get("exception_type", "worker_error"))
+                            str(
+                                raw_payload.get("error_code")
+                                or raw_payload.get("exception_type")
+                                or "worker_failed"
+                            )
                         )
 
                 exit_code = await executor.run(self._commands(job_id, request, payload), on_event)
@@ -299,9 +306,10 @@ class JobManager:
                 if job_id in self._cancelled:
                     return
                 if exit_code != 0 or worker_errors:
+                    error_code = self._worker_error_code(worker_errors)
                     raise JobError(
-                        self._worker_error_code(worker_errors),
-                        "The GPU worker could not complete this job.",
+                        error_code,
+                        WORKER_ERROR_MESSAGES[error_code],
                         500,
                     )
                 if not output_ids:
@@ -350,9 +358,14 @@ class JobManager:
             raw_payload = {**raw_payload, "output_file_id": output_id}
             raw_payload.pop("image_path", None)
         if raw_state == "error":
-            message = "The remote worker reported an error."
+            error_code = str(raw_payload.get("error_code", "worker_failed"))
+            if error_code not in WORKER_ERROR_MESSAGES:
+                error_code = "worker_failed"
+            message = WORKER_ERROR_MESSAGES[error_code]
             payload = {
-                "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128]
+                "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128],
+                "error_code": error_code,
+                "command_kind": str(raw_payload.get("command_kind", "unknown"))[:64],
             }
         else:
             payload = self._sanitize_payload(raw_payload)
@@ -530,7 +543,7 @@ class JobManager:
             "diffusion_models": str(self._layout.destination(FileKind.DIFFUSION_MODELS.value)),
             "text_encoders": str(self._layout.destination(FileKind.TEXT_ENCODERS.value)),
             "vae": str(self._layout.destination(FileKind.VAE.value)),
-            "loras": str(self._layout.destination(FileKind.LORAS.value)),
+            "lora_directory": str(self._layout.destination(FileKind.LORAS.value)),
             "upscale_models": str(self._layout.destination(FileKind.UPSCALE_MODELS.value)),
             "diffusion_model_file": await self._optional_file_path(
                 request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
@@ -852,6 +865,9 @@ class JobManager:
 
     @staticmethod
     def _worker_error_code(errors: list[str]) -> str:
+        for error in reversed(errors):
+            if error in WORKER_ERROR_MESSAGES:
+                return error
         combined = " ".join(errors).casefold()
         if "outofmemory" in combined or "out_of_memory" in combined:
             return "worker_oom"
