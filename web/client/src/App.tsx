@@ -49,7 +49,7 @@ export function App() {
             gpus,
             datacenters,
             networkVolumes,
-            workspace: workspaces.find((item) => item.state !== "deleted") ?? null,
+            workspace: workspaces.filter((item) => item.state !== "deleted").at(-1) ?? null,
           });
         }
       } catch (caught) {
@@ -104,6 +104,21 @@ export function App() {
     );
   }
 
+  if (
+    state.workspace.state === "error"
+    && ["provider_resource_not_found", "provider_resource_unavailable"].includes(
+      state.workspace.error_code ?? "",
+    )
+  ) {
+    return (
+      <MissingWorkspace
+        workspace={state.workspace}
+        onWorkspace={(workspace) => setState({ ...state, workspace })}
+        onForget={() => setState({ ...state, workspace: null })}
+      />
+    );
+  }
+
   return (
     <WorkspaceStudio
       workspace={state.workspace}
@@ -113,5 +128,100 @@ export function App() {
       onWorkspace={(workspace) => setState({ ...state, workspace })}
       onDelete={() => setState({ ...state, workspace: null })}
     />
+  );
+}
+
+interface MissingWorkspaceProps {
+  workspace: WorkspaceRecord;
+  onWorkspace: (workspace: WorkspaceRecord) => void;
+  onForget: () => void;
+}
+
+function MissingWorkspace({ workspace, onWorkspace, onForget }: MissingWorkspaceProps) {
+  const [showConnect, setShowConnect] = useState(false);
+  const [podId, setPodId] = useState("");
+  const [leaseUnlimited, setLeaseUnlimited] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function connectPod() {
+    setBusy(true);
+    setError("");
+    try {
+      onWorkspace(await controlPlane.connectMigratedPod(workspace.id, podId.trim(), leaseUnlimited));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not connect the migrated Pod");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forgetWorkspace() {
+    setBusy(true);
+    setError("");
+    try {
+      await controlPlane.terminateWorkspace(workspace.id, workspace.name);
+      onForget();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not clear the missing workspace");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="fatal-shell missing-workspace-shell">
+      <div className="danger-icon"><Icon name="cloud" /></div>
+      <p className="kicker">RunPod workspace unavailable</p>
+      <h1>This Pod no longer exists</h1>
+      <p>
+        K2 still has the local record for <strong>{workspace.name}</strong>, but RunPod cannot find
+        Pod <code>{workspace.provider_resource_id ?? "unknown"}</code>.
+      </p>
+      <p>
+        If you migrated it in RunPod, connect the replacement Pod ID. Otherwise clear this stale
+        record and create a workspace with the new image.
+      </p>
+      {showConnect && (
+        <section className="missing-workspace-connect">
+          <label className="field-label" htmlFor="replacement-pod-id">Replacement RunPod Pod ID</label>
+          <input
+            id="replacement-pod-id"
+            className="text-input"
+            autoComplete="off"
+            placeholder="e.g. a5fbpvr8eoykhk"
+            value={podId}
+            onChange={(event) => setPodId(event.target.value)}
+          />
+          <label className="check-row warning-check">
+            <input
+              type="checkbox"
+              checked={leaseUnlimited}
+              onChange={(event) => setLeaseUnlimited(event.target.checked)}
+            />
+            <span>
+              <strong>No time limit</strong>
+              <small>The replacement Pod will keep running and billing until manually stopped.</small>
+            </span>
+          </label>
+          <button
+            className="primary-button full-button"
+            disabled={busy || podId.trim().length < 3}
+            onClick={() => void connectPod()}
+          >
+            {busy ? "Verifying Pod…" : "Verify and connect"}
+          </button>
+        </section>
+      )}
+      {error && <div className="error-banner">{error}</div>}
+      <div className="missing-workspace-actions">
+        <button className="quiet-button" disabled={busy} onClick={() => setShowConnect(!showConnect)}>
+          {showConnect ? "Cancel migration connection" : "Connect migrated Pod"}
+        </button>
+        <button className="primary-button" disabled={busy} onClick={() => void forgetWorkspace()}>
+          {busy ? "Clearing…" : "Create a new workspace"}
+        </button>
+      </div>
+    </main>
   );
 }

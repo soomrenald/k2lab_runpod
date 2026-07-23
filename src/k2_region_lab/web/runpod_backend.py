@@ -611,9 +611,16 @@ class RunPodPersistentPodBackend:
             if workspace.provider_resource_id:
                 await (await self._api()).delete_pod(self._provider_id(workspace))
         except Exception as error:
-            await self.state_store.update_operation(operation_id, state="failed")
-            await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
-            raise
+            if getattr(error, "code", None) != "provider_resource_not_found":
+                await self.state_store.update_operation(operation_id, state="failed")
+                await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
+                raise
+            await self.state_store.append_audit(
+                action="runpod.workspace.delete.provider_already_missing",
+                result="success",
+                workspace_id=workspace_id,
+                context={"provider_resource_id": workspace.provider_resource_id},
+            )
         await self.state_store.update_operation(operation_id, state="provider_deleted")
         updated = workspace.model_copy(
             update={
