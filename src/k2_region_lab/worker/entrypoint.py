@@ -16,7 +16,7 @@ from k2_region_lab.regional_prompting import (
     prompt_emphases_from_payload,
     region_definitions_from_payload,
 )
-from k2_region_lab.worker.protocol import CommandKind, WorkerState
+from k2_region_lab.worker.protocol import CommandKind, WorkerState, classify_worker_error
 from k2_region_lab.worker.runtime import (
     ComfyBaselineRuntime,
     diagnose_accelerator,
@@ -51,7 +51,9 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
         diffusion_models=Path(payload["diffusion_models"]),
         text_encoders=Path(payload["text_encoders"]),
         vae=Path(payload["vae"]),
-        loras=Path(payload.get("loras", "~/ComfyUI/models/loras")).expanduser(),
+        loras=Path(
+            payload.get("lora_directory", "~/ComfyUI/models/loras")
+        ).expanduser(),
         upscale_models=Path(
             payload.get("upscale_models", "~/ComfyUI/models/upscale_models")
         ).expanduser(),
@@ -479,11 +481,16 @@ def main() -> int:
         except Exception as error:
             logger.exception("worker command failed")
             traceback.print_exc(file=sys.stderr)
+            error_code, error_detail = classify_worker_error(error, kind)
             emit(
                 WorkerState.ERROR,
-                str(error),
+                error_detail,
                 command_id=command_id,
-                payload={"exception_type": type(error).__name__},
+                payload={
+                    "exception_type": type(error).__name__,
+                    "error_code": error_code,
+                    "command_kind": kind.value if kind is not None else None,
+                },
             )
             if kind in {
                 CommandKind.LOAD_MODEL,

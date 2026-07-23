@@ -1,5 +1,5 @@
 """Authenticated API hosted inside a cloud GPU workspace."""
 
 AGENT_API_VERSION = "v1"
-AGENT_VERSION = "0.1.3"
+AGENT_VERSION = "0.1.4"
 WORKER_PROTOCOL_VERSION = 1
