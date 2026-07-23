@@ -41,6 +41,7 @@ if WEB_PROVIDER_AVAILABLE:
         CloudType,
         WorkspaceCreateRequest,
         WorkspaceConnectPodRequest,
+        WorkspaceError,
         WorkspaceMigrationCreateRequest,
         WorkspaceMode,
         WorkspacePlanRequest,
@@ -96,6 +97,7 @@ class FakeRunPodApi:
             )
         }
         self.pod_responses: dict[str, dict[str, Any]] = {}
+        self.missing_pod_ids: set[str] = set()
 
     async def validate_credentials(self) -> None:
         self.validated = True
@@ -156,6 +158,12 @@ class FakeRunPodApi:
         }
 
     async def get_pod(self, pod_id: str) -> dict[str, Any]:
+        if pod_id in self.missing_pod_ids:
+            raise WorkspaceError(
+                "provider_resource_not_found",
+                "The requested RunPod resource no longer exists.",
+                status_code=409,
+            )
         if pod_id in self.pod_responses:
             return self.pod_responses[pod_id]
         return {"id": pod_id, "desiredStatus": self.status}
@@ -170,6 +178,12 @@ class FakeRunPodApi:
         return {"id": _pod_id, "desiredStatus": self.status}
 
     async def delete_pod(self, _pod_id: str) -> None:
+        if _pod_id in self.missing_pod_ids:
+            raise WorkspaceError(
+                "provider_resource_not_found",
+                "The requested RunPod resource no longer exists.",
+                status_code=409,
+            )
         self.deleted_pods.append(_pod_id)
         self.status = "TERMINATED"
 
@@ -351,6 +365,16 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "RunPod rejected") as caught:
             await client.validate_credentials()
         self.assertNotIn("secret-runpod-key", str(caught.exception))
+
+    async def test_missing_provider_resource_has_distinct_recovery_code(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": "pod not found"})
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        with self.assertRaisesRegex(Exception, "no longer exists") as caught:
+            await client.get_pod("missing-pod")
+        self.assertEqual(caught.exception.code, "provider_resource_not_found")
+        self.assertEqual(caught.exception.status_code, 409)
 
     async def test_network_volume_and_datacenter_contracts(self) -> None:
         observed: list[tuple[str, str]] = []
@@ -583,6 +607,31 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         deleted = await self.backend.terminate_workspace(workspace.id, "Portrait lab")
         self.assertEqual(deleted.state, "deleted")
         self.assertIsNone(deleted.provider_resource_id)
+
+    async def test_delete_succeeds_when_provider_pod_is_already_missing(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.COMMUNITY,
+            )
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Missing lab")
+        )
+        self.api.missing_pod_ids.add(workspace.provider_resource_id or "")
+
+        await self.backend.reconcile_workspaces()
+        missing = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(missing.state, "error")
+        self.assertEqual(missing.error_code, "provider_resource_not_found")
+
+        deleted = await self.backend.terminate_workspace(workspace.id, workspace.name)
+
+        self.assertEqual(deleted.state, "deleted")
+        self.assertIsNone(deleted.provider_resource_id)
+        self.assertIsNone(await self.vault.retrieve(f"agent:{workspace.id}"))
+        self.assertEqual(await self.state_store.incomplete_operations(), [])
 
     async def test_workspace_state_and_audit_are_durable(self) -> None:
         await self.backend.validate_credentials("secret-runpod-key")

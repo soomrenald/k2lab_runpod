@@ -339,6 +339,14 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .fatal-shell { max-width: 100%; }
 .fatal-shell h1 { margin: 0; }
 .fatal-shell code { padding: 10px 13px; color: #c8ced8; background: #141820; border-radius: 7px; }
+.missing-workspace-shell { grid-template-columns: minmax(0, 520px); }
+.missing-workspace-shell > * { max-width: 520px; }
+.missing-workspace-shell p { margin: 0; line-height: 1.6; }
+.missing-workspace-shell p code { padding: 3px 6px; }
+.missing-workspace-connect { width: 100%; padding: 16px; text-align: left; background: #10141b; border: 1px solid var(--line); border-radius: 10px; }
+.missing-workspace-connect .text-input { margin-top: 7px; }
+.missing-workspace-connect .full-button { width: 100%; margin-top: 15px; }
+.missing-workspace-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 @keyframes loading { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
 
 .asset-backdrop { position: fixed; z-index: 90; inset: 58px 0 64px 70px; display: flex; justify-content: flex-end; background: rgba(3,4,7,.58); backdrop-filter: blur(4px); }

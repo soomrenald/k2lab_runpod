@@ -25,6 +25,19 @@ for (const relativePath of [
 }
 
 const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+assert.ok(
+  app.includes("provider_resource_not_found")
+    && app.includes("This Pod no longer exists")
+    && app.includes("Create a new workspace")
+    && app.includes("controlPlane.connectMigratedPod")
+    && app.includes("controlPlane.terminateWorkspace"),
+  "A missing provider Pod must open migration-or-cleanup recovery instead of the studio",
+);
+assert.ok(
+  app.includes('.filter((item) => item.state !== "deleted").at(-1)'),
+  "Startup must prefer the newest active workspace record",
+);
 assert.ok(
   workspaceStudio.includes('href="https://console.runpod.io/pods"'),
   "Cloud workspace status must link to RunPod's Docker startup progress",

@@ -386,7 +386,13 @@ class RunPodApiClient:
                 "RunPod reports insufficient account credit.",
                 409,
             )
-        elif status_code in {404, 409}:
+        elif status_code == 404:
+            code, message, client_status = (
+                "provider_resource_not_found",
+                "The requested RunPod resource no longer exists.",
+                409,
+            )
+        elif status_code == 409:
             code, message, client_status = (
                 "provider_resource_unavailable",
                 "The requested RunPod resource is unavailable or changed state.",
