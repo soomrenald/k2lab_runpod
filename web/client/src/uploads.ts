@@ -40,7 +40,7 @@ export async function uploadWorkspaceFile(
   return (await controlPlane.completeUpload(workspaceId, session.id)).file;
 }
 
-async function findExisting(
+export async function findExisting(
   workspaceId: string,
   kind: FileKind,
   name: string,

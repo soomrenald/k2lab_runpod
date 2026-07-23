@@ -361,6 +361,23 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .transfer-progress { display: grid; gap: 6px; margin: 12px 0; color: var(--muted-bright); font-size: 8px; }
 .transfer-progress > div { height: 5px; overflow: hidden; background: #252c36; border-radius: 9px; }
 .transfer-progress i { display: block; height: 100%; background: var(--accent); transition: width .15s; }
+.upload-queue { display: grid; gap: 7px; margin-top: 16px; }
+.upload-queue-head { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; }
+.upload-queue-head strong { color: var(--muted-bright); font-size: 9px; }
+.upload-queue-head > span { color: var(--muted); font-size: 8px; }
+.upload-queue-row { padding: 10px; background: #0d1118; border: 1px solid #252c36; border-radius: 9px; }
+.upload-queue-row.active { background: #121a13; border-color: #526047; }
+.upload-queue-copy { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+.upload-queue-copy > span { color: var(--muted); font-size: 8px; font-variant-numeric: tabular-nums; }
+.upload-queue-copy > div { min-width: 0; display: grid; gap: 3px; }
+.upload-queue-copy strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.upload-queue-copy small { color: var(--muted); font-size: 8px; text-transform: capitalize; }
+.upload-queue-copy em { color: var(--muted-bright); font-size: 8px; font-style: normal; text-transform: uppercase; }
+.upload-queue-copy em.completed { color: #bfe8a6; }
+.upload-queue-copy em.failed, .upload-queue-copy em.cancelled { color: var(--danger); }
+.upload-queue-row .transfer-progress { margin: 9px 0 7px; }
+.upload-queue-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.upload-queue-error { display: block; margin-bottom: 7px; color: var(--danger); font-size: 8px; }
 .asset-list { display: grid; gap: 6px; margin-top: 14px; }
 .asset-list > div { display: flex; align-items: center; gap: 10px; padding: 10px; background: #0d1118; border: 1px solid #252c36; border-radius: 8px; }
 .asset-list svg { width: 17px; color: var(--accent); }

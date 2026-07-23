@@ -40,6 +40,7 @@ CIVITAI_SOURCE_HOSTS = frozenset(
 CIVITAI_DOWNLOAD_HOSTS = frozenset(
     {"civitai.com", "www.civitai.com", "files.civitai.com"}
 )
+CIVITAI_DELIVERY_HOST_SUFFIXES = (".r2.cloudflarestorage.com",)
 SECRET_QUERY_KEYS = frozenset({"token", "api_key", "apikey", "authorization", "auth"})
 UNSAFE_MODEL_EXTENSIONS = frozenset({".bin", ".ckpt", ".pt", ".pth", ".pkl", ".pickle"})
 SAFE_MODEL_EXTENSIONS = frozenset({".safetensors", ".onnx"})
@@ -619,9 +620,13 @@ class RemoteDownloadManager:
         stream: bool = False,
     ) -> httpx.Response:
         current = url
+        authorization_host = (urlsplit(url).hostname or "").casefold()
         for _attempt in range(6):
-            _validated_https_url(current, CIVITAI_DOWNLOAD_HOSTS)
-            request = client.build_request(method, current, headers=headers)
+            parsed = _validated_civitai_download_url(current)
+            request_headers = dict(headers)
+            if (parsed.hostname or "").casefold() != authorization_host:
+                request_headers.pop("Authorization", None)
+            request = client.build_request(method, current, headers=request_headers)
             response = await client.send(request, stream=stream)
             if response.status_code not in {301, 302, 303, 307, 308}:
                 return response
@@ -658,7 +663,7 @@ class RemoteDownloadManager:
                 or raw.get("id") is None
             ):
                 continue
-            _validated_https_url(download_url, CIVITAI_DOWNLOAD_HOSTS)
+            _validated_civitai_download_url(download_url)
             hashes = raw.get("hashes") if isinstance(raw.get("hashes"), dict) else {}
             metadata_value = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
             suffix = Path(filename).suffix.casefold()
@@ -958,6 +963,18 @@ def _validated_https_url(value: str, hosts: frozenset[str]):
             "Provider tokens must be supplied separately, not embedded in a URL.",
         )
     return parsed
+
+
+def _validated_civitai_download_url(value: str):
+    parsed = urlsplit(value)
+    hostname = (parsed.hostname or "").casefold()
+    allowed = hostname in CIVITAI_DOWNLOAD_HOSTS or any(
+        hostname.endswith(suffix) and hostname != suffix.removeprefix(".")
+        for suffix in CIVITAI_DELIVERY_HOST_SUFFIXES
+    )
+    if not allowed:
+        raise TransferError("download_url_unsafe", "The remote download URL is not allowed.")
+    return _validated_https_url(value, frozenset({hostname}))
 
 
 def _safe_relative_path(value: str) -> bool:
