@@ -24,7 +24,7 @@ if FASTAPI_AVAILABLE:
     from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
-    from k2_region_lab.project import project_state
+    from k2_region_lab.project import PROJECT_VERSION, project_state
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
 
@@ -106,7 +106,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(body["api_version"], "v1")
         self.assertEqual(body["project_schema"], "k2-region-lab-project")
-        self.assertEqual(body["project_schema_version"], 18)
+        self.assertEqual(body["project_schema_version"], PROJECT_VERSION)
         self.assertEqual(body["workspace_layout_version"], LAYOUT_VERSION)
         self.assertEqual(body["cuda_version"], "12.8")
         self.assertEqual(body["pytorch_version"], "2.9.1")
@@ -142,6 +142,26 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             "job-id", request, project_state(document), document
         )
         self.assertEqual(payload["regional_late_step_scale"], 1.0)
+
+    async def test_generation_payload_uses_project_vram_controls(self) -> None:
+        document = self._project_document("portrait")
+        document["runtime"].update(
+            {"vram_mode": "high_vram", "reserve_vram_gb": 1.5}
+        )
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "vram-contract",
+                "kind": "generate",
+                "project_id": "vram-project",
+                "project": document,
+            }
+        )
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id", request, project_state(document), document
+        )
+        self.assertEqual(payload["memory_policy"], "custom")
+        self.assertEqual(payload["vram_mode"], "high_vram")
+        self.assertEqual(payload["reserve_vram_gb"], 1.5)
 
     async def test_generation_payload_resolves_selected_models_and_output_prefix(self) -> None:
         selections: dict[FileKind, str] = {}
@@ -1453,7 +1473,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
     def _project_document(prompt: str) -> dict[str, object]:
         return {
             "schema": "k2-region-lab-project",
-            "version": 18,
+            "version": PROJECT_VERSION,
             "canvas": {"width": 1024, "height": 1024},
             "generation": {
                 "global_prompt": prompt,

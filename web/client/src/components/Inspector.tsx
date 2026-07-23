@@ -13,6 +13,7 @@ import {
   type PromptEmphasisState,
   type StudioLora,
   type StudioSettings,
+  type VramMode,
 } from "../studioProject";
 
 type InspectorTab = "prompt" | "regions" | "loras" | "advanced";
@@ -96,6 +97,10 @@ export function Inspector(props: Props) {
 
   function updateFace(patch: Partial<StudioSettings["face"]>) {
     onSettings({ ...settings, face: { ...settings.face, ...patch } });
+  }
+
+  function updateRuntime(patch: Partial<StudioSettings["runtime"]>) {
+    onSettings({ ...settings, runtime: { ...settings.runtime, ...patch } });
   }
 
   function setEmphases(next: PromptEmphasisState[]) {
@@ -254,7 +259,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} />}
       </div>
     </aside>
   );
@@ -324,11 +329,12 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, onChooseUpscaleModel, onPreviewUnifiedPrompt }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
+  updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
 }) {
@@ -364,6 +370,32 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
       ["Inside boost", edit.insideBoost, 0.1, 10, 0.1, (insideBoost) => updateEdit({ insideBoost })], ["Outside penalty", edit.outsidePenalty, 0, 10, 0.1, (outsidePenalty) => updateEdit({ outsidePenalty })],
       ["Spatial falloff", edit.spatialFalloff, 0, 2048, 1, (spatialFalloff) => updateEdit({ spatialFalloff })], ["Late-step scale", edit.lateStepScale, 0, 1, 0.01, (lateStepScale) => updateEdit({ lateStepScale })],
     ]} />
+    {mode === "generation" && <>
+      <SectionTitle text="GPU memory" />
+      <Choice
+        label="Execution mode"
+        value={settings.runtime.vramMode}
+        options={[
+          ["auto", "Auto (High VRAM at 40+ GiB)"],
+          ["high_vram", "High VRAM · maximum performance"],
+          ["dynamic", "Dynamic VRAM · balanced"],
+          ["low_vram", "Low VRAM · maximum offload"],
+        ]}
+        onChange={(vramMode) => updateRuntime({ vramMode: vramMode as VramMode })}
+      />
+      <LinkedValue
+        label="VRAM reserve · GiB"
+        value={settings.runtime.reserveVramGb}
+        min={0.5}
+        max={16}
+        step={0.5}
+        onChange={(reserveVramGb) => updateRuntime({ reserveVramGb })}
+      />
+      <p className="field-help">
+        Reserve is safety headroom kept free. High VRAM keeps the model resident and is intended
+        for 40+ GiB GPUs. OOM recovery still performs one safer retry.
+      </p>
+    </>}
     {mode === "generation" && <Choice label="Seed behavior" value={generation.seedMode} options={generation.batchMode ? [["random", "Random"], ["increment", "Increment"]] : [["fixed", "Fixed"], ["random", "Random"], ["increment", "Increment"]]} onChange={(seedMode) => updateGeneration({ seedMode: seedMode as GenerationSettings["seedMode"] })} />}
     {mode === "generation" && <Check label="Run generation in batch mode" checked={generation.batchMode} onChange={(batchMode) => updateGeneration({ batchMode, seedMode: batchMode && generation.seedMode === "fixed" ? "random" : generation.seedMode })} />}
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}

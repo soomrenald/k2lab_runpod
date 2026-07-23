@@ -8,10 +8,12 @@ from unittest.mock import Mock, patch
 
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
+    configure_comfy_vram_args,
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
     oom_recovery_reserve_vram_gb,
+    resolve_vram_mode,
 )
 from k2_region_lab.worker.runtime import CriticalGpuMemoryPressure, ComfyBaselineRuntime
 
@@ -44,6 +46,32 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(oom_recovery_reserve_vram_gb(4.0, 16.0), 5.0)
         self.assertEqual(oom_recovery_reserve_vram_gb(3.0, 24.0), 4.5)
         self.assertEqual(oom_recovery_reserve_vram_gb(5.0, 8.0), 5.0)
+
+    def test_auto_vram_mode_uses_high_vram_only_on_large_devices(self) -> None:
+        self.assertEqual(resolve_vram_mode("auto", 48.0), "high_vram")
+        self.assertEqual(resolve_vram_mode("auto", 39.99), "dynamic")
+        self.assertEqual(resolve_vram_mode("low_vram", 48.0), "low_vram")
+        with self.assertRaisesRegex(ValueError, "unknown VRAM mode"):
+            resolve_vram_mode("unsafe", 48.0)
+
+    def test_comfy_vram_modes_are_mutually_exclusive(self) -> None:
+        args = SimpleNamespace(
+            gpu_only=True,
+            novram=True,
+            highvram=False,
+            lowvram=True,
+            enable_dynamic_vram=False,
+            disable_dynamic_vram=True,
+        )
+        configure_comfy_vram_args(args, "high_vram")
+        self.assertTrue(args.highvram)
+        self.assertFalse(args.lowvram)
+        self.assertTrue(args.disable_dynamic_vram)
+        configure_comfy_vram_args(args, "dynamic")
+        self.assertFalse(args.highvram)
+        self.assertFalse(args.lowvram)
+        self.assertTrue(args.enable_dynamic_vram)
+        self.assertFalse(args.disable_dynamic_vram)
 
     def test_critical_pressure_uses_the_single_oom_recovery_path(self) -> None:
         self.assertTrue(

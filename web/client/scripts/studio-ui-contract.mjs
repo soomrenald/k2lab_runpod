@@ -14,6 +14,13 @@ const regionsSection = inspector.split('{tab === "regions" && mode !== "face"', 
 assert.ok(!promptSection.includes("moveSelected("), "Prompt tab must not own region depth controls");
 assert.ok(regionsSection.includes("moveSelected(-1)"), "Regions tab must move the selected region forward");
 assert.ok(regionsSection.includes("moveSelected(1)"), "Regions tab must move the selected region backward");
+assert.ok(
+  inspector.includes('label="Execution mode"')
+    && inspector.includes('label="VRAM reserve · GiB"')
+    && inspector.includes('updateRuntime({ vramMode')
+    && inspector.includes('updateRuntime({ reserveVramGb'),
+  "Generation Advanced settings must expose working GPU execution-mode and reserve controls",
+);
 
 for (const relativePath of [
   "../src/components/Inspector.tsx",

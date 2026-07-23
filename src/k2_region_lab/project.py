@@ -33,7 +33,7 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 18
+PROJECT_VERSION = 19
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -166,6 +166,8 @@ class ProjectState:
     upscale_scale: int = 2
     upscale_method: str = "lanczos"
     upscale_model: Path | None = None
+    vram_mode: str = "auto"
+    reserve_vram_gb: float = 1.0
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -229,6 +231,10 @@ class ProjectState:
             raise ValueError("face detector provider must be auto, cpu, or cuda")
         if self.upscale_scale not in {2, 4}:
             raise ValueError("post-upscale scale must be 2 or 4")
+        if self.vram_mode not in {"auto", "high_vram", "dynamic", "low_vram"}:
+            raise ValueError("VRAM mode must be auto, high_vram, dynamic, or low_vram")
+        if not 0.5 <= self.reserve_vram_gb <= 16.0:
+            raise ValueError("VRAM reserve must be between 0.5 and 16 GiB")
         if self.upscale_method not in {"lanczos", "model"}:
             raise ValueError(f"unsupported post-upscale method: {self.upscale_method!r}")
         if self.post_upscale and self.upscale_method == "model" and not self.upscale_model:
@@ -473,7 +479,11 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 for region in state.image_edit.reference_regions
             ],
         },
-        "runtime": state.runtime or {},
+        "runtime": {
+            **(state.runtime or {}),
+            "vram_mode": state.vram_mode,
+            "reserve_vram_gb": state.reserve_vram_gb,
+        },
         "background_image": str(state.background_image) if state.background_image else None,
     }
 
@@ -655,6 +665,10 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             Path(generation["upscale_model"]).expanduser()
             if generation.get("upscale_model")
             else None
+        ),
+        vram_mode=str(document.get("runtime", {}).get("vram_mode", "auto")),
+        reserve_vram_gb=float(
+            document.get("runtime", {}).get("reserve_vram_gb", 1.0)
         ),
         regions=regions,
         loras=loras,

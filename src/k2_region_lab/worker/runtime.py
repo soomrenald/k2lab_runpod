@@ -39,10 +39,12 @@ from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
 from k2_region_lab.memory import (
     GIB,
+    configure_comfy_vram_args,
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
     oom_recovery_reserve_vram_gb,
+    resolve_vram_mode,
 )
 from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.projector import (
@@ -461,6 +463,8 @@ class ComfyBaselineRuntime:
         self.vae = None
         self.vae_path: Path | None = None
         self.memory_policy_key = "safe_16gb"
+        self.requested_vram_mode = "auto"
+        self.vram_mode = "dynamic"
         self.reserve_vram_gb = 4.0
         self.warning_free_gb = 4.0
         self.critical_free_gb = 2.0
@@ -473,6 +477,7 @@ class ComfyBaselineRuntime:
         artifacts: ArtifactSet,
         *,
         memory_policy_key: str = "safe_16gb",
+        vram_mode: str = "auto",
         reserve_vram_gb: float = 4.0,
         minimum_system_ram_gb: float = 14.0,
         cpu_vae: bool = False,
@@ -491,6 +496,19 @@ class ComfyBaselineRuntime:
 
         policy = memory_policy(memory_policy_key)
         self.memory_policy_key = policy.key
+        selected_device = int(capabilities.get("selected_device_index") or 0)
+        selected_devices = [
+            device
+            for device in capabilities.get("devices", [])
+            if int(device.get("index", -1)) == selected_device
+        ]
+        total_vram_gb = (
+            float(selected_devices[0]["total_memory"]) / GIB
+            if selected_devices
+            else 0.0
+        )
+        self.requested_vram_mode = vram_mode
+        self.vram_mode = resolve_vram_mode(vram_mode, total_vram_gb)
         self.reserve_vram_gb = effective_reserve_vram_gb(
             policy.key, reserve_vram_gb
         )
@@ -508,7 +526,7 @@ class ComfyBaselineRuntime:
                 "insufficient available system RAM for the selected offload policy: "
                 f"requires at least {self.minimum_system_ram_gb:.1f} GiB"
             )
-        args.lowvram = True
+        configure_comfy_vram_args(args, self.vram_mode)
         args.reserve_vram = self.reserve_vram_gb
         args.cpu_vae = self.cpu_vae
         import comfy.sd
@@ -534,6 +552,8 @@ class ComfyBaselineRuntime:
             "text_encoder": type(self.clip).__name__,
             "vae": type(self.vae).__name__,
             "memory_policy": self.memory_policy_key,
+            "requested_vram_mode": self.requested_vram_mode,
+            "vram_mode": self.vram_mode,
             "reserve_vram_gb": self.reserve_vram_gb,
             "minimum_system_ram_gb": self.minimum_system_ram_gb,
             "cpu_vae": self.cpu_vae,
@@ -1189,6 +1209,8 @@ class ComfyBaselineRuntime:
             "critical_free_bytes": int(self.critical_free_gb * GIB),
             "minimum_ram_bytes": int(self.minimum_system_ram_gb * GIB),
             "memory_policy": self.memory_policy_key,
+            "requested_vram_mode": self.requested_vram_mode,
+            "vram_mode": self.vram_mode,
             "cpu_vae": self.cpu_vae,
         }
 
@@ -1730,6 +1752,9 @@ class ComfyBaselineRuntime:
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
         metadata.add_text("memory_policy", self.memory_policy_key)
+        metadata.add_text("requested_vram_mode", self.requested_vram_mode)
+        metadata.add_text("vram_mode", self.vram_mode)
+        metadata.add_text("reserve_vram_gb", str(self.reserve_vram_gb))
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
         output_image.save(output_path, pnginfo=metadata)
@@ -1750,6 +1775,8 @@ class ComfyBaselineRuntime:
             "scheduler": scheduler,
             "cfg": 1.0,
             "memory_policy": self.memory_policy_key,
+            "requested_vram_mode": self.requested_vram_mode,
+            "vram_mode": self.vram_mode,
             "reserve_vram_gb": self.reserve_vram_gb,
             "cpu_vae": self.cpu_vae,
             "oom_recovered": oom_recovered,

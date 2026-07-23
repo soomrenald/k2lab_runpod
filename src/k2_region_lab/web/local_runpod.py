@@ -130,7 +130,7 @@ def prepare_local_environment(
         input_function=input_function,
         interactive=interactive,
     )
-    version = image_version or str(stored.get("workspace_image_version") or "0.1.4")
+    version = image_version or str(stored.get("workspace_image_version") or "0.1.5")
     next_config = {
         "workspace_image_digest": digest,
         "workspace_image_version": version,

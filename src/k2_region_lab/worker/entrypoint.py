@@ -145,6 +145,7 @@ def main() -> int:
                 loaded = runtime.load(
                     artifacts,
                     memory_policy_key=str(payload.get("memory_policy", "safe_16gb")),
+                    vram_mode=str(payload.get("vram_mode", "auto")),
                     reserve_vram_gb=float(payload.get("reserve_vram_gb", 4.0)),
                     minimum_system_ram_gb=float(
                         payload.get("minimum_system_ram_gb", 14.0)
