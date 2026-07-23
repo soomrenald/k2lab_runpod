@@ -791,6 +791,142 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             all("secret-download-token" not in str(request.url) for request in observed)
         )
 
+    async def test_civitai_download_allows_r2_delivery_without_forwarding_token(self) -> None:
+        payload = self._safetensors_payload()
+        digest = hashlib.sha256(payload).hexdigest()
+        delivery_host = (
+            "civitai-delivery-worker-prod."
+            "5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com"
+        )
+        observed: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed.append(request)
+            if "/api/v1/model-versions/456" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 456,
+                        "name": "R2 delivery",
+                        "model": {"id": 123, "name": "Portrait", "type": "LORA"},
+                        "files": [
+                            {
+                                "id": 789,
+                                "name": "portrait.safetensors",
+                                "sizeKB": len(payload) / 1024,
+                                "hashes": {"SHA256": digest},
+                                "pickleScanResult": "Success",
+                                "virusScanResult": "Success",
+                            }
+                        ],
+                    },
+                )
+            if request.url.host == "civitai.com":
+                return httpx.Response(
+                    307,
+                    headers={
+                        "Location": (
+                            f"https://{delivery_host}/models/portrait.safetensors"
+                            "?X-Amz-Signature=signed"
+                        )
+                    },
+                )
+            if request.url.host == delivery_host:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "application/octet-stream"},
+                    content=payload,
+                )
+            return httpx.Response(404)
+
+        app = create_agent_app(self.settings, download_transport=httpx.MockTransport(handler))
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            started = await client.post(
+                "/v1/downloads/civitai",
+                headers={**self.headers, "X-Provider-Token": "secret-download-token"},
+                json={
+                    "source_url": (
+                        "https://civitai.red/api/download/models/456?fileId=789"
+                    ),
+                    "file_id": "789",
+                    "destination_kind": "loras",
+                },
+            )
+            self.assertEqual(started.status_code, 202, started.text)
+            transfer = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(transfer["state"], "completed", transfer)
+
+        civitai_requests = [
+            request for request in observed if request.url.host == "civitai.com"
+        ]
+        delivery_requests = [
+            request for request in observed if request.url.host == delivery_host
+        ]
+        self.assertTrue(civitai_requests)
+        self.assertTrue(delivery_requests)
+        self.assertTrue(
+            all(
+                request.headers.get("Authorization") == "Bearer secret-download-token"
+                for request in civitai_requests
+            )
+        )
+        self.assertTrue(
+            all("Authorization" not in request.headers for request in delivery_requests)
+        )
+
+    async def test_civitai_download_rejects_untrusted_redirect_host(self) -> None:
+        payload = self._safetensors_payload()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/api/v1/model-versions/456" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 456,
+                        "name": "Unsafe redirect",
+                        "model": {"id": 123, "name": "Portrait", "type": "LORA"},
+                        "files": [
+                            {
+                                "id": 789,
+                                "name": "portrait.safetensors",
+                                "sizeKB": len(payload) / 1024,
+                                "hashes": {"SHA256": hashlib.sha256(payload).hexdigest()},
+                            }
+                        ],
+                    },
+                )
+            return httpx.Response(
+                307,
+                headers={
+                    "Location": (
+                        "https://r2.cloudflarestorage.com.evil.example/model.safetensors"
+                    )
+                },
+            )
+
+        app = create_agent_app(self.settings, download_transport=httpx.MockTransport(handler))
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            started = await client.post(
+                "/v1/downloads/civitai",
+                headers=self.headers,
+                json={
+                    "source_url": (
+                        "https://civitai.com/api/download/models/456?fileId=789"
+                    ),
+                    "file_id": "789",
+                    "destination_kind": "loras",
+                },
+            )
+            transfer = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(transfer["state"], "failed")
+            self.assertEqual(transfer["error_code"], "download_url_unsafe")
+
     async def test_huggingface_file_download_uses_cache_metadata_and_nested_destination(
         self,
     ) -> None:

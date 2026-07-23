@@ -77,5 +77,19 @@ assert.ok(transferPanel.includes("controlPlane.transfers(workspaceId)"), "Provid
 
 const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(assetPanel.includes("controlPlane.uploads(workspaceId)"), "Local upload history must restore when the panel opens");
+const uploadQueue = await readFile(new URL("../src/useUploadQueue.ts", import.meta.url), "utf8");
+assert.ok(
+  workspaceStudio.includes("useUploadQueue(workspace.id")
+    && assetPanel.includes("uploadQueue.enqueue")
+    && assetPanel.includes("Background upload queue"),
+  "Local uploads must be owned by the workspace so closing Assets does not stop them",
+);
+assert.ok(
+  uploadQueue.includes('item.state === "queued"')
+    && uploadQueue.includes("activeRef.current")
+    && uploadQueue.includes("controlPlane.cancelUpload")
+    && uploadQueue.includes("candidate.sha256 === digest"),
+  "Local uploads must run through one resumable FIFO worker with explicit cancellation",
+);
 
 console.log("Studio UI contract passed");

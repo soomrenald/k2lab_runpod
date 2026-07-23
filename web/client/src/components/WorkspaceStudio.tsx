@@ -8,6 +8,7 @@ import { TransferPanel } from "./TransferPanel";
 import { SetupPanel } from "./SetupPanel";
 import { DraftNumberInput } from "./DraftNumberInput";
 import { uploadWorkspaceFile } from "../uploads";
+import { useUploadQueue } from "../useUploadQueue";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
 import {
   buildProjectDocument,
@@ -107,6 +108,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMessage(messageText);
     appendEvent(messageText, kind);
   }
+
+  const uploadQueue = useUploadQueue(workspace.id, report);
+  const pendingUploadCount = uploadQueue.items.filter((item) => (
+    !["completed", "cancelled"].includes(item.state)
+  )).length;
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
@@ -860,7 +866,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <RailButton icon="face" label="Faces" active={mode === "face"} onClick={() => switchMode("face")} />
         </div>
         <div className="utility-rail">
-          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setUtilityPanel("assets"); }} />
+          <RailButton icon="folder" label={pendingUploadCount ? `Assets · ${pendingUploadCount}` : "Assets"} active={showAssets} onClick={() => { setAssetPurpose("source"); setUtilityPanel("assets"); }} />
           <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setUtilityPanel("transfers")} />
           <RailButton icon="events" label="Events" active={showEvents} onClick={() => setUtilityPanel("events")} />
           <RailButton icon="settings" label="Setup" active={showSetup} onClick={() => setUtilityPanel("setup")} />
@@ -1081,7 +1087,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
