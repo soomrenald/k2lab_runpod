@@ -390,7 +390,7 @@ class JobManager:
         project: dict[str, Any],
     ) -> dict[str, Any]:
         loras = await self._resolve_loras(request, state)
-        base = await self._base_worker_payload(request)
+        base = await self._base_worker_payload(request, state)
         try:
             filename_prefix = validate_filename_prefix(request.filename_prefix)
         except ValueError as error:
@@ -527,7 +527,9 @@ class JobManager:
         )
         return base
 
-    async def _base_worker_payload(self, request: JobSubmitRequest) -> dict[str, Any]:
+    async def _base_worker_payload(
+        self, request: JobSubmitRequest, state: ProjectState
+    ) -> dict[str, Any]:
         face_detector_path = await self._optional_file_path(
             request.face_detector_file_id, FileKind.FACE_DETECTION
         )
@@ -554,9 +556,10 @@ class JobManager:
             "vae_file": await self._optional_file_path(request.vae_file_id, FileKind.VAE),
             "face_detector_path": face_detector_path,
             "manifest_directory": str(self._layout.state_directory / "manifests"),
-            "memory_policy": "safe_16gb",
-            "reserve_vram_gb": 4.0,
-            "minimum_system_ram_gb": 14.0,
+            "memory_policy": "custom",
+            "vram_mode": state.vram_mode,
+            "reserve_vram_gb": state.reserve_vram_gb,
+            "minimum_system_ram_gb": 12.0,
             "cpu_vae": False,
             "oom_recovery": True,
         }

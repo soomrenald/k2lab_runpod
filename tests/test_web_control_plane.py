@@ -9,6 +9,7 @@ FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
 if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
+    from k2_region_lab.project import PROJECT_VERSION
     from k2_region_lab.web.app import create_app
     from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
     from k2_region_lab.web.security import ControlPlaneSecuritySettings
@@ -59,7 +60,7 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
     async def test_unified_prompt_preview_uses_project_order_roles_and_identity(self) -> None:
         project = {
             "schema": "k2-region-lab-project",
-            "version": 18,
+            "version": PROJECT_VERSION,
             "canvas": {"width": 1024, "height": 1024},
             "generation": {
                 "global_prompt": "a studio scene",
@@ -181,7 +182,7 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
                 "project_id": "dev-project",
                 "project": {
                     "schema": "k2-region-lab-project",
-                    "version": 18,
+                    "version": PROJECT_VERSION,
                     "canvas": {"width": 1024, "height": 1024},
                 },
             },

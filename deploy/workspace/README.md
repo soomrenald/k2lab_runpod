@@ -11,9 +11,9 @@ tag for the result and record the registry digest returned by the push:
 ```bash
 docker build --file Dockerfile.workspace \
   --build-arg RUNPOD_BASE_IMAGE='runpod/pytorch@sha256:<verified-digest>' \
-  --tag registry.example/k2lab:0.1.4 .
-docker push registry.example/k2lab:0.1.4
-docker inspect --format='{{index .RepoDigests 0}}' registry.example/k2lab:0.1.4
+  --tag registry.example/k2lab:0.1.5 .
+docker push registry.example/k2lab:0.1.5
+docker inspect --format='{{index .RepoDigests 0}}' registry.example/k2lab:0.1.5
 ```
 
 Configure the control plane with the resulting `name@sha256:digest`, never a mutable tag.

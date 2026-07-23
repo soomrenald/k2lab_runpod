@@ -2,6 +2,7 @@ import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
 
 export type SeedMode = "fixed" | "random" | "increment";
 export type LoraRoutingMode = "standard" | "character_identity";
+export type VramMode = "auto" | "high_vram" | "dynamic" | "low_vram";
 
 export const COMFYUI_SAMPLERS = [
   "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun",
@@ -112,6 +113,8 @@ export interface FaceSettings {
 }
 
 export interface RuntimeSettings {
+  vramMode: VramMode;
+  reserveVramGb: number;
   filenamePrefix: string;
   diffusionModelFileId: string;
   diffusionModelName: string;
@@ -228,6 +231,8 @@ export function createStudioSettings(): StudioSettings {
       detectorProvider: "auto",
     },
     runtime: {
+      vramMode: "auto",
+      reserveVramGb: 1,
       filenamePrefix: "baseline",
       diffusionModelFileId: "",
       diffusionModelName: "",
@@ -274,7 +279,7 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 18,
+    version: 19,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
@@ -353,6 +358,8 @@ export function buildProjectDocument(
       reference_regions: layerRegions(regions, "reference"),
     },
     runtime: {
+      vram_mode: runtime.vramMode,
+      reserve_vram_gb: runtime.reserveVramGb,
       filename_prefix: runtime.filenamePrefix,
       diffusion_model_file: runtime.diffusionModelName || null,
       text_encoder_file: runtime.textEncoderName || null,
@@ -429,7 +436,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (document.version !== 18) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (document.version !== 18 && document.version !== 19) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -518,6 +525,8 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     detectorProvider: detectorProviderValue(generation.face_detail_detector_provider),
   };
   settings.runtime = {
+    vramMode: vramModeValue(runtime.vram_mode),
+    reserveVramGb: numberValue(runtime.reserve_vram_gb, settings.runtime.reserveVramGb),
     filenamePrefix: stringValue(runtime.filename_prefix, settings.runtime.filenamePrefix),
     diffusionModelFileId: "",
     diffusionModelName: basename(stringValue(runtime.diffusion_model_file, "")),
@@ -660,3 +669,4 @@ function spatialRoleValue(value: unknown): RegionBox["spatialRole"] { return val
 function routingModeValue(value: unknown): LoraRoutingMode { return value === "character_identity" ? value : "standard"; }
 function cropSizeValue(value: unknown): FaceSettings["cropSize"] { return value === 256 || value === 768 || value === 1024 ? value : 512; }
 function detectorProviderValue(value: unknown): FaceSettings["detectorProvider"] { return value === "cpu" || value === "cuda" ? value : "auto"; }
+function vramModeValue(value: unknown): VramMode { return value === "high_vram" || value === "dynamic" || value === "low_vram" ? value : "auto"; }

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 GIB = 1024**3
+VRAM_MODES = frozenset({"auto", "high_vram", "dynamic", "low_vram"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,3 +85,26 @@ def oom_recovery_reserve_vram_gb(current_gb: float, total_gb: float) -> float:
     increase = max(0.5, min(1.5, total / 16.0))
     capacity_limit = max(0.5, total * 0.4)
     return current + min(increase, max(0.0, capacity_limit - current))
+
+
+def resolve_vram_mode(requested: str, total_vram_gb: float) -> str:
+    """Resolve the user-facing automatic mode before ComfyUI initializes."""
+    if requested not in VRAM_MODES:
+        raise ValueError(f"unknown VRAM mode: {requested}")
+    if requested != "auto":
+        return requested
+    return "high_vram" if float(total_vram_gb) >= 40.0 else "dynamic"
+
+
+def configure_comfy_vram_args(args: Any, mode: str) -> None:
+    """Apply one validated mode before ComfyUI model management is imported."""
+    if mode not in {"high_vram", "dynamic", "low_vram"}:
+        raise ValueError(f"unresolved VRAM mode: {mode}")
+    args.gpu_only = False
+    args.novram = False
+    args.highvram = mode == "high_vram"
+    args.lowvram = mode == "low_vram"
+    if hasattr(args, "enable_dynamic_vram"):
+        args.enable_dynamic_vram = mode == "dynamic"
+    if hasattr(args, "disable_dynamic_vram"):
+        args.disable_dynamic_vram = mode != "dynamic"

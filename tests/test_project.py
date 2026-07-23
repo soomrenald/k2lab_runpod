@@ -74,6 +74,8 @@ class ProjectStateTests(unittest.TestCase):
             face_detail_detector_threshold=0.35,
             face_detail_detector_provider="cpu",
             projector_identity_protection=0.65,
+            vram_mode="high_vram",
+            reserve_vram_gb=1.5,
             prompt_emphases=(
                 PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "two distinct people", 0.5),
             ),
@@ -105,6 +107,14 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(restored.face_detail_detector_threshold, 0.35)
         self.assertEqual(restored.face_detail_detector_provider, "cpu")
         self.assertEqual(restored.projector_identity_protection, 0.65)
+        self.assertEqual(restored.vram_mode, "high_vram")
+        self.assertEqual(restored.reserve_vram_gb, 1.5)
+
+    def test_vram_controls_are_bounded(self) -> None:
+        with self.assertRaisesRegex(ValueError, "VRAM mode"):
+            ProjectState(canvas_width=1024, canvas_height=1024, vram_mode="unbounded")
+        with self.assertRaisesRegex(ValueError, "VRAM reserve"):
+            ProjectState(canvas_width=1024, canvas_height=1024, reserve_vram_gb=0.25)
 
     def test_character_identity_lora_routing_round_trips(self) -> None:
         state = ProjectState(

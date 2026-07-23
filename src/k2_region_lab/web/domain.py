@@ -7,6 +7,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
     CivitaiDownloadRequest,
@@ -270,8 +271,8 @@ class WorkspaceOutput(BaseModel):
 
 class CapabilityManifest(BaseModel):
     api_version: str = "v1"
-    project_schema: str = "k2-region-lab-project"
-    project_schema_version: int = 18
+    project_schema: str = PROJECT_SCHEMA
+    project_schema_version: int = PROJECT_VERSION
     minimum_gpu_memory_gb: int = 24
     workspace_modes: list[WorkspaceMode] = Field(
         default_factory=lambda: [WorkspaceMode.PERSISTENT_POD]
