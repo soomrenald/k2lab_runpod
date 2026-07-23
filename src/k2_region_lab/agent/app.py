@@ -452,6 +452,14 @@ def create_agent_app(
         return await transfer_manager.create_upload(request)
 
     @application.get(
+        "/v1/uploads",
+        response_model=list[UploadSession],
+        dependencies=authentication,
+    )
+    async def list_uploads() -> list[UploadSession]:
+        return await transfer_manager.list_uploads()
+
+    @application.get(
         "/v1/uploads/{upload_id}",
         response_model=UploadSession,
         dependencies=authentication,

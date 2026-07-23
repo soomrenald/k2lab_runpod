@@ -74,6 +74,8 @@ class WorkspaceAgentApi(Protocol):
 
     async def upload_status(self, upload_id: str) -> UploadSession: ...
 
+    async def list_uploads(self) -> list[UploadSession]: ...
+
     async def write_chunk(
         self, upload_id: str, index: int, content: bytes, sha256: str
     ) -> ChunkReceipt: ...
@@ -243,6 +245,21 @@ class WorkspaceAgentClient:
 
     async def upload_status(self, upload_id: str) -> UploadSession:
         return UploadSession.model_validate(await self._request(f"/v1/uploads/{upload_id}"))
+
+    async def list_uploads(self) -> list[UploadSession]:
+        try:
+            payload = await self._request("/v1/uploads")
+        except WorkspaceError as error:
+            if error.code == "agent_endpoint_unsupported":
+                return []
+            raise
+        if not isinstance(payload, list):
+            raise WorkspaceError(
+                "agent_response_invalid",
+                "The workspace agent returned an invalid upload list.",
+                status_code=502,
+            )
+        return [UploadSession.model_validate(item) for item in payload]
 
     async def write_chunk(
         self, upload_id: str, index: int, content: bytes, sha256: str
@@ -423,7 +440,7 @@ class WorkspaceAgentClient:
         method: str = "GET",
         extra_headers: dict[str, str] | None = None,
         **kwargs: Any,
-    ) -> dict:
+    ) -> Any:
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
@@ -469,9 +486,15 @@ class WorkspaceAgentClient:
                 message = error_body.get("message")
                 if isinstance(code, str) and isinstance(message, str):
                     raise WorkspaceError(code, message, status_code=response.status_code)
+            if response.status_code in {404, 405}:
+                raise WorkspaceError(
+                    "agent_endpoint_unsupported",
+                    "This workspace agent image does not support the requested operation.",
+                    status_code=409,
+                )
             raise WorkspaceError(
                 "agent_unavailable",
-                "The workspace agent could not complete its health request.",
+                "The workspace agent could not complete the requested operation.",
                 status_code=502,
             )
         try:
@@ -482,7 +505,7 @@ class WorkspaceAgentClient:
                 "The workspace agent returned invalid JSON.",
                 status_code=502,
             ) from error
-        if not isinstance(payload, dict):
+        if not isinstance(payload, (dict, list)):
             raise WorkspaceError(
                 "agent_response_invalid",
                 "The workspace agent returned an unexpected response.",

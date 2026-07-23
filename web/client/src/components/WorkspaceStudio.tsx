@@ -63,12 +63,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [loras, setLoras] = useState<StudioLora[]>([]);
   const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
+  const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
+  const [showConnectPod, setShowConnectPod] = useState(false);
+  const [connectPodId, setConnectPodId] = useState("");
+  const [connectWithoutTimeLimit, setConnectWithoutTimeLimit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
-  const [showAssets, setShowAssets] = useState(false);
-  const [showTransfers, setShowTransfers] = useState(false);
+  const [utilityPanel, setUtilityPanel] = useState<"assets" | "transfers" | "events" | "setup" | null>(null);
   const [showMigration, setShowMigration] = useState(false);
-  const [showEvents, setShowEvents] = useState(false);
-  const [showSetup, setShowSetup] = useState(false);
   const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
   const [migrationConfirmation, setMigrationConfirmation] = useState("");
   const [migrationVolumeId, setMigrationVolumeId] = useState("");
@@ -178,8 +179,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   const running = workspace.state === "ready";
   const activeCompute = ["provisioning", "starting", "ready", "stopping"].includes(workspace.state);
-  const canExtend = workspace.state === "starting" || workspace.state === "ready";
+  const canExtend = !workspace.lease_unlimited && (workspace.state === "starting" || workspace.state === "ready");
   const canStart = workspace.state === "stopped" || workspace.state === "error";
+  const showAssets = utilityPanel === "assets";
+  const showTransfers = utilityPanel === "transfers";
+  const showEvents = utilityPanel === "events";
+  const showSetup = utilityPanel === "setup";
   const leaseMinutes = Math.max(0, Math.round((new Date(workspace.lease_expires_at).getTime() - Date.now()) / 60_000));
   const readiness = useMemo(() => Object.entries(workspace.readiness), [workspace.readiness]);
 
@@ -419,13 +424,35 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMessage("");
     try {
       const next = action === "start"
-        ? await controlPlane.startWorkspace(workspace.id)
+        ? await controlPlane.startWorkspace(workspace.id, startWithoutTimeLimit)
         : action === "stop"
           ? await controlPlane.stopWorkspace(workspace.id)
           : await controlPlane.extendLease(workspace.id);
       onWorkspace(next);
+      if (action === "start") setStartWithoutTimeLimit(false);
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Workspace action failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectMigratedPod() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const next = await controlPlane.connectMigratedPod(
+        workspace.id,
+        connectPodId.trim(),
+        connectWithoutTimeLimit,
+      );
+      onWorkspace(next);
+      setShowConnectPod(false);
+      setConnectPodId("");
+      setConnectWithoutTimeLimit(false);
+      report(`Connected migrated RunPod Pod ${next.provider_resource_id}.`);
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not connect the migrated Pod", "error");
     } finally {
       setBusy(false);
     }
@@ -514,14 +541,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const prefix = studioSettings.runtime.filenamePrefix.trim();
     if (!prefix || prefix.includes("/") || prefix.includes("\\") || prefix === "." || prefix === "..") {
       report("Choose a safe output filename prefix in Setup before running.", "error");
-      setShowSetup(true);
+      setUtilityPanel("setup");
       return;
     }
     const missingLoras = loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
     if (missingLoras.length) {
       report(`Bind missing cloud LoRA asset(s) before running: ${missingLoras.join(", ")}.`, "error");
       setAssetPurpose("lora");
-      setShowAssets(true);
+      setUtilityPanel("assets");
       return;
     }
     const unresolvedModels = [
@@ -532,12 +559,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     ].filter(([name, id]) => name && !id).map(([name]) => name);
     if (unresolvedModels.length) {
       report(`Resolve missing model selection(s) in Setup: ${unresolvedModels.join(", ")}.`, "error");
-      setShowSetup(true);
+      setUtilityPanel("setup");
       return;
     }
     if (mode !== "generation" && !cloudSource) {
       report("Choose an uploaded input or prior output from Cloud files first.", "error");
-      setShowAssets(true);
+      setUtilityPanel("assets");
       return;
     }
     if (mode === "face" && !cloudSource?.display_name.toLocaleLowerCase().endsWith(".png")) {
@@ -661,7 +688,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (!cloudSource) {
       report("Choose an uploaded input or prior output before detecting faces.", "error");
       setAssetPurpose("source");
-      setShowAssets(true);
+      setUtilityPanel("assets");
       return;
     }
     setBusy(true);
@@ -784,18 +811,35 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <dl className="summary-list compact-summary">
             <div><dt>Compute now</dt><dd>{activeCompute ? `$${workspace.estimated_compute_per_hour.toFixed(2)}/hr` : "$0.00/hr"}</dd></div>
             <div><dt>Storage</dt><dd>${workspace.estimated_storage_per_month.toFixed(2)}/mo</dd></div>
-            <div><dt>Lease</dt><dd>{activeCompute ? `${leaseMinutes} min remaining` : "No active lease"}</dd></div>
+            <div><dt>Lease</dt><dd>{activeCompute ? workspace.lease_unlimited ? "No time limit" : `${leaseMinutes} min remaining` : "No active lease"}</dd></div>
           </dl>
           <div className="readiness-grid">{readiness.map(([name, ready]) => <span key={name} className={ready ? "ready" : "pending"}><Icon name={ready ? "check" : "clock"} /> {name}</span>)}</div>
+          {workspace.provider_resource_id && !developmentBackend && (
+            <div className="runpod-progress">
+              <div><strong>Docker image startup</strong><small>Pod {workspace.provider_resource_id}</small></div>
+              <a className="quiet-button" href="https://console.runpod.io/pods" target="_blank" rel="noreferrer">
+                <Icon name="cloud" /> {workspace.state === "starting" ? "View Docker progress" : "Open in RunPod"}
+              </a>
+            </div>
+          )}
           {workspace.error_message && <div className="error-banner">{workspace.error_message}</div>}
+          {canStart && (
+            <label className="check-row warning-check lease-limit-option">
+              <input type="checkbox" checked={startWithoutTimeLimit} onChange={(event) => setStartWithoutTimeLimit(event.target.checked)} />
+              <span><strong>No time limit</strong><small>The Pod will continue running and billing until you manually stop it.</small></span>
+            </label>
+          )}
           <div className="popover-actions">
             {canExtend
               ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
               : canStart
-                ? <button className="primary-button" onClick={() => lifecycle("start")}>Start GPU</button>
+                ? <button className="primary-button" onClick={() => lifecycle("start")}>{startWithoutTimeLimit ? "Start GPU without time limit" : "Start GPU"}</button>
                 : null}
             {workspace.mode === "persistent_pod" && (
               <button className="quiet-button" onClick={() => setShowMigration(true)}>Migrate to portable storage</button>
+            )}
+            {canStart && workspace.mode === "persistent_pod" && !developmentBackend && (
+              <button className="quiet-button" onClick={() => { setMessage(""); setShowCloud(false); setShowConnectPod(true); }}>Connect migrated Pod</button>
             )}
             {workspace.retained_original_provider_resource_id && (
               <button className="quiet-button" onClick={() => setShowMigration(true)}>Confirm verified migration</button>
@@ -816,10 +860,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <RailButton icon="face" label="Faces" active={mode === "face"} onClick={() => switchMode("face")} />
         </div>
         <div className="utility-rail">
-          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setShowAssets(true); }} />
-          <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setShowTransfers(true)} />
-          <RailButton icon="events" label="Events" active={showEvents} onClick={() => setShowEvents(true)} />
-          <RailButton icon="settings" label="Setup" active={showSetup} onClick={() => setShowSetup(true)} />
+          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setUtilityPanel("assets"); }} />
+          <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setUtilityPanel("transfers")} />
+          <RailButton icon="events" label="Events" active={showEvents} onClick={() => setUtilityPanel("events")} />
+          <RailButton icon="settings" label="Setup" active={showSetup} onClick={() => setUtilityPanel("setup")} />
         </div>
       </aside>
 
@@ -870,8 +914,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onGlobalPrompt={(value) => setGlobalPrompts({ ...globalPrompts, [activeLayer]: value })}
             onSettings={setStudioSettings}
             onLoras={setLoras}
-            onChooseLora={() => { setAssetPurpose("lora"); setShowAssets(true); }}
-            onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setShowAssets(true); }}
+            onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
+            onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
             selectedFaceIndices={selectedFaceIndices}
@@ -937,7 +981,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       {showEvents && (
         <div className="asset-backdrop">
           <section className="asset-panel event-panel glass-card" aria-label="Studio event log">
-            <header><div><p className="kicker">Bounded local history</p><h2>Event log</h2><small>{eventLog.length} / {EVENT_LOG_LIMIT} events retained</small></div><button className="quiet-button" onClick={() => setShowEvents(false)}>Close</button></header>
+            <header><div><p className="kicker">Bounded local history</p><h2>Event log</h2><small>{eventLog.length} / {EVENT_LOG_LIMIT} events retained</small></div><button className="quiet-button" onClick={() => setUtilityPanel(null)}>Close</button></header>
             <div className="event-actions">
               <p>Oldest entries are automatically discarded when the log reaches its limit.</p>
               <button className="quiet-button" disabled={eventLog.length === 0} onClick={() => setEventLog([])}>Clear log</button>
@@ -1015,7 +1059,29 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowAssets(false)} onSelect={(file) => {
+      {showConnectPod && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="connect-pod-title">
+            <div className="danger-icon"><Icon name="cloud" /></div>
+            <p className="kicker">RunPod console migration</p>
+            <h2 id="connect-pod-title">Connect the migrated Pod?</h2>
+            <p>Enter the new Pod ID created by RunPod. K2 will verify that it retained this workspace's identity, agent credential, immutable image, GPU type, and persistent volume before replacing the old Pod ID.</p>
+            <label className="field-label" htmlFor="migrated-pod-id">New RunPod Pod ID</label>
+            <input id="migrated-pod-id" className="text-input" autoComplete="off" placeholder="e.g. a5fbpvr8eoykhk" value={connectPodId} onChange={(event) => setConnectPodId(event.target.value)} />
+            <label className="check-row warning-check lease-limit-option">
+              <input type="checkbox" checked={connectWithoutTimeLimit} onChange={(event) => setConnectWithoutTimeLimit(event.target.checked)} />
+              <span><strong>No time limit if the migrated Pod is already running</strong><small>The Pod will continue running and billing until you manually stop it.</small></span>
+            </label>
+            <p className="field-help">This only changes the control-plane connection after verification. It does not start, stop, migrate, or delete either Pod.</p>
+            {message && <div className="error-banner">{message}</div>}
+            <div className="modal-actions">
+              <button className="quiet-button" onClick={() => { setShowConnectPod(false); setMessage(""); }}>Cancel</button>
+              <button className="primary-button" disabled={busy || connectPodId.trim().length < 3} onClick={() => void connectMigratedPod()}>{busy ? "Verifying Pod…" : "Verify and connect"}</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1038,8 +1104,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         setManualFacePaths([]);
         setSourceUrl(controlPlane.fileUrl(workspace.id, file.id));
       }} />}
-      {showTransfers && <TransferPanel workspaceId={workspace.id} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowTransfers(false)} />}
-      {showSetup && <SetupPanel workspaceId={workspace.id} settings={studioSettings} onSettings={setStudioSettings} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowSetup(false)} onManageFiles={() => { setShowSetup(false); setAssetPurpose("source"); setShowAssets(true); }} onTransfers={() => { setShowSetup(false); setShowTransfers(true); }} />}
+      {showTransfers && <TransferPanel workspaceId={workspace.id} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} />}
+      {showSetup && <SetupPanel workspaceId={workspace.id} settings={studioSettings} onSettings={setStudioSettings} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onManageFiles={() => { setAssetPurpose("source"); setUtilityPanel("assets"); }} onTransfers={() => setUtilityPanel("transfers")} />}
     </div>
   );
 }

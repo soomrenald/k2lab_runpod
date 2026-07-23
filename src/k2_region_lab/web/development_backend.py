@@ -41,6 +41,7 @@ from k2_region_lab.web.domain import (
     NetworkVolumeOption,
     StorageTier,
     WorkspaceCreateRequest,
+    WorkspaceConnectPodRequest,
     WorkspaceError,
     WorkspaceMode,
     WorkspaceMigrationCreateRequest,
@@ -48,6 +49,7 @@ from k2_region_lab.web.domain import (
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
+    WorkspaceStartRequest,
     WorkspaceState,
     WorkspaceOutput,
     utc_now,
@@ -264,6 +266,10 @@ class DevelopmentWorkspaceBackend:
             )
         if request.interruptible:
             warnings.append("Interruptible Pods may stop without notice.")
+        if request.lease_unlimited:
+            warnings.append(
+                "No time limit: the Pod keeps running and billing until you manually stop it."
+            )
         plan = WorkspacePlan(
             id=uuid4().hex,
             request=request,
@@ -326,6 +332,7 @@ class DevelopmentWorkspaceBackend:
                 hard_deadline_seconds=plan.request.hard_deadline_seconds,
                 lease_expires_at=now + timedelta(seconds=plan.request.idle_timeout_seconds),
                 hard_expires_at=now + timedelta(seconds=plan.request.hard_deadline_seconds),
+                lease_unlimited=plan.request.lease_unlimited,
                 created_at=now,
                 updated_at=now,
                 provider_resource_id=f"dev-pod-{uuid4().hex[:8]}",
@@ -355,7 +362,10 @@ class DevelopmentWorkspaceBackend:
     async def get_workspace_status(self, workspace_id: str) -> WorkspaceRecord:
         return self._workspace(workspace_id).model_copy(deep=True)
 
-    async def start_workspace(self, workspace_id: str) -> WorkspaceRecord:
+    async def start_workspace(
+        self, workspace_id: str, request: WorkspaceStartRequest | None = None
+    ) -> WorkspaceRecord:
+        request = request or WorkspaceStartRequest()
         async with self._lock:
             workspace = self._workspace(workspace_id)
             if workspace.state not in {WorkspaceState.STOPPED, WorkspaceState.ERROR}:
@@ -371,11 +381,22 @@ class DevelopmentWorkspaceBackend:
                     "updated_at": now,
                     "lease_expires_at": now + timedelta(seconds=workspace.idle_timeout_seconds),
                     "hard_expires_at": now + timedelta(seconds=workspace.hard_deadline_seconds),
+                    "lease_unlimited": request.lease_unlimited,
                     "provider_resource_id": f"dev-pod-{uuid4().hex[:8]}",
                 }
             )
             self._workspaces[workspace_id] = workspace
         return workspace.model_copy(deep=True)
+
+    async def connect_workspace_pod(
+        self, workspace_id: str, request: WorkspaceConnectPodRequest
+    ) -> WorkspaceRecord:
+        self._workspace(workspace_id)
+        raise WorkspaceError(
+            "pod_reconnect_unavailable",
+            "Migrated RunPod Pods cannot be connected in the development backend.",
+            status_code=409,
+        )
 
     async def stop_workspace(self, workspace_id: str) -> WorkspaceRecord:
         async with self._lock:
@@ -386,6 +407,8 @@ class DevelopmentWorkspaceBackend:
                     f"A {workspace.state.value} workspace cannot be stopped.",
                     status_code=409,
                 )
+            if workspace.lease_unlimited:
+                return workspace.model_copy(deep=True)
             for migration_id, migration in self._migrations.items():
                 if migration.workspace_id == workspace_id and migration.state in {
                     MigrationState.PREPARING,
@@ -723,6 +746,9 @@ class DevelopmentWorkspaceBackend:
         del upload_id
         self._transfer_unavailable(workspace_id)
 
+    async def list_uploads(self, workspace_id: str) -> list[UploadSession]:
+        self._transfer_unavailable(workspace_id)
+
     async def write_upload_chunk(
         self,
         workspace_id: str,
@@ -794,6 +820,10 @@ class DevelopmentWorkspaceBackend:
     async def get_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
         del transfer_id
         self._transfer_unavailable(workspace_id)
+
+    async def list_transfers(self, workspace_id: str) -> list[RemoteTransfer]:
+        self._workspace(workspace_id)
+        return []
 
     async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
         del transfer_id

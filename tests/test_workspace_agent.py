@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import struct
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -458,6 +459,30 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             f"Bearer {self.settings.session_token}",
         )
 
+    async def test_agent_client_accepts_upload_history_list_response(self) -> None:
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json=[])
+            ),
+        )
+
+        self.assertEqual(await client.list_uploads(), [])
+
+    async def test_agent_client_treats_legacy_upload_listing_as_empty(self) -> None:
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    405, json={"detail": "Method Not Allowed"}
+                )
+            ),
+        )
+
+        self.assertEqual(await client.list_uploads(), [])
+
     async def test_control_plane_output_proxy_forwards_range_and_auth_header(self) -> None:
         observed: dict[str, str] = {}
 
@@ -557,6 +582,10 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         inventory = await self.client.get("/v1/files?kind=inputs", headers=self.headers)
         self.assertEqual(inventory.status_code, 200)
         self.assertEqual(inventory.json()["items"][0]["id"], file_record["id"])
+        uploads = await self.client.get("/v1/uploads", headers=self.headers)
+        self.assertEqual(uploads.status_code, 200)
+        self.assertEqual(uploads.json()[0]["id"], upload["id"])
+        self.assertEqual(uploads.json()[0]["state"], "completed")
 
     async def test_duplicate_upload_returns_existing_opaque_file(self) -> None:
         content = b"same-content" * 86
@@ -617,8 +646,9 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         upload_id = created.json()["id"]
         cancelled = await self.client.delete(f"/v1/uploads/{upload_id}", headers=self.headers)
         self.assertEqual(cancelled.status_code, 204)
-        missing = await self.client.get(f"/v1/uploads/{upload_id}", headers=self.headers)
-        self.assertEqual(missing.status_code, 404)
+        retained = await self.client.get(f"/v1/uploads/{upload_id}", headers=self.headers)
+        self.assertEqual(retained.status_code, 200)
+        self.assertEqual(retained.json()["state"], "cancelled")
 
     async def test_output_download_supports_authentication_and_byte_ranges(self) -> None:
         content = b"0123456789"
@@ -650,6 +680,15 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         civitai = parse_civitai_url("https://civitai.com/models/123/name?modelVersionId=456")
         self.assertEqual(civitai.model_id, "123")
         self.assertEqual(civitai.version_id, "456")
+        alias = parse_civitai_url(
+            "https://civitai.red/api/download/models/3104629?fileId=2984442"
+        )
+        self.assertEqual(alias.version_id, "3104629")
+        self.assertEqual(alias.file_id, "2984442")
+        self.assertEqual(
+            alias.canonical_download_url,
+            "https://civitai.com/api/download/models/3104629?fileId=2984442",
+        )
         huggingface = parse_huggingface_url(
             "https://huggingface.co/owner/repo/blob/revision/models/model.safetensors"
         )
@@ -690,7 +729,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                                 "name": "portrait.safetensors",
                                 "sizeKB": len(payload) / 1024,
                                 "primary": True,
-                                "downloadUrl": "https://civitai.com/api/download/models/456",
+                                "downloadUrl": "https://civitai.red/api/download/models/456?fileId=789",
                                 "hashes": {"SHA256": digest.upper()},
                                 "pickleScanResult": "Success",
                                 "virusScanResult": "Success",
@@ -709,13 +748,14 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
 
         app = create_agent_app(self.settings, download_transport=httpx.MockTransport(handler))
         app.state.layout.initialize()
+        source_url = "https://civitai.red/api/download/models/456?fileId=789"
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://agent.test"
         ) as client:
             preview = await client.post(
                 "/v1/downloads/civitai/preview",
                 headers={**self.headers, "X-Provider-Token": "secret-download-token"},
-                json={"source_url": "https://civitai.com/models/123?modelVersionId=456"},
+                json={"source_url": source_url},
             )
             self.assertEqual(preview.status_code, 200, preview.text)
             self.assertEqual(preview.json()["files"][0]["sha256"], digest)
@@ -723,7 +763,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "/v1/downloads/civitai",
                 headers={**self.headers, "X-Provider-Token": "secret-download-token"},
                 json={
-                    "source_url": "https://civitai.com/models/123?modelVersionId=456",
+                    "source_url": source_url,
                     "file_id": "789",
                     "destination_kind": "loras",
                 },
@@ -737,6 +777,10 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 payload,
             )
         self.assertTrue(observed)
+        downloads = [request for request in observed if "/api/download/models/456" in request.url.path]
+        self.assertTrue(downloads)
+        self.assertTrue(all(request.url.host == "civitai.com" for request in downloads))
+        self.assertTrue(all(request.url.params.get("fileId") == "789" for request in downloads))
         self.assertTrue(
             all(
                 request.headers.get("Authorization") == "Bearer secret-download-token"
@@ -929,6 +973,80 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 [item["display_name"] for item in inventory.json()["items"]],
                 ["config.json", "nested/model.safetensors"],
             )
+
+    async def test_provider_downloads_queue_and_huggingface_reports_live_bytes(self) -> None:
+        payload = self._safetensors_payload()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+
+        def repo_info(**kwargs):
+            filename = f"{kwargs['repo_id'].split('/')[-1]}.safetensors"
+            return SimpleNamespace(
+                siblings=[SimpleNamespace(rfilename=filename, size=len(payload))]
+            )
+
+        def file_download(**kwargs):
+            filename = kwargs["filename"]
+            calls.append(filename)
+            destination = Path(kwargs["local_dir"]) / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if filename == "first.safetensors":
+                destination.write_bytes(payload[: max(1, len(payload) // 2)])
+                first_started.set()
+                self.assertTrue(release_first.wait(timeout=3))
+                destination.write_bytes(payload)
+            else:
+                destination.write_bytes(payload)
+            return str(destination)
+
+        app = create_agent_app(
+            self.settings,
+            hf_repo_info=repo_info,
+            hf_file_download=file_download,
+            hf_snapshot_download=lambda **_kwargs: "unused",
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            async def start(filename: str):
+                response = await client.post(
+                    "/v1/downloads/huggingface",
+                    headers={**self.headers, "X-Provider-Token": "hf_read_secret"},
+                    json={
+                        "source_url": f"https://huggingface.co/owner/{filename}/resolve/main/{filename}.safetensors",
+                        "destination_kind": "diffusion_models",
+                    },
+                )
+                self.assertEqual(response.status_code, 202, response.text)
+                return response.json()
+
+            first = await start("first")
+            self.assertTrue(await asyncio.to_thread(first_started.wait, 2))
+            second = await start("second")
+            await asyncio.sleep(0.7)
+
+            first_status = await client.get(
+                f"/v1/transfers/{first['id']}", headers=self.headers
+            )
+            second_status = await client.get(
+                f"/v1/transfers/{second['id']}", headers=self.headers
+            )
+            self.assertGreater(first_status.json()["bytes_complete"], 0)
+            self.assertEqual(second_status.json()["state"], "pending")
+            self.assertEqual(calls, ["first.safetensors"])
+
+            release_first.set()
+            self.assertEqual(
+                (await self._wait_for_transfer(client, first["id"]))["state"],
+                "completed",
+            )
+            self.assertEqual(
+                (await self._wait_for_transfer(client, second["id"]))["state"],
+                "completed",
+            )
+            self.assertEqual(calls, ["first.safetensors", "second.safetensors"])
 
     async def test_remote_job_is_idempotent_streams_events_and_indexes_output(self) -> None:
         observed_commands: list[dict[str, object]] = []

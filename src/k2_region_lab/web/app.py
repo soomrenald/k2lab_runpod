@@ -52,10 +52,12 @@ from k2_region_lab.web.domain import (
     NetworkVolumeOption,
     WorkspaceBackend,
     WorkspaceCreateRequest,
+    WorkspaceConnectPodRequest,
     WorkspaceError,
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
+    WorkspaceStartRequest,
     WorkspaceMode,
     WorkspaceMigrationConfirmRequest,
     WorkspaceMigrationCreateRequest,
@@ -96,7 +98,7 @@ def backend_from_environment() -> WorkspaceBackend:
         credential_vault=DatabaseCredentialVault(state_store, encryption_key),
         state_store=state_store,
         image_digest=image_digest,
-        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.0"),
+        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.2"),
     )
 
 
@@ -161,7 +163,7 @@ def create_app(
 
     application = FastAPI(
         title="K2 Region Lab Control Plane",
-        version="0.1.0",
+        version="0.1.2",
         description=(
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."
@@ -309,8 +311,19 @@ def create_app(
         return await workspace_backend.get_workspace_status(workspace_id)
 
     @application.post("/api/v1/workspaces/{workspace_id}/start", response_model=WorkspaceRecord)
-    async def start_workspace(workspace_id: str) -> WorkspaceRecord:
-        return await workspace_backend.start_workspace(workspace_id)
+    async def start_workspace(
+        workspace_id: str, request: WorkspaceStartRequest | None = None
+    ) -> WorkspaceRecord:
+        return await workspace_backend.start_workspace(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/connect-pod",
+        response_model=WorkspaceRecord,
+    )
+    async def connect_workspace_pod(
+        workspace_id: str, request: WorkspaceConnectPodRequest
+    ) -> WorkspaceRecord:
+        return await workspace_backend.connect_workspace_pod(workspace_id, request)
 
     @application.post("/api/v1/workspaces/{workspace_id}/stop", response_model=WorkspaceRecord)
     async def stop_workspace(workspace_id: str) -> WorkspaceRecord:
@@ -405,6 +418,13 @@ def create_app(
         return await workspace_backend.create_upload(workspace_id, request)
 
     @application.get(
+        "/api/v1/workspaces/{workspace_id}/uploads",
+        response_model=list[UploadSession],
+    )
+    async def list_uploads(workspace_id: str) -> list[UploadSession]:
+        return await workspace_backend.list_uploads(workspace_id)
+
+    @application.get(
         "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}",
         response_model=UploadSession,
     )
@@ -492,6 +512,13 @@ def create_app(
         workspace_id: str, request: HuggingFaceDownloadRequest
     ) -> RemoteTransfer:
         return await workspace_backend.start_huggingface_download(workspace_id, request)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/transfers",
+        response_model=list[RemoteTransfer],
+    )
+    async def list_transfers(workspace_id: str) -> list[RemoteTransfer]:
+        return await workspace_backend.list_transfers(workspace_id)
 
     @application.get(
         "/api/v1/workspaces/{workspace_id}/transfers/{transfer_id}",

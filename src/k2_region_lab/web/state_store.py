@@ -104,6 +104,8 @@ class RunPodStateStore(Protocol):
 
     async def get_transfer(self, transfer_id: str) -> tuple[str, RemoteTransfer] | None: ...
 
+    async def list_transfers(self, workspace_id: str) -> list[RemoteTransfer]: ...
+
     async def save_generation_job(self, workspace_id: str, job: GenerationJob) -> None: ...
 
     async def get_generation_job(self, job_id: str) -> tuple[str, GenerationJob] | None: ...
@@ -448,12 +450,16 @@ class SqlRunPodStateStore:
         ]
         async with self._sessions() as session:
             result = await session.scalars(
-                select(WorkspaceEntity.id).where(
+                select(WorkspaceEntity).where(
                     WorkspaceEntity.state.in_(active_states),
                     WorkspaceEntity.lease_expires_at <= observed_at,
                 )
             )
-            return list(result)
+            return [
+                entity.id
+                for entity in result
+                if not self._record(entity).lease_unlimited
+            ]
 
     async def append_audit(
         self,
@@ -615,6 +621,16 @@ class SqlRunPodStateStore:
             if entity is None:
                 return None
             return entity.workspace_id, RemoteTransfer.model_validate(entity.payload)
+
+    async def list_transfers(self, workspace_id: str) -> list[RemoteTransfer]:
+        await self.initialize()
+        async with self._sessions() as session:
+            result = await session.scalars(
+                select(TransferEntity)
+                .where(TransferEntity.workspace_id == workspace_id)
+                .order_by(TransferEntity.created_at.desc())
+            )
+            return [RemoteTransfer.model_validate(entity.payload) for entity in result]
 
     async def save_generation_job(self, workspace_id: str, job: GenerationJob) -> None:
         await self.initialize()
