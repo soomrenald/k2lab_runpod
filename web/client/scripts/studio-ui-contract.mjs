@@ -103,9 +103,19 @@ assert.ok(
   "The event history must be a resizable bottom dock that retains multiple visible lines",
 );
 assert.ok(
+  workspaceStudio.includes("const [eventDockOpen, setEventDockOpen] = useState(false)"),
+  "The event history must start closed so it does not reserve empty workspace height",
+);
+assert.ok(
   workspaceStudio.includes("setResultUrl(controlPlane.outputUrl")
     && workspaceStudio.includes('setComparePosition(next.kind === "generate" ? 1 : 0.5)'),
   "Completed generation outputs must be selected for immediate full-canvas display",
+);
+assert.ok(
+  workspaceStudio.includes('controlPlane.files(workspace.id, "outputs")')
+    && workspaceStudio.includes("candidate.modified_at")
+    && workspaceStudio.includes("current ?? controlPlane.outputUrl"),
+  "Reopening the studio must restore the newest verified output after a lost completion connection",
 );
 const runRemoteJob = workspaceStudio.split("async function runRemoteJob()", 2)[1].split("async function cancelRemoteJob", 1)[0];
 assert.ok(
@@ -154,6 +164,12 @@ assert.ok(
     && regionCanvas.includes("manual-face-path-draft")
     && regionCanvas.includes('alt="Generated result"'),
   "The canvas must render both a live lasso draft and a generated result without a source image",
+);
+assert.ok(
+  regionCanvas.includes("RetryingResultImage")
+    && regionCanvas.includes("onError={retry}")
+    && regionCanvas.includes("retryCount.current >= 6"),
+  "Transient output delivery failures must retry instead of leaving the canvas permanently blank",
 );
 assert.ok(
   regionCanvas.includes("orderedRegions")
