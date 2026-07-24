@@ -26,7 +26,11 @@ if FASTAPI_AVAILABLE:
         JobKind,
         JobSubmitRequest,
     )
-    from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
+    from k2_region_lab.agent.downloads import (
+        _validated_civitai_download_url,
+        parse_civitai_url,
+        parse_huggingface_url,
+    )
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
     from k2_region_lab.project import PROJECT_VERSION, project_state
@@ -770,6 +774,12 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                     parse_huggingface_url(unsafe)
                 else:
                     parse_civitai_url(unsafe)
+
+        delivery = _validated_civitai_download_url(
+            "https://b2.civitai.com/file/civitai-modelfiles/model/123/"
+            "portrait.safetensors?Authorization=signed&b2ContentDisposition=attachment"
+        )
+        self.assertEqual(delivery.hostname, "b2.civitai.com")
 
     async def test_civitai_download_uses_header_verifies_and_installs(self) -> None:
         payload = self._safetensors_payload()

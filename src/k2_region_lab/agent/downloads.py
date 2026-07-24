@@ -40,6 +40,7 @@ CIVITAI_SOURCE_HOSTS = frozenset(
 CIVITAI_DOWNLOAD_HOSTS = frozenset(
     {"civitai.com", "www.civitai.com", "files.civitai.com"}
 )
+CIVITAI_DELIVERY_HOSTS = frozenset({"b2.civitai.com"})
 CIVITAI_DELIVERY_HOST_SUFFIXES = (".r2.cloudflarestorage.com",)
 SECRET_QUERY_KEYS = frozenset({"token", "api_key", "apikey", "authorization", "auth"})
 UNSAFE_MODEL_EXTENSIONS = frozenset({".bin", ".ckpt", ".pt", ".pth", ".pkl", ".pickle"})
@@ -968,13 +969,26 @@ def _validated_https_url(value: str, hosts: frozenset[str]):
 def _validated_civitai_download_url(value: str):
     parsed = urlsplit(value)
     hostname = (parsed.hostname or "").casefold()
-    allowed = hostname in CIVITAI_DOWNLOAD_HOSTS or any(
+    provider_host = hostname in CIVITAI_DOWNLOAD_HOSTS
+    allowed = provider_host or hostname in CIVITAI_DELIVERY_HOSTS or any(
         hostname.endswith(suffix) and hostname != suffix.removeprefix(".")
         for suffix in CIVITAI_DELIVERY_HOST_SUFFIXES
     )
-    if not allowed:
+    if (
+        not allowed
+        or parsed.scheme.casefold() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+    ):
         raise TransferError("download_url_unsafe", "The remote download URL is not allowed.")
-    return _validated_https_url(value, frozenset({hostname}))
+    if provider_host:
+        return _validated_https_url(value, frozenset({hostname}))
+    # Civitai's B2 and R2 delivery URLs carry short-lived CDN signatures in
+    # their query strings (including a query key named ``Authorization`` on
+    # B2). They are accepted only after a redirect to an exact delivery host;
+    # the user's Civitai bearer token is still stripped before that request.
+    return parsed
 
 
 def _safe_relative_path(value: str) -> bool:
