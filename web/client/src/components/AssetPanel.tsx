@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FileKind, FileRecord, UploadSession } from "../api";
 import { controlPlane } from "../api";
+import { sortOutputFiles, type OutputSort } from "../outputSort";
 import type { LocalUploadItem, UploadQueueController } from "../useUploadQueue";
 import { Icon } from "./Icon";
 
@@ -38,12 +39,17 @@ export function AssetPanel({
   const [selected, setSelected] = useState<File[]>([]);
   const [uploadHistory, setUploadHistory] = useState<UploadSession[]>([]);
   const [previewed, setPreviewed] = useState<FileRecord | null>(null);
+  const [outputSort, setOutputSort] = useState<OutputSort>("newest");
   const [error, setError] = useState("");
   const completedCount = uploadQueue.items.filter((item) => item.state === "completed").length;
   const activeCount = uploadQueue.items.filter((item) => (
     ["hashing", "uploading", "pausing", "cancelling"].includes(item.state)
   )).length;
   const queuedCount = uploadQueue.items.filter((item) => item.state === "queued").length;
+  const displayedFiles = useMemo(
+    () => kind === "outputs" ? sortOutputFiles(files, outputSort) : files,
+    [files, kind, outputSort],
+  );
 
   async function refresh(nextKind = kind) {
     try {
@@ -115,16 +121,32 @@ export function AssetPanel({
           </div>
         )}
         {uploadHistory.length > 0 && <div className="transfer-history"><strong>Uploads retained by the workspace</strong>{uploadHistory.map((item) => <button key={item.id} onClick={() => setKind(item.destination_kind)}><span><b>{item.display_name}</b><small>{item.destination_kind.replaceAll("_", " ")} · {formatBytes(item.size_bytes)}{item.state === "uploading" ? " · reselect this file to resume after a browser restart" : ""}</small></span><em className={item.state}>{item.state}</em></button>)}</div>}
-        {kind === "outputs" && files.length > 0 ? (
+        {kind === "outputs" && (
+          <div className="asset-output-toolbar">
+            <span>{files.length} output{files.length === 1 ? "" : "s"}</span>
+            <label>
+              <span>Sort</span>
+              <select className="select-input" value={outputSort} onChange={(event) => setOutputSort(event.target.value as OutputSort)}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="name-asc">Name A–Z</option>
+                <option value="name-desc">Name Z–A</option>
+                <option value="size-desc">Largest first</option>
+                <option value="size-asc">Smallest first</option>
+              </select>
+            </label>
+          </div>
+        )}
+        {kind === "outputs" && displayedFiles.length > 0 ? (
           <div className="asset-thumbnail-grid">
-            {files.map((file) => (
+            {displayedFiles.map((file) => (
               <article className="asset-thumbnail-card" key={file.id}>
                 <button className="asset-thumbnail" onClick={() => setPreviewed(file)} aria-label={`Preview ${file.display_name}`}>
                   <img src={controlPlane.fileUrl(workspaceId, file.id)} alt={file.display_name} loading="lazy" />
                 </button>
                 <div className="asset-thumbnail-copy">
                   <strong title={file.display_name}>{file.display_name}</strong>
-                  <small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small>
+                  <small>{formatModified(file.modified_at)} · {formatBytes(file.size_bytes)}</small>
                 </div>
                 <div className="asset-thumbnail-actions">
                   <button className="quiet-button" onClick={() => setPreviewed(file)}>Preview</button>
@@ -202,6 +224,11 @@ function formatBytes(value: number) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`;
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
   return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+function formatModified(value: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "Unknown date" : parsed.toLocaleString();
 }
 
 function queueStateLabel(state: LocalUploadItem["state"], active: boolean) {

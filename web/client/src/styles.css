@@ -306,6 +306,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .region-assignment-list { margin: 8px 0; padding: 2px 8px 8px; background: #0a0d12; border-radius: 7px; }
 .advanced-section-title { margin: 18px 0 6px; padding-top: 12px; color: #aeb6c5; border-top: 1px solid #282e38; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
+.seed-field { display: grid; align-content: start; gap: 5px; margin-top: 13px; color: var(--muted-bright); font-size: 9px; }
+.seed-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 82px; gap: 5px; }
+.seed-controls .seed-input, .seed-controls .select-input { min-width: 0; width: 100%; height: 25px; padding: 0 6px; color: #e5e9ef; background: #161b23; border: 1px solid #2c333e; border-radius: 6px; font-size: 8px; }
 .choice-field { display: grid; gap: 5px; margin-top: 12px; color: var(--muted-bright); font-size: 9px; }
 .choice-field .select-input { height: 34px; font-size: 8px; }
 .projector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 10px; }
@@ -391,6 +394,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .asset-download { text-decoration: none; }
 .asset-thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-top: 14px; }
+.asset-output-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--muted); font-size: 9px; }
+.asset-output-toolbar label { display: flex; align-items: center; gap: 7px; }
+.asset-output-toolbar .select-input { width: 132px; height: 32px; font-size: 8px; }
 .asset-thumbnail-card { min-width: 0; overflow: hidden; background: #0d1118; border: 1px solid #252c36; border-radius: 10px; }
 .asset-thumbnail { width: 100%; aspect-ratio: 1; display: block; padding: 0; overflow: hidden; background: #07090d; border: 0; border-bottom: 1px solid #252c36; cursor: zoom-in; }
 .asset-thumbnail img { width: 100%; height: 100%; display: block; object-fit: contain; transition: transform .18s ease; }

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
 GIB = 1024**3
 VRAM_MODES = frozenset({"auto", "high_vram", "dynamic", "low_vram"})
+CGROUP_UNLIMITED_THRESHOLD = 1 << 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,26 @@ class MemoryPolicy:
     minimum_system_ram_gb: float
     cpu_vae: bool = False
     oom_recovery: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SystemMemorySnapshot:
+    source: str
+    total_bytes: int
+    used_bytes: int
+    available_bytes: int
+    anonymous_bytes: int | None = None
+    file_cache_bytes: int | None = None
+
+    def to_payload(self) -> dict[str, int | str | None]:
+        return {
+            "source": self.source,
+            "total_bytes": self.total_bytes,
+            "used_bytes": self.used_bytes,
+            "available_bytes": self.available_bytes,
+            "anonymous_bytes": self.anonymous_bytes,
+            "file_cache_bytes": self.file_cache_bytes,
+        }
 
 
 MEMORY_POLICIES = (
@@ -55,6 +77,120 @@ MEMORY_POLICIES = (
         oom_recovery=False,
     ),
 )
+
+
+def _read_integer(path: Path) -> int | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value or value == "max":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _read_memory_stat(path: Path) -> dict[str, int]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values: dict[str, int] = {}
+    for line in lines:
+        key, separator, raw = line.partition(" ")
+        if not separator:
+            continue
+        try:
+            values[key] = int(raw)
+        except ValueError:
+            continue
+    return values
+
+
+def _read_proc_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values: dict[str, int] = {}
+    for line in lines:
+        key, separator, raw = line.partition(":")
+        if not separator:
+            continue
+        parts = raw.split()
+        if not parts:
+            continue
+        try:
+            values[key] = int(parts[0]) * 1024
+        except ValueError:
+            continue
+    return values
+
+
+def system_memory_snapshot(
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> SystemMemorySnapshot:
+    """Report the effective container memory limit, with a host fallback."""
+
+    candidates = (
+        (
+            "cgroup_v2",
+            cgroup_root / "memory.current",
+            cgroup_root / "memory.max",
+            cgroup_root / "memory.stat",
+        ),
+        (
+            "cgroup_v1",
+            cgroup_root / "memory" / "memory.usage_in_bytes",
+            cgroup_root / "memory" / "memory.limit_in_bytes",
+            cgroup_root / "memory" / "memory.stat",
+        ),
+    )
+    for source, usage_path, limit_path, stat_path in candidates:
+        used = _read_integer(usage_path)
+        limit = _read_integer(limit_path)
+        if (
+            used is None
+            or limit is None
+            or limit <= 0
+            or limit >= CGROUP_UNLIMITED_THRESHOLD
+        ):
+            continue
+        stat = _read_memory_stat(stat_path)
+        anonymous = stat.get("anon", stat.get("total_rss"))
+        file_cache = stat.get("file", stat.get("total_cache"))
+        return SystemMemorySnapshot(
+            source=source,
+            total_bytes=limit,
+            used_bytes=max(0, used),
+            available_bytes=max(0, limit - used),
+            anonymous_bytes=anonymous,
+            file_cache_bytes=file_cache,
+        )
+
+    try:
+        import psutil
+    except ModuleNotFoundError:
+        meminfo = _read_proc_meminfo()
+        total = meminfo.get("MemTotal", 0)
+        available = meminfo.get("MemAvailable", 0)
+        if total <= 0 or available < 0:
+            raise RuntimeError("could not determine system memory capacity")
+        return SystemMemorySnapshot(
+            source="proc_meminfo_host",
+            total_bytes=total,
+            used_bytes=max(0, total - available),
+            available_bytes=available,
+        )
+    memory = psutil.virtual_memory()
+    return SystemMemorySnapshot(
+        source="psutil_host",
+        total_bytes=int(memory.total),
+        used_bytes=int(memory.total - memory.available),
+        available_bytes=int(memory.available),
+    )
 
 
 def memory_policy(key: str) -> MemoryPolicy:

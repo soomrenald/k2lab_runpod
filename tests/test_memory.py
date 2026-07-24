@@ -8,17 +8,62 @@ from unittest.mock import Mock, patch
 
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
+    SystemMemorySnapshot,
     configure_comfy_vram_args,
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
     oom_recovery_reserve_vram_gb,
     resolve_vram_mode,
+    system_memory_snapshot,
 )
 from k2_region_lab.worker.runtime import CriticalGpuMemoryPressure, ComfyBaselineRuntime
 
 
 class MemoryPolicyTests(unittest.TestCase):
+    def test_cgroup_v2_memory_limit_takes_precedence_over_host_ram(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "memory.current").write_text("42500000000\n", encoding="utf-8")
+            (root / "memory.max").write_text("50000000000\n", encoding="utf-8")
+            (root / "memory.stat").write_text(
+                "anon 32000000000\nfile 9000000000\n",
+                encoding="utf-8",
+            )
+
+            snapshot = system_memory_snapshot(root)
+
+        self.assertEqual(
+            snapshot,
+            SystemMemorySnapshot(
+                source="cgroup_v2",
+                total_bytes=50_000_000_000,
+                used_bytes=42_500_000_000,
+                available_bytes=7_500_000_000,
+                anonymous_bytes=32_000_000_000,
+                file_cache_bytes=9_000_000_000,
+            ),
+        )
+
+    def test_cgroup_v1_memory_limit_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = root / "memory"
+            memory.mkdir()
+            (memory / "memory.usage_in_bytes").write_text("30\n", encoding="utf-8")
+            (memory / "memory.limit_in_bytes").write_text("100\n", encoding="utf-8")
+            (memory / "memory.stat").write_text(
+                "total_rss 20\ntotal_cache 8\n",
+                encoding="utf-8",
+            )
+
+            snapshot = system_memory_snapshot(root)
+
+        self.assertEqual(snapshot.source, "cgroup_v1")
+        self.assertEqual(snapshot.available_bytes, 70)
+        self.assertEqual(snapshot.anonymous_bytes, 20)
+        self.assertEqual(snapshot.file_cache_bytes, 8)
+
     def test_safe_16gb_policy_keeps_four_gib_free(self) -> None:
         policy = memory_policy("safe_16gb")
         self.assertEqual(policy.reserve_vram_gb, 4.0)
@@ -127,8 +172,16 @@ class MemoryPolicyTests(unittest.TestCase):
         runtime.reserve_vram_gb = 2.0
         runtime.memory_snapshot = Mock(
             side_effect=[
-                {"gpu_free_bytes": 8 * 1024**3},
-                {"gpu_free_bytes": 3 * 1024**3},
+                {
+                    "gpu_free_bytes": 8 * 1024**3,
+                    "ram_available_bytes": 20 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+                {
+                    "gpu_free_bytes": 3 * 1024**3,
+                    "ram_available_bytes": 20 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
             ]
         )
         management = SimpleNamespace(
@@ -151,6 +204,57 @@ class MemoryPolicyTests(unittest.TestCase):
             force_full_load=True,
         )
         management.unload_all_models.assert_not_called()
+        self.assertEqual(result["retained_components"], ["baseline_transformer"])
+        self.assertFalse(result["regional_loras_retained"])
+
+    def test_resident_cache_releases_baseline_when_pod_ram_reserve_is_not_met(
+        self,
+    ) -> None:
+        runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.model = object()
+        runtime.keep_model_loaded = True
+        runtime.vram_mode = "high_vram"
+        runtime.reserve_vram_gb = 2.0
+        runtime.memory_snapshot = Mock(
+            side_effect=[
+                {
+                    "gpu_free_bytes": 8 * 1024**3,
+                    "ram_available_bytes": 16 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+                {
+                    "gpu_free_bytes": 3 * 1024**3,
+                    "ram_available_bytes": 4 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+                {
+                    "gpu_free_bytes": 40 * 1024**3,
+                    "ram_available_bytes": 30 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+            ]
+        )
+        management = SimpleNamespace(
+            load_models_gpu=Mock(),
+            unload_all_models=Mock(),
+            soft_empty_cache=Mock(),
+        )
+        comfy = SimpleNamespace(model_management=management)
+
+        with patch.dict(
+            "sys.modules",
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            result = runtime.retain_baseline_model_if_safe()
+
+        self.assertFalse(result["resident"])
+        self.assertEqual(result["reason"], "pod_ram_reserve_not_met")
+        management.load_models_gpu.assert_called_once_with(
+            [runtime.model],
+            minimum_memory_required=0,
+            force_full_load=True,
+        )
+        management.unload_all_models.assert_called_once()
 
     def test_vae_decode_stays_inside_torch_inference_mode(self) -> None:
         active = False

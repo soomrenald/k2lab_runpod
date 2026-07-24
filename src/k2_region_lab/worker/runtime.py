@@ -45,6 +45,7 @@ from k2_region_lab.memory import (
     memory_policy,
     oom_recovery_reserve_vram_gb,
     resolve_vram_mode,
+    system_memory_snapshot,
 )
 from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.projector import (
@@ -84,11 +85,7 @@ class CriticalGpuMemoryPressure(RuntimeError):
 
 
 class LoraDeltaStatistics:
-    """Track routed LoRA deltas and the image tokens they materially modify."""
-
-    MODIFIED_THRESHOLD = 0.05
-    ATTENTION_ISOLATION_STRENGTH = 5.0
-    CROSS_LORA_STRENGTH = 3.0
+    """Accumulate routed per-token delta magnitudes without synchronizing each layer."""
 
     def __init__(self, routes: tuple[LoraDeltaRoute, ...]) -> None:
         self.routes = {route.lora_id: route for route in routes}
@@ -103,7 +100,6 @@ class LoraDeltaStatistics:
                 "step_image_energy": None,
                 "step_image_count": 0,
                 "delta_reference": None,
-                "modified_image_flags": None,
                 "calls": 0,
             }
             for route in routes
@@ -113,14 +109,7 @@ class LoraDeltaStatistics:
     def _add(previous, value):
         return value if previous is None else previous + value
 
-    def observe(
-        self,
-        route: LoraDeltaRoute,
-        token_norms,
-        *,
-        route_kind: str,
-        reference_norms=None,
-    ) -> None:
+    def observe(self, route: LoraDeltaRoute, token_norms, *, route_kind: str) -> None:
         state = self.values[route.lora_id]
         state["calls"] += 1
         batch = int(token_norms.shape[0])
@@ -139,15 +128,11 @@ class LoraDeltaStatistics:
             text_norms = token_norms
             image_norms = None
             text_observations = batch * enabled_text
-        elif int(token_norms.shape[-1]) == len(route.image_token_mask):
-            text_norms = None
-            image_norms = token_norms
-            text_observations = 0
         else:
             text_norms = token_norms[:, :text_count]
             image_norms = token_norms[:, text_count:]
             text_observations = batch * enabled_text
-        if enabled_text and text_norms is not None:
+        if enabled_text:
             text_energy = text_norms.square().sum()
             state["text_energy"] = self._add(state["text_energy"], text_energy)
             state["text_count"] += text_observations
@@ -164,116 +149,6 @@ class LoraDeltaStatistics:
                 state["step_image_energy"], image_energy
             )
             state["step_image_count"] += batch * enabled_image
-        if (
-            not route.global_scope
-            and reference_norms is not None
-            and route_kind == "combined"
-        ):
-            self._update_modified_image_flags(
-                route,
-                token_norms,
-                reference_norms,
-            )
-
-    def _update_modified_image_flags(
-        self,
-        route: LoraDeltaRoute,
-        token_norms,
-        reference_norms,
-    ) -> None:
-        import torch
-
-        text_count = len(route.text_token_mask)
-        image_count = len(route.image_token_mask)
-        sequence_length = int(token_norms.shape[-1])
-        if sequence_length == image_count:
-            image_norms = token_norms
-            image_reference = reference_norms
-        elif sequence_length == text_count + image_count:
-            image_norms = token_norms[..., text_count:]
-            image_reference = reference_norms[..., text_count:]
-        else:
-            return
-        if image_norms.ndim != 2 or image_reference.shape != image_norms.shape:
-            return
-        region_mask = torch.tensor(
-            route.image_token_mask,
-            device=image_norms.device,
-            dtype=torch.bool,
-        ).reshape(1, image_count)
-        modified = (
-            image_norms.float()
-            / image_reference.float().clamp_min(1.0e-6)
-            > self.MODIFIED_THRESHOLD
-        ) & region_mask
-        state = self.values[route.lora_id]
-        previous = state["modified_image_flags"]
-        if previous is None or previous.shape != modified.shape:
-            state["modified_image_flags"] = modified.detach()
-        else:
-            state["modified_image_flags"] = (
-                previous.to(device=modified.device) | modified
-            ).detach()
-
-    @staticmethod
-    def _fit_attention_batch(flags, batch: int):
-        if int(flags.shape[0]) == batch:
-            return flags
-        if int(flags.shape[0]) == 1:
-            return flags.repeat(batch, 1)
-        return flags[:1].repeat(batch, 1)
-
-    def apply_asymmetric_attention(
-        self,
-        scores,
-        *,
-        start: int,
-        end: int,
-        text_token_count: int,
-    ) -> None:
-        """Prevent outside image queries from reading LoRA-modified image keys."""
-
-        image_start = max(start, text_token_count)
-        if image_start >= end:
-            return
-        query_start = image_start - text_token_count
-        query_end = end - text_token_count
-        batch = int(scores.shape[0])
-        active_flags = []
-        for route in self.routes.values():
-            if route.global_scope:
-                continue
-            flags = self.values[route.lora_id]["modified_image_flags"]
-            if flags is None:
-                continue
-            flags = self._fit_attention_batch(
-                flags.to(device=scores.device, dtype=bool),
-                batch,
-            )
-            active_flags.append(flags)
-            query_flags = flags[:, query_start:query_end]
-            blocked = (~query_flags[:, :, None]) & flags[:, None, :]
-            scores[
-                :, :, image_start - start : end - start, text_token_count:
-            ].add_(
-                blocked[:, None].to(dtype=scores.dtype),
-                alpha=-self.ATTENTION_ISOLATION_STRENGTH,
-            )
-        if len(active_flags) < 2:
-            return
-        for left_index, left in enumerate(active_flags):
-            left_queries = left[:, query_start:query_end]
-            for right_index, right in enumerate(active_flags):
-                if left_index == right_index:
-                    continue
-                blocked = left_queries[:, :, None] & right[:, None, :]
-                scores[
-                    :, :, image_start - start : end - start, text_token_count:
-                ].add_(
-                    blocked[:, None].to(dtype=scores.dtype),
-                    alpha=-self.CROSS_LORA_STRENGTH,
-                )
-
     @staticmethod
     def _rms(energy, count: int) -> float:
         if energy is None or count == 0:
@@ -287,14 +162,6 @@ class LoraDeltaStatistics:
             "text_delta_rms": self._rms(state["text_energy"], state["text_count"]),
             "image_delta_rms": self._rms(state["image_energy"], state["image_count"]),
             "outside_gate_delta_rms": 0.0,
-            "modified_image_tokens": (
-                int(state["modified_image_flags"].sum().item())
-                if state["modified_image_flags"] is not None
-                else 0
-            ),
-            "modified_threshold": self.MODIFIED_THRESHOLD,
-            "attention_isolation_strength": self.ATTENTION_ISOLATION_STRENGTH,
-            "cross_lora_strength": self.CROSS_LORA_STRENGTH,
         }
 
     def regional_attention_scales(self, gain: float) -> dict[str, float]:
@@ -655,11 +522,10 @@ class ComfyBaselineRuntime:
         )
         self.cpu_vae = bool(cpu_vae)
         self.oom_recovery = bool(oom_recovery)
-        import psutil
-
-        if psutil.virtual_memory().available < self.minimum_system_ram_gb * GIB:
+        system_memory = system_memory_snapshot()
+        if system_memory.available_bytes < self.minimum_system_ram_gb * GIB:
             raise MemoryError(
-                "insufficient available system RAM for the selected offload policy: "
+                "insufficient available Pod RAM for the selected offload policy: "
                 f"requires at least {self.minimum_system_ram_gb:.1f} GiB"
             )
         configure_comfy_vram_args(args, self.vram_mode)
@@ -1127,15 +993,7 @@ class ComfyBaselineRuntime:
                     token_norms = torch.linalg.vector_norm(
                         applied.detach(), dim=-1, dtype=torch.float32
                     )
-                    reference_norms = torch.linalg.vector_norm(
-                        base_out.detach(), dim=-1, dtype=torch.float32
-                    )
-                    statistics.observe(
-                        route,
-                        token_norms,
-                        route_kind=self.route_kind,
-                        reference_norms=reference_norms,
-                    )
+                    statistics.observe(route, token_norms, route_kind=self.route_kind)
                     total = total + applied
                 return total
 
@@ -1219,6 +1077,16 @@ class ComfyBaselineRuntime:
         comfy.model_management.unload_all_models()
         generation_model.remove_injections("k2_routed_loras")
         generation_model.remove_injections("k2_projector_delta")
+        remove_attachments = getattr(generation_model, "remove_attachments", None)
+        if callable(remove_attachments):
+            remove_attachments("lora_metadata")
+            remove_attachments("projector_settings")
+        patches = getattr(generation_model, "patches", None)
+        if isinstance(patches, dict):
+            patches.clear()
+        cleanup = getattr(generation_model, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
 
@@ -1251,6 +1119,12 @@ class ComfyBaselineRuntime:
                 "reason": "requires_high_vram",
                 "memory": before,
             }
+        if before["ram_available_bytes"] < before["minimum_ram_bytes"]:
+            return {
+                "resident": False,
+                "reason": "pod_ram_reserve_not_met",
+                "memory": before,
+            }
 
         import comfy.model_management
 
@@ -1281,7 +1155,22 @@ class ComfyBaselineRuntime:
                 "reason": "reserve_not_met",
                 "memory": self.memory_snapshot("resident-model cache released"),
             }
-        return {"resident": True, "reason": "reserve_met", "memory": after}
+        if after["ram_available_bytes"] < after["minimum_ram_bytes"]:
+            comfy.model_management.unload_all_models()
+            gc.collect()
+            comfy.model_management.soft_empty_cache(force=True)
+            return {
+                "resident": False,
+                "reason": "pod_ram_reserve_not_met",
+                "memory": self.memory_snapshot("resident-model cache released"),
+            }
+        return {
+            "resident": True,
+            "reason": "gpu_and_pod_ram_reserves_met",
+            "retained_components": ["baseline_transformer"],
+            "regional_loras_retained": False,
+            "memory": after,
+        }
 
     def _post_upscale_image(
         self,
@@ -1381,19 +1270,25 @@ class ComfyBaselineRuntime:
         }
 
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
-        import psutil
         import torch
 
         free_vram, total_vram = torch.cuda.mem_get_info(torch.cuda.current_device())
-        ram = psutil.virtual_memory()
+        ram = system_memory_snapshot()
         return {
             "stage": stage,
             "gpu_free_bytes": free_vram,
             "gpu_total_bytes": total_vram,
             "gpu_allocated_bytes": torch.cuda.memory_allocated(),
             "gpu_reserved_bytes": torch.cuda.memory_reserved(),
-            "ram_available_bytes": ram.available,
-            "ram_total_bytes": ram.total,
+            "ram_source": ram.source,
+            "ram_available_bytes": ram.available_bytes,
+            "ram_used_bytes": ram.used_bytes,
+            "ram_total_bytes": ram.total_bytes,
+            "ram_anonymous_bytes": ram.anonymous_bytes,
+            "ram_file_cache_bytes": ram.file_cache_bytes,
+            "pod_ram_available_bytes": ram.available_bytes,
+            "pod_ram_used_bytes": ram.used_bytes,
+            "pod_ram_total_bytes": ram.total_bytes,
             "warning_free_bytes": int(self.warning_free_gb * GIB),
             "critical_free_bytes": int(self.critical_free_gb * GIB),
             "minimum_ram_bytes": int(self.minimum_system_ram_gb * GIB),
@@ -1798,7 +1693,6 @@ class ComfyBaselineRuntime:
                 bound_regional_plan,
                 lora_delta_adaptation=regional_lora_delta_adaptation,
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
-                lora_statistics=lora_statistics,
             )
             if bound_regional_plan is not None
             and (bound_regional_plan.spans or bound_regional_plan.emphases)
@@ -2178,7 +2072,6 @@ class ComfyBaselineRuntime:
                 bound_plan,
                 lora_delta_adaptation=regional_lora_delta_adaptation,
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
-                lora_statistics=lora_statistics,
             )
             if bound_plan is not None and bound_plan.spans
             else None
@@ -2816,18 +2709,9 @@ class ComfyBaselineRuntime:
             summary["attention_query_chunk_size"] = (
                 attention_override.query_chunk_size
             )
-            attention_summary = attention_override.summary()
-            summary["lora_delta_adaptation"] = attention_summary
-            summary.update(
-                {
-                    key: attention_summary[key]
-                    for key in (
-                        "text_partition",
-                        "subject_box_exclusion",
-                        "cross_modal_partition",
-                        "image_to_image_attention",
-                        "lora_influence_attention",
-                    )
-                }
-            )
+            summary["lora_delta_adaptation"] = attention_override.summary()
+            summary["text_partition"] = "subject_keys_private_to_region"
+            summary["subject_box_exclusion"] = True
+            summary["cross_modal_partition"] = "subject_text_private_to_box"
+            summary["image_to_image_attention"] = "unmodified"
         return summary

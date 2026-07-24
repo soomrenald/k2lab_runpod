@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { committedNumber } from "../src/numericDraft.ts";
+import { sortOutputFiles } from "../src/outputSort.ts";
 
 assert.equal(committedNumber("", 1, 100), null, "an empty editing draft must remain transient");
 assert.equal(committedNumber("-", -10, 10), null, "an incomplete signed draft must remain transient");
@@ -22,6 +23,13 @@ assert.ok(
     && inspector.includes('label="Keep baseline model loaded between runs"')
     && inspector.includes('updateRuntime({ keepModelLoaded'),
   "Generation Advanced settings must expose working GPU execution-mode, reserve, and residency controls",
+);
+assert.ok(
+  inspector.includes("<SeedField")
+    && inspector.includes('ariaLabel="Seed value"')
+    && inspector.includes('aria-label="Seed behavior"')
+    && !inspector.includes('<Choice label="Seed behavior"'),
+  "Seed behavior must be a dropdown directly attached to the generation seed field",
 );
 assert.ok(
   inspector.includes("toggleRegion(lora, region.id")
@@ -50,6 +58,24 @@ for (const relativePath of [
 }
 
 const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
+const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
+assert.ok(
+  assetPanel.includes('useState<OutputSort>("newest")')
+    && assetPanel.includes("Newest first")
+    && assetPanel.includes("Oldest first")
+    && assetPanel.includes("Name A–Z")
+    && assetPanel.includes("Largest first"),
+  "Outputs must default to newest-first and expose the standard sort choices",
+);
+const outputFixture = [
+  { id: "old", display_name: "image-2.png", modified_at: "2026-01-01T00:00:00Z", size_bytes: 20 },
+  { id: "new", display_name: "image-10.png", modified_at: "2026-02-01T00:00:00Z", size_bytes: 10 },
+  { id: "large", display_name: "alpha.png", modified_at: "2026-01-15T00:00:00Z", size_bytes: 30 },
+];
+assert.deepEqual(sortOutputFiles(outputFixture, "newest").map((item) => item.id), ["new", "large", "old"]);
+assert.deepEqual(sortOutputFiles(outputFixture, "oldest").map((item) => item.id), ["old", "large", "new"]);
+assert.deepEqual(sortOutputFiles(outputFixture, "name-asc").map((item) => item.id), ["large", "old", "new"]);
+assert.deepEqual(sortOutputFiles(outputFixture, "size-desc").map((item) => item.id), ["large", "old", "new"]);
 const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 assert.ok(
   app.includes("provider_resource_not_found")
@@ -144,7 +170,6 @@ assert.ok(
 const transferPanel = await readFile(new URL("../src/components/TransferPanel.tsx", import.meta.url), "utf8");
 assert.ok(transferPanel.includes("controlPlane.transfers(workspaceId)"), "Provider transfer history must restore when the panel opens");
 
-const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(assetPanel.includes("controlPlane.uploads(workspaceId)"), "Local upload history must restore when the panel opens");
 assert.ok(
   assetPanel.includes("asset-thumbnail-grid")

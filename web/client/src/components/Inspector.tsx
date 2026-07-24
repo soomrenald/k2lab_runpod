@@ -402,18 +402,28 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
       <Choice label="Sampler" value={values.sampler} options={COMFYUI_SAMPLERS.map((value) => [value, value])} onChange={(sampler) => update({ sampler })} />
       <Choice label="Scheduler" value={values.scheduler} options={COMFYUI_SCHEDULERS.map((value) => [value, value])} onChange={(scheduler) => update({ scheduler })} />
     </div>
-    <NumberGrid items={mode === "generation" ? [
-      ["Steps", generation.steps, 1, 100, 1, (steps) => updateGeneration({ steps })], ["Seed", generation.seed, 0, 2147483647, 1, (seed) => updateGeneration({ seed })],
-      ["Width", generation.width, 256, 4096, 16, (width) => updateGeneration({ width })], ["Height", generation.height, 256, 4096, 16, (height) => updateGeneration({ height })],
-      ["Inside boost", generation.insideBoost, 0.1, 10, 0.1, (insideBoost) => updateGeneration({ insideBoost })], ["Outside penalty", generation.outsidePenalty, 0, 10, 0.1, (outsidePenalty) => updateGeneration({ outsidePenalty })],
-      ["Spatial falloff", generation.spatialFalloff, 0, 2048, 16, (spatialFalloff) => updateGeneration({ spatialFalloff })], ["Late-step scale", generation.lateStepScale, 0, 1, 0.05, (lateStepScale) => updateGeneration({ lateStepScale })],
-    ] : [
+    {mode === "generation" ? <div className="settings-grid">
+      <LinkedValue label="Steps" value={generation.steps} min={1} max={100} step={1} onChange={(steps) => updateGeneration({ steps })} />
+      <SeedField
+        value={generation.seed}
+        mode={generation.seedMode}
+        batchMode={generation.batchMode}
+        onSeed={(seed) => updateGeneration({ seed })}
+        onMode={(seedMode) => updateGeneration({ seedMode })}
+      />
+      <LinkedValue label="Width" value={generation.width} min={256} max={4096} step={16} onChange={(width) => updateGeneration({ width })} />
+      <LinkedValue label="Height" value={generation.height} min={256} max={4096} step={16} onChange={(height) => updateGeneration({ height })} />
+      <LinkedValue label="Inside boost" value={generation.insideBoost} min={0.1} max={10} step={0.1} onChange={(insideBoost) => updateGeneration({ insideBoost })} />
+      <LinkedValue label="Outside penalty" value={generation.outsidePenalty} min={0} max={10} step={0.1} onChange={(outsidePenalty) => updateGeneration({ outsidePenalty })} />
+      <LinkedValue label="Spatial falloff" value={generation.spatialFalloff} min={0} max={2048} step={16} onChange={(spatialFalloff) => updateGeneration({ spatialFalloff })} />
+      <LinkedValue label="Late-step scale" value={generation.lateStepScale} min={0} max={1} step={0.05} onChange={(lateStepScale) => updateGeneration({ lateStepScale })} />
+    </div> : <NumberGrid items={[
       ["Steps", edit.steps, 1, 100, 1, (steps) => updateEdit({ steps })], ["Seed · fixed", edit.seed, 0, 2147483647, 1, (seed) => updateEdit({ seed })],
       ["Denoise", edit.denoise, 0.05, 1, 0.05, (denoise) => updateEdit({ denoise })], ["Reference retention", edit.referenceRetention, 0, 1, 0.05, (referenceRetention) => updateEdit({ referenceRetention })],
       ["Latent feather", edit.latentFeather, 0, 256, 1, (latentFeather) => updateEdit({ latentFeather })], ["Composite feather", edit.compositeFeather, 0, 256, 1, (compositeFeather) => updateEdit({ compositeFeather })],
       ["Inside boost", edit.insideBoost, 0.1, 10, 0.1, (insideBoost) => updateEdit({ insideBoost })], ["Outside penalty", edit.outsidePenalty, 0, 10, 0.1, (outsidePenalty) => updateEdit({ outsidePenalty })],
       ["Spatial falloff", edit.spatialFalloff, 0, 2048, 1, (spatialFalloff) => updateEdit({ spatialFalloff })], ["Late-step scale", edit.lateStepScale, 0, 1, 0.01, (lateStepScale) => updateEdit({ lateStepScale })],
-    ]} />
+    ]} />}
     {mode === "generation" && <>
       <SectionTitle text="GPU memory" />
       <Choice
@@ -446,7 +456,6 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
         model changes, OOM recovery, and Release memory safely discard the cache.
       </p>
     </>}
-    {mode === "generation" && <Choice label="Seed behavior" value={generation.seedMode} options={generation.batchMode ? [["random", "Random"], ["increment", "Increment"]] : [["fixed", "Fixed"], ["random", "Random"], ["increment", "Increment"]]} onChange={(seedMode) => updateGeneration({ seedMode: seedMode as GenerationSettings["seedMode"] })} />}
     {mode === "generation" && <Check label="Run generation in batch mode" checked={generation.batchMode} onChange={(batchMode) => updateGeneration({ batchMode, seedMode: batchMode && generation.seedMode === "fixed" ? "random" : generation.seedMode })} />}
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
@@ -473,6 +482,26 @@ function ProjectorPanel({ projector, onChange }: { projector: ProjectorSettings;
 
 type NumberItem = [string, number, number, number, number, (value: number) => void];
 function NumberGrid({ items }: { items: NumberItem[] }) { return <div className="settings-grid">{items.map(([label, value, min, max, step, onChange]) => <LinkedValue key={label} label={label} value={value} min={min} max={max} step={step} onChange={onChange} />)}</div>; }
+function SeedField({ value, mode, batchMode, onSeed, onMode }: {
+  value: number;
+  mode: GenerationSettings["seedMode"];
+  batchMode: boolean;
+  onSeed: (value: number) => void;
+  onMode: (value: GenerationSettings["seedMode"]) => void;
+}) {
+  const options: readonly (readonly [GenerationSettings["seedMode"], string])[] = batchMode
+    ? [["random", "Random"], ["increment", "Increment"]]
+    : [["fixed", "Fixed"], ["random", "Random"], ["increment", "Increment"]];
+  return <label className="seed-field">
+    <span>Seed</span>
+    <span className="seed-controls">
+      <DraftNumberInput ariaLabel="Seed value" className="seed-input" value={value} min={0} max={2147483647} step={1} onCommit={onSeed} />
+      <select aria-label="Seed behavior" className="select-input" value={mode} onChange={(event) => onMode(event.target.value as GenerationSettings["seedMode"])}>
+        {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
+      </select>
+    </span>
+  </label>;
+}
 function Choice({ label, value, options, onChange }: { label: string; value: string | number; options: readonly (readonly [string | number, string])[]; onChange: (value: never) => void }) { return <label className="choice-field"><span>{label}</span><select className="select-input" value={value} onChange={(event) => { const match = options.find(([candidate]) => String(candidate) === event.target.value); if (match) onChange(match[0] as never); }}>{options.map(([option, text]) => <option key={option} value={option}>{text}</option>)}</select></label>; }
 function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) { return <label className="check-row compact-check"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span><strong>{label}</strong></span></label>; }
 function SectionTitle({ text }: { text: string }) { return <div className="advanced-section-title">{text}</div>; }
