@@ -570,7 +570,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       [studioSettings.runtime.diffusionModelName, studioSettings.runtime.diffusionModelFileId],
       [studioSettings.runtime.textEncoderName, studioSettings.runtime.textEncoderFileId],
       [studioSettings.runtime.vaeName, studioSettings.runtime.vaeFileId],
-      [studioSettings.runtime.faceDetectorName, studioSettings.runtime.faceDetectorFileId],
+      ...(mode === "face"
+        ? [[studioSettings.runtime.faceDetectorName, studioSettings.runtime.faceDetectorFileId]]
+        : []),
     ].filter(([name, id]) => name && !id).map(([name]) => name);
     if (unresolvedModels.length) {
       report(`Resolve missing model selection(s) in Setup: ${unresolvedModels.join(", ")}.`, "error");
@@ -626,7 +628,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
           text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
           vae_file_id: studioSettings.runtime.vaeFileId || undefined,
-          face_detector_file_id: studioSettings.runtime.faceDetectorFileId || undefined,
+          face_detector_file_id: mode === "face"
+            ? studioSettings.runtime.faceDetectorFileId || undefined
+            : undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,

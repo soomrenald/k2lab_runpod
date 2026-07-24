@@ -19,7 +19,7 @@ const modelKinds: { kind: ModelKind; label: string; idKey: keyof RuntimeSettings
   { kind: "diffusion_models", label: "Diffusion model", idKey: "diffusionModelFileId", nameKey: "diffusionModelName" },
   { kind: "text_encoders", label: "Text encoder", idKey: "textEncoderFileId", nameKey: "textEncoderName" },
   { kind: "vae", label: "VAE", idKey: "vaeFileId", nameKey: "vaeName" },
-  { kind: "face_detection", label: "Face detector", idKey: "faceDetectorFileId", nameKey: "faceDetectorName" },
+  { kind: "face_detection", label: "Face detector (face tools only)", idKey: "faceDetectorFileId", nameKey: "faceDetectorName" },
 ];
 
 export function SetupPanel({ workspaceId, settings, onSettings, onClose, onManageFiles, onTransfers, onEvent }: Props) {

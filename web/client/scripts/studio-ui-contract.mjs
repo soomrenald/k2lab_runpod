@@ -111,6 +111,11 @@ assert.ok(
   "Starting a new job must retain the current output until its replacement completes",
 );
 assert.ok(
+  runRemoteJob.includes('...(mode === "face"')
+    && runRemoteJob.includes('face_detector_file_id: mode === "face"'),
+  "Generation and image editing must not require or submit a face detector",
+);
+assert.ok(
   !workspaceStudio.includes("anchor.download = name")
     && workspaceStudio.includes("Assets › Projects")
     && workspaceStudio.includes("controlPlane.saveProject"),
