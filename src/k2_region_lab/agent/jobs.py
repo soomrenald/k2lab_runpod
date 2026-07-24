@@ -530,16 +530,18 @@ class JobManager:
     async def _base_worker_payload(
         self, request: JobSubmitRequest, state: ProjectState
     ) -> dict[str, Any]:
-        face_detector_path = await self._optional_file_path(
-            request.face_detector_file_id, FileKind.FACE_DETECTION
-        )
-        if face_detector_path is None:
-            face_files = sorted(
-                path
-                for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
-                if path.is_file() and not path.is_symlink()
+        face_detector_path: str | None = None
+        if request.kind == JobKind.REFINE_FACES:
+            face_detector_path = await self._optional_file_path(
+                request.face_detector_file_id, FileKind.FACE_DETECTION
             )
-            face_detector_path = str(face_files[0]) if face_files else None
+            if face_detector_path is None:
+                face_files = sorted(
+                    path
+                    for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
+                    if path.is_file() and not path.is_symlink()
+                )
+                face_detector_path = str(face_files[0]) if face_files else None
         return {
             "comfyui_root": str(self._comfyui_root),
             "diffusion_models": str(self._layout.destination(FileKind.DIFFUSION_MODELS.value)),

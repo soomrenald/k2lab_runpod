@@ -20,7 +20,12 @@ if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
-    from k2_region_lab.agent.domain import FaceDetectionRequest, FileKind, JobSubmitRequest
+    from k2_region_lab.agent.domain import (
+        FaceDetectionRequest,
+        FileKind,
+        JobKind,
+        JobSubmitRequest,
+    )
     from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
@@ -169,7 +174,6 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             FileKind.DIFFUSION_MODELS: "chosen-transformer.safetensors",
             FileKind.TEXT_ENCODERS: "chosen-text.safetensors",
             FileKind.VAE: "chosen-vae.safetensors",
-            FileKind.FACE_DETECTION: "chosen-detector.onnx",
         }
         for kind, filename in filenames.items():
             path = self.app.state.layout.destination(kind.value) / filename
@@ -186,7 +190,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "diffusion_model_file_id": selections[FileKind.DIFFUSION_MODELS],
                 "text_encoder_file_id": selections[FileKind.TEXT_ENCODERS],
                 "vae_file_id": selections[FileKind.VAE],
-                "face_detector_file_id": selections[FileKind.FACE_DETECTION],
+                "face_detector_file_id": "stale-detector-selection",
                 "filename_prefix": "portrait study",
             }
         )
@@ -197,13 +201,48 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(payload["diffusion_model_file"]).name, filenames[FileKind.DIFFUSION_MODELS])
         self.assertEqual(Path(payload["text_encoder_file"]).name, filenames[FileKind.TEXT_ENCODERS])
         self.assertEqual(Path(payload["vae_file"]).name, filenames[FileKind.VAE])
-        self.assertEqual(Path(payload["face_detector_path"]).name, filenames[FileKind.FACE_DETECTION])
+        self.assertIsNone(payload["face_detector_path"])
 
         invalid = request.model_copy(update={"filename_prefix": "../escape"})
         with self.assertRaisesRegex(Exception, "filename"):
             await self.app.state.job_manager._job_payload(
                 "job-id", invalid, project_state(document), document
             )
+
+    async def test_only_face_refinement_resolves_a_face_detector(self) -> None:
+        detector_path = self.app.state.layout.destination("face_detection") / "chosen-detector.onnx"
+        detector_path.write_bytes(b"selected detector")
+        detector = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.FACE_DETECTION, detector_path
+        )
+        document = self._project_document("portrait")
+        state = project_state(document)
+
+        for kind in (JobKind.GENERATE, JobKind.EDIT_IMAGE):
+            with self.subTest(kind=kind):
+                request = JobSubmitRequest.model_validate(
+                    {
+                        "command_id": f"{kind.value}-without-detector",
+                        "kind": kind,
+                        "project_id": "detector-scope-project",
+                        "project": document,
+                        "face_detector_file_id": "missing-detector-selection",
+                    }
+                )
+                payload = await self.app.state.job_manager._base_worker_payload(request, state)
+                self.assertIsNone(payload["face_detector_path"])
+
+        face_request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "face-with-detector",
+                "kind": JobKind.REFINE_FACES,
+                "project_id": "detector-scope-project",
+                "project": document,
+                "face_detector_file_id": detector.id,
+            }
+        )
+        face_payload = await self.app.state.job_manager._base_worker_payload(face_request, state)
+        self.assertEqual(Path(face_payload["face_detector_path"]).name, detector_path.name)
 
     async def test_cloud_project_save_overwrites_and_content_is_safely_readable(self) -> None:
         document = self._project_document("first prompt")
