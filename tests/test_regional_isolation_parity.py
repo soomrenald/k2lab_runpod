@@ -3,8 +3,9 @@ from __future__ import annotations
 import importlib.util
 import unittest
 
-from k2_region_lab.regional_lora import LoraDeltaRoute
-from k2_region_lab.worker.runtime import LoraDeltaStatistics
+from k2_region_lab.regional_prompting import compile_regional_prompt_plan
+from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
 
 TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
@@ -12,99 +13,68 @@ if TORCH_AVAILABLE:
     import torch
 
 
-def _route(
-    lora_id: str,
-    image_mask: tuple[float, ...],
-) -> LoraDeltaRoute:
-    return LoraDeltaRoute(
-        lora_id=lora_id,
-        display_name=lora_id,
-        strength=1.0,
-        global_scope=False,
-        region_ids=(lora_id,),
-        region_names=(lora_id,),
-        text_token_mask=(0.0, 0.0),
-        image_token_mask=image_mask,
-    )
-
-
 @unittest.skipUnless(TORCH_AVAILABLE, "Torch is tested in the ComfyUI worker environment")
 class RegionalIsolationParityTests(unittest.TestCase):
-    def test_modified_tokens_are_derived_from_gated_relative_lora_delta(self) -> None:
-        route = _route("left", (1.0, 0.0, 0.0))
-        statistics = LoraDeltaStatistics((route,))
-
-        statistics.observe(
-            route,
-            torch.tensor([[0.0, 0.0, 0.20, 4.0, 4.0]]),
-            route_kind="combined",
-            reference_norms=torch.ones((1, 5)),
+    def _override(self) -> KreaSpatialAttentionOverride:
+        plan = compile_regional_prompt_plan(
+            32,
+            16,
+            "a unified portrait",
+            (
+                RegionDefinition("left", "Left", PixelBox(0, 0, 16, 16), "red coat"),
+                RegionDefinition("right", "Right", PixelBox(16, 0, 32, 16), "blue coat"),
+            ),
+            falloff_pixels=0.0,
         )
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+        return KreaSpatialAttentionOverride(bound)
 
-        self.assertEqual(
-            statistics.values["left"]["modified_image_flags"].tolist(),
-            [[True, False, False]],
-        )
-        self.assertEqual(statistics.summary("left")["modified_image_tokens"], 1)
+    def test_main_stream_never_changes_image_to_image_scores(self) -> None:
+        override = self._override()
+        text_count = override.plan.text_token_count
+        total = text_count + override.plan.image_token_count
+        reference = torch.zeros((1, 1, total, 1))
+        _fields, _emphases, text_owners, image_owners = override._pair_fields(reference)
+        scores = torch.arange(total * total, dtype=torch.float32).reshape(1, 1, total, total)
+        before = scores[:, :, text_count:, text_count:].clone()
 
-    def test_outside_image_queries_cannot_read_lora_modified_image_keys(self) -> None:
-        route = _route("left", (1.0, 0.0, 0.0))
-        statistics = LoraDeltaStatistics((route,))
-        statistics.observe(
-            route,
-            torch.tensor([[0.0, 0.0, 0.20, 0.0, 0.0]]),
-            route_kind="combined",
-            reference_norms=torch.ones((1, 5)),
-        )
-        scores = torch.zeros((1, 1, 5, 5))
-
-        statistics.apply_asymmetric_attention(
+        override._partition_regional_stream(
             scores,
-            start=0,
-            end=5,
-            text_token_count=2,
+            0,
+            total,
+            text_owners,
+            image_owners,
         )
 
-        modified_image = 2
-        outside_image = 3
-        self.assertEqual(
-            float(scores[0, 0, outside_image, modified_image]),
-            -5.0,
-        )
-        self.assertEqual(
-            float(scores[0, 0, modified_image, outside_image]),
-            0.0,
-        )
-        self.assertEqual(float(scores[0, 0, 0, modified_image]), 0.0)
+        self.assertTrue(torch.equal(scores[:, :, text_count:, text_count:], before))
 
-    def test_cross_lora_attention_receives_the_original_separate_penalty(
-        self,
-    ) -> None:
-        left = _route("left", (1.0, 0.0))
-        right = _route("right", (0.0, 1.0))
-        statistics = LoraDeltaStatistics((left, right))
-        statistics.ATTENTION_ISOLATION_STRENGTH = 0.0
-        reference = torch.ones((1, 4))
-        statistics.observe(
-            left,
-            torch.tensor([[0.0, 0.0, 0.20, 0.0]]),
-            route_kind="combined",
-            reference_norms=reference,
-        )
-        statistics.observe(
-            right,
-            torch.tensor([[0.0, 0.0, 0.0, 0.20]]),
-            route_kind="combined",
-            reference_norms=reference,
-        )
-        scores = torch.zeros((1, 1, 4, 4))
+    def test_subject_text_is_private_without_cutting_global_coherence(self) -> None:
+        override = self._override()
+        text_count = override.plan.text_token_count
+        total = text_count + override.plan.image_token_count
+        reference = torch.zeros((1, 1, total, 1))
+        _fields, _emphases, text_owners, image_owners = override._pair_fields(reference)
+        scores = torch.zeros((1, 1, total, total))
 
-        statistics.apply_asymmetric_attention(
+        override._partition_regional_stream(
             scores,
-            start=0,
-            end=4,
-            text_token_count=2,
+            0,
+            total,
+            text_owners,
+            image_owners,
         )
 
-        self.assertEqual(float(scores[0, 0, 2, 3]), -3.0)
-        self.assertEqual(float(scores[0, 0, 3, 2]), -3.0)
+        left, right = override.plan.spans
+        left_image = text_count
+        right_image = text_count + 1
+        self.assertTrue(torch.isneginf(scores[0, 0, left.start, right_image]))
+        self.assertTrue(torch.isneginf(scores[0, 0, right_image, left.start]))
+        self.assertEqual(float(scores[0, 0, left_image, right_image]), 0.0)
+        self.assertEqual(float(scores[0, 0, right_image, left_image]), 0.0)
+        self.assertEqual(float(scores[0, 0, left_image, 0]), 0.0)
+
+    def test_runtime_summary_declares_unmodified_image_attention(self) -> None:
+        summary = self._override().summary()
+        self.assertEqual(summary["cross_modal_partition"], "subject_text_private_to_box")
+        self.assertEqual(summary["image_to_image_attention"], "unmodified")
+        self.assertNotIn("lora_influence_attention", summary)

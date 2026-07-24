@@ -531,10 +531,6 @@ class RegionalLoraRoutingTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(applied[:, -2], torch.zeros_like(applied[:, -2])))
         self.assertTrue(torch.equal(applied[:, -1], torch.ones_like(applied[:, -1])))
-        self.assertEqual(
-            statistics.values["right"]["modified_image_flags"].tolist(),
-            [[False, True]],
-        )
 
     def test_global_distillation_lora_patches_bare_parameter_beside_bypass_hooks(
         self,
@@ -651,6 +647,43 @@ class RegionalLoraRoutingTests(unittest.TestCase):
                 "empty:True",
             ],
         )
+
+    def test_vae_handoff_discards_lora_patch_tensors_from_generation_clone(self) -> None:
+        comfy = ModuleType("comfy")
+        comfy.__path__ = []
+        management = ModuleType("comfy.model_management")
+        management.unload_all_models = lambda: None
+        management.soft_empty_cache = lambda force=False: None
+        comfy.model_management = management
+
+        class FakeGenerationModel:
+            def __init__(self):
+                self.patches = {"diffusion_model.block.weight": [object()]}
+                self.removed_attachments = []
+                self.cleaned = False
+
+            def remove_injections(self, _key):
+                return None
+
+            def remove_attachments(self, key):
+                self.removed_attachments.append(key)
+
+            def cleanup(self):
+                self.cleaned = True
+
+        generation_model = FakeGenerationModel()
+        with patch.dict(
+            sys.modules,
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            ComfyBaselineRuntime._release_generation_model(generation_model)
+
+        self.assertEqual(generation_model.patches, {})
+        self.assertEqual(
+            generation_model.removed_attachments,
+            ["lora_metadata", "projector_settings"],
+        )
+        self.assertTrue(generation_model.cleaned)
 
 
 if __name__ == "__main__":
