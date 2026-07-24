@@ -37,6 +37,7 @@ export function AssetPanel({
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [selected, setSelected] = useState<File[]>([]);
   const [uploadHistory, setUploadHistory] = useState<UploadSession[]>([]);
+  const [previewed, setPreviewed] = useState<FileRecord | null>(null);
   const [error, setError] = useState("");
   const completedCount = uploadQueue.items.filter((item) => item.state === "completed").length;
   const activeCount = uploadQueue.items.filter((item) => (
@@ -46,14 +47,23 @@ export function AssetPanel({
 
   async function refresh(nextKind = kind) {
     try {
-      const page = await controlPlane.files(workspaceId, nextKind);
-      setFiles(page.items);
+      const items: FileRecord[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await controlPlane.files(workspaceId, nextKind, cursor);
+        items.push(...page.items);
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor);
+      setFiles(items);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load cloud files");
     }
   }
 
-  useEffect(() => { void refresh(kind); }, [kind, workspaceId, completedCount]);
+  useEffect(() => {
+    setPreviewed(null);
+    void refresh(kind);
+  }, [kind, workspaceId, completedCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,7 +115,41 @@ export function AssetPanel({
           </div>
         )}
         {uploadHistory.length > 0 && <div className="transfer-history"><strong>Uploads retained by the workspace</strong>{uploadHistory.map((item) => <button key={item.id} onClick={() => setKind(item.destination_kind)}><span><b>{item.display_name}</b><small>{item.destination_kind.replaceAll("_", " ")} · {formatBytes(item.size_bytes)}{item.state === "uploading" ? " · reselect this file to resume after a browser restart" : ""}</small></span><em className={item.state}>{item.state}</em></button>)}</div>}
-        <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{["inputs", "outputs", "projects"].includes(file.kind) && <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>}{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>{file.kind === "projects" ? "Open project" : "Use in studio"}</button>}</div>)}</div>
+        {kind === "outputs" && files.length > 0 ? (
+          <div className="asset-thumbnail-grid">
+            {files.map((file) => (
+              <article className="asset-thumbnail-card" key={file.id}>
+                <button className="asset-thumbnail" onClick={() => setPreviewed(file)} aria-label={`Preview ${file.display_name}`}>
+                  <img src={controlPlane.fileUrl(workspaceId, file.id)} alt={file.display_name} loading="lazy" />
+                </button>
+                <div className="asset-thumbnail-copy">
+                  <strong title={file.display_name}>{file.display_name}</strong>
+                  <small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small>
+                </div>
+                <div className="asset-thumbnail-actions">
+                  <button className="quiet-button" onClick={() => setPreviewed(file)}>Preview</button>
+                  <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>
+                  {onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>Use in studio</button>}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{["inputs", "projects"].includes(file.kind) && <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>}{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>{file.kind === "projects" ? "Open project" : "Use in studio"}</button>}</div>)}</div>
+        )}
+        {previewed && (
+          <div className="asset-image-preview" role="presentation" onClick={(event) => {
+            if (event.target === event.currentTarget) setPreviewed(null);
+          }}>
+            <div className="asset-image-preview-toolbar">
+              <span><strong>{previewed.display_name}</strong><small>{formatBytes(previewed.size_bytes)}</small></span>
+              <button className="quiet-button" onClick={() => setPreviewed(null)}>Back to thumbnails</button>
+            </div>
+            <div className="asset-image-preview-stage" onClick={() => setPreviewed(null)}>
+              <img src={controlPlane.fileUrl(workspaceId, previewed.id)} alt={previewed.display_name} onClick={(event) => event.stopPropagation()} />
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

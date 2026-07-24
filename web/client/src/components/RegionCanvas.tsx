@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
 import { Icon } from "./Icon";
 
@@ -84,13 +84,45 @@ export function RegionCanvas({
   onToggleFace,
   onAddManualFacePath,
 }: Props) {
+  const stageRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [draftLasso, setDraftLasso] = useState<number[][]>([]);
+  const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const lassoPoints = useRef<number[][]>([]);
 
   const visibleRegions = mode === "face"
     ? []
     : regions.filter((region) => region.layer === activeLayer);
+  const orderedRegions = [
+    ...visibleRegions.filter((region) => region.id !== selectedId),
+    ...visibleRegions.filter((region) => region.id === selectedId),
+  ];
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    function fit(availableWidth: number, availableHeight: number) {
+      if (availableWidth <= 0 || availableHeight <= 0 || canvasWidth <= 0 || canvasHeight <= 0) return;
+      const scale = Math.min(availableWidth / canvasWidth, availableHeight / canvasHeight);
+      const next = { width: canvasWidth * scale, height: canvasHeight * scale };
+      setFrameSize((current) => (
+        Math.abs(current.width - next.width) < 0.5 && Math.abs(current.height - next.height) < 0.5
+          ? current
+          : next
+      ));
+    }
+    const style = window.getComputedStyle(stage);
+    fit(
+      stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom),
+    );
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) fit(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [canvasWidth, canvasHeight]);
 
   function point(event: React.PointerEvent<SVGSVGElement | SVGElement>) {
     const rect = svgRef.current!.getBoundingClientRect();
@@ -106,6 +138,7 @@ export function RegionCanvas({
       const start = point(event);
       event.currentTarget.setPointerCapture(event.pointerId);
       lassoPoints.current = [[start.x, start.y]];
+      setDraftLasso(lassoPoints.current);
       setDrag({ kind: "lasso", startX: start.x, startY: start.y });
       return;
     }
@@ -136,15 +169,15 @@ export function RegionCanvas({
   }
 
   function beginMove(event: React.PointerEvent<SVGRectElement>, region: RegionBox) {
-    event.stopPropagation();
-    onSelect(region.id);
     if (drawMode || selectedId !== region.id) return;
+    event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     const start = point(event);
     setDrag({ kind: "move", regionId: region.id, startX: start.x, startY: start.y, initial: region });
   }
 
   function beginResize(event: React.PointerEvent<SVGRectElement>, region: RegionBox, edge: ResizeEdge) {
+    if (drawMode || selectedId !== region.id) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     const start = point(event);
@@ -158,6 +191,7 @@ export function RegionCanvas({
       const previous = lassoPoints.current.at(-1);
       if (!previous || Math.hypot(current.x - previous[0], current.y - previous[1]) >= 3) {
         lassoPoints.current = [...lassoPoints.current, [current.x, current.y]];
+        setDraftLasso(lassoPoints.current);
       }
       return;
     }
@@ -191,6 +225,7 @@ export function RegionCanvas({
     if (drag?.kind === "lasso") {
       if (lassoPoints.current.length >= 3) onAddManualFacePath(lassoPoints.current);
       lassoPoints.current = [];
+      setDraftLasso([]);
     }
     if (drag?.kind === "draw" && drag.regionId) {
       const region = regions.find((item) => item.id === drag.regionId);
@@ -220,7 +255,7 @@ export function RegionCanvas({
               event.target.value = "";
             }} />
           </label>
-          {sourceUrl && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear image</button>}
+          {(sourceUrl || resultUrl) && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear canvas</button>}
           {mode !== "face" && (
             <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={() => onDrawMode(!drawMode)}>
               <Icon name="plus" /> {drawMode ? "Drawing…" : "Draw region"}
@@ -228,10 +263,19 @@ export function RegionCanvas({
           )}
         </div>
       </div>
-      <div className={`image-stage ${drawMode || lassoMode ? "drawing" : ""}`}>
-        <div className="image-frame">
+      <div ref={stageRef} className={`image-stage ${drawMode || lassoMode ? "drawing" : ""}`}>
+        <div
+          className="image-frame"
+          style={{
+            width: frameSize.width || undefined,
+            height: frameSize.height || undefined,
+            aspectRatio: `${canvasWidth} / ${canvasHeight}`,
+          }}
+        >
           {sourceUrl ? (
             <img className="canvas-image" src={sourceUrl} alt="Loaded source" draggable={false} />
+          ) : resultUrl ? (
+            <img className="canvas-image result-image" src={resultUrl} alt="Generated result" draggable={false} />
           ) : (
             <div className="empty-canvas">
               <div className="empty-orbit"><Icon name={mode === "edit" ? "edit" : mode === "face" ? "face" : "spark"} /></div>
@@ -255,10 +299,10 @@ export function RegionCanvas({
             onPointerCancel={endPointer}
             onClick={(event) => { if (!drawMode && event.target === event.currentTarget) onSelect(null); }}
           >
-            {visibleRegions.map((region) => (
+            {orderedRegions.map((region) => (
               <g className={`region-group ${region.id === selectedId ? "selected" : ""} ${!region.enabled ? "disabled" : ""}`} key={region.id}>
                 <rect className="region-fill" x={region.x} y={region.y} width={region.width} height={region.height}
-                  onPointerDown={(event) => beginMove(event, region)} />
+                  onPointerDown={region.id === selectedId ? (event) => beginMove(event, region) : undefined} />
                 <rect className="region-outline" x={region.x} y={region.y} width={region.width} height={region.height} />
                 <g className="region-label" transform={`translate(${region.x}, ${Math.max(0, region.y - 32)})`}>
                   <rect width={Math.max(112, region.name.length * 13 + 24)} height="28" rx="8" />
@@ -274,6 +318,12 @@ export function RegionCanvas({
             {mode === "face" && manualFacePaths.map((path, index) => (
               <polygon className="manual-face-path" key={`lasso-${index}`} points={path.map((item) => item.join(",")).join(" ")} />
             ))}
+            {mode === "face" && draftLasso.length > 0 && (
+              <polyline
+                className="manual-face-path manual-face-path-draft"
+                points={draftLasso.map((item) => item.join(",")).join(" ")}
+              />
+            )}
             {mode === "face" && faces.map((face) => {
               const [x0, y0, x1, y1] = face.box;
               const selected = selectedFaceIndices.includes(face.index);

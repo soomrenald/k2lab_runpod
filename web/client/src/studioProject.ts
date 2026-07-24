@@ -1,4 +1,5 @@
 import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
+import { reconcilePromptEmphases } from "./promptEmphasis.ts";
 
 export type SeedMode = "fixed" | "random" | "increment";
 export type LoraRoutingMode = "standard" | "character_identity";
@@ -247,12 +248,13 @@ export function createStudioSettings(): StudioSettings {
 }
 
 export function createStudioLora(fileId: string, name: string): StudioLora {
+  const triggerPhrase = defaultLoraTrigger(name);
   const inactive = (): LoraLayerBinding => ({
     enabled: false,
     global: false,
     regionIds: [],
     routingMode: "standard",
-    triggerPhrase: "",
+    triggerPhrase,
   });
   return {
     id: crypto.randomUUID(),
@@ -264,6 +266,10 @@ export function createStudioLora(fileId: string, name: string): StudioLora {
     reference: inactive(),
     targets: inactive(),
   };
+}
+
+export function defaultLoraTrigger(name: string): string {
+  return basename(name).replace(/\.safetensors$/i, "");
 }
 
 export function buildProjectDocument(
@@ -300,7 +306,11 @@ export function buildProjectDocument(
       regional_late_step_scale: generation.lateStepScale,
       regional_lora_delta_adaptation: generation.loraAdaptation,
       regional_lora_delta_adaptation_gain: generation.loraResponse,
-      prompt_emphases: emphasisDocuments(generation.promptEmphases),
+      prompt_emphases: emphasisDocuments(
+        generation.promptEmphases,
+        prompts.generation,
+        regions.filter((region) => region.layer === "generation"),
+      ),
       projector_enabled: generation.projector.enabled,
       projector_preset: generation.projector.preset,
       projector_values: generation.projector.values,
@@ -329,7 +339,11 @@ export function buildProjectDocument(
       width: edit.width,
       height: edit.height,
       reference_global_prompt: prompts.reference,
-      reference_prompt_emphases: emphasisDocuments(edit.referencePromptEmphases),
+      reference_prompt_emphases: emphasisDocuments(
+        edit.referencePromptEmphases,
+        prompts.reference,
+        regions.filter((region) => region.layer === "reference"),
+      ),
       reference_projector_enabled: edit.referenceProjector.enabled,
       reference_projector_preset: edit.referenceProjector.preset,
       reference_projector_values: edit.referenceProjector.values,
@@ -370,8 +384,20 @@ export function buildProjectDocument(
   };
 }
 
-function emphasisDocuments(items: PromptEmphasisState[]) {
-  return items.map(({ scopeId, phrase, strength, occurrence }) => ({
+function emphasisDocuments(
+  items: PromptEmphasisState[],
+  globalPrompt: string,
+  regions: RegionBox[],
+) {
+  const activeRegionPrompts = new Map(
+    regions
+      .filter((region) => region.enabled)
+      .map((region) => [region.id, region.prompt]),
+  );
+  const reconciled = reconcilePromptEmphases(items, (scopeId) => (
+    scopeId === "__global__" ? globalPrompt : activeRegionPrompts.get(scopeId) ?? null
+  ));
+  return reconciled.map(({ scopeId, phrase, strength, occurrence }) => ({
     scope_id: scopeId,
     phrase,
     strength,

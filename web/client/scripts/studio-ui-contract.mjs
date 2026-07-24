@@ -21,6 +21,22 @@ assert.ok(
     && inspector.includes('updateRuntime({ reserveVramGb'),
   "Generation Advanced settings must expose working GPU execution-mode and reserve controls",
 );
+assert.ok(
+  inspector.includes("toggleRegion(lora, region.id")
+    && inspector.includes('activeLayer === "generation"')
+    && inspector.includes("defaultLoraTrigger(lora.name)")
+    && inspector.includes("binding.regionIds.length === 0"),
+  "LoRA routing controls must preserve desktop scope and identity-trigger semantics",
+);
+assert.ok(
+  inspector.includes("promptEmphasisFromSelection")
+    && inspector.includes("reconcilePromptEmphases")
+    && inspector.includes("emphasisAvailable && patch.prompt")
+    && inspector.includes("if (emphasisAvailable)")
+    && inspector.includes('reconcileEmphases("__global__", event.target.value)')
+    && inspector.includes("reconcileEmphases(selected.id, patch.prompt)"),
+  "Prompt edits must repair or remove stale phrase emphasis metadata",
+);
 
 for (const relativePath of [
   "../src/components/Inspector.tsx",
@@ -74,9 +90,38 @@ assert.ok(
 assert.ok(
   workspaceStudio.includes('setUtilityPanel("assets")')
     && workspaceStudio.includes('setUtilityPanel("transfers")')
-    && workspaceStudio.includes('setUtilityPanel("events")')
     && workspaceStudio.includes('setUtilityPanel("setup")'),
   "Utility rail panels must replace one another instead of stacking",
+);
+assert.ok(
+  workspaceStudio.includes("eventDockHeight")
+    && workspaceStudio.includes("event-dock-resize")
+    && workspaceStudio.includes("Resize event log")
+    && workspaceStudio.includes("eventListRef"),
+  "The event history must be a resizable bottom dock that retains multiple visible lines",
+);
+assert.ok(
+  workspaceStudio.includes("setResultUrl(controlPlane.outputUrl")
+    && workspaceStudio.includes('setComparePosition(next.kind === "generate" ? 1 : 0.5)'),
+  "Completed generation outputs must be selected for immediate full-canvas display",
+);
+const runRemoteJob = workspaceStudio.split("async function runRemoteJob()", 2)[1].split("async function cancelRemoteJob", 1)[0];
+assert.ok(
+  !runRemoteJob.includes("setResultUrl(null)"),
+  "Starting a new job must retain the current output until its replacement completes",
+);
+assert.ok(
+  !workspaceStudio.includes("anchor.download = name")
+    && workspaceStudio.includes("Assets › Projects")
+    && workspaceStudio.includes("controlPlane.saveProject"),
+  "Saving must persist projects to workspace assets without forcing a browser download",
+);
+assert.ok(
+  workspaceStudio.includes("FACE_DETECTOR_SOURCE")
+    && workspaceStudio.includes("showFaceDetectorInstall")
+    && workspaceStudio.includes("installFaceDetector")
+    && workspaceStudio.includes('destination_kind: "face_detection"'),
+  "Missing face detection must offer a pinned, managed detector installation",
 );
 
 const transferPanel = await readFile(new URL("../src/components/TransferPanel.tsx", import.meta.url), "utf8");
@@ -84,6 +129,39 @@ assert.ok(transferPanel.includes("controlPlane.transfers(workspaceId)"), "Provid
 
 const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(assetPanel.includes("controlPlane.uploads(workspaceId)"), "Local upload history must restore when the panel opens");
+assert.ok(
+  assetPanel.includes("asset-thumbnail-grid")
+    && assetPanel.includes("asset-image-preview")
+    && assetPanel.includes("Back to thumbnails"),
+  "Output assets must render thumbnails with an in-pane enlarged preview",
+);
+const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+assert.ok(
+  regionCanvas.includes("(sourceUrl || resultUrl)")
+    && regionCanvas.includes("Clear canvas"),
+  "A visible source or generated result must expose an explicit canvas clear control",
+);
+assert.ok(
+  regionCanvas.includes("draftLasso")
+    && regionCanvas.includes("manual-face-path-draft")
+    && regionCanvas.includes('alt="Generated result"'),
+  "The canvas must render both a live lasso draft and a generated result without a source image",
+);
+assert.ok(
+  regionCanvas.includes("orderedRegions")
+    && regionCanvas.includes("visibleRegions.filter((region) => region.id !== selectedId)")
+    && regionCanvas.includes("onPointerDown={region.id === selectedId")
+    && styles.includes(".region-group:not(.selected) { pointer-events: none; }"),
+  "Only the region selected in the inspector may receive move or resize pointer input",
+);
+assert.ok(
+  regionCanvas.includes("new ResizeObserver")
+    && regionCanvas.includes("availableWidth / canvasWidth")
+    && regionCanvas.includes("availableHeight / canvasHeight")
+    && regionCanvas.includes('aspectRatio: `${canvasWidth} / ${canvasHeight}`'),
+  "The canvas frame must scale uniformly against both available axes when the event dock is resized",
+);
 const uploadQueue = await readFile(new URL("../src/useUploadQueue.ts", import.meta.url), "utf8");
 assert.ok(
   workspaceStudio.includes("useUploadQueue(workspace.id")

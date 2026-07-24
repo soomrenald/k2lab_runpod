@@ -6,6 +6,7 @@ import { DraftNumberInput } from "./DraftNumberInput";
 import {
   COMFYUI_SAMPLERS,
   COMFYUI_SCHEDULERS,
+  defaultLoraTrigger,
   PROJECTOR_PRESETS,
   type GenerationSettings,
   type LoraLayerBinding,
@@ -15,6 +16,11 @@ import {
   type StudioSettings,
   type VramMode,
 } from "../studioProject";
+import {
+  promptEmphasisFromSelection,
+  promptEmphasisMatches,
+  reconcilePromptEmphases,
+} from "../promptEmphasis.ts";
 
 type InspectorTab = "prompt" | "regions" | "loras" | "advanced";
 
@@ -69,6 +75,9 @@ export function Inspector(props: Props) {
   function updateSelected(patch: Partial<RegionBox>) {
     if (!selected) return;
     onRegions(regions.map((region) => region.id === selected.id ? { ...region, ...patch } : region));
+    if (emphasisAvailable && patch.prompt !== undefined) {
+      reconcileEmphases(selected.id, patch.prompt);
+    }
   }
 
   function updateGeneration(patch: Partial<GenerationSettings>) {
@@ -108,29 +117,46 @@ export function Inspector(props: Props) {
     else updateEdit({ referencePromptEmphases: next });
   }
 
-  function addEmphasis(scopeId: "__global__" | string, editor: HTMLTextAreaElement | null) {
-    if (!editor || editor.selectionStart === editor.selectionEnd) return;
-    const phrase = editor.value.slice(editor.selectionStart, editor.selectionEnd);
-    if (!phrase.trim()) return;
-    const prefix = editor.value.slice(0, editor.selectionStart);
-    const occurrence = prefix.split(phrase).length - 1;
-    setEmphases([...emphases, {
-      id: crypto.randomUUID(), scopeId, phrase, strength: emphasisStrength, occurrence,
-    }]);
+  function sourceForEmphasis(scopeId: string, changedScopeId?: string, changedSource?: string) {
+    if (scopeId === changedScopeId) return changedSource ?? "";
+    if (scopeId === "__global__") return globalPrompt;
+    const region = regions.find((item) => item.id === scopeId);
+    return region?.enabled ? region.prompt : null;
   }
 
-  function emphasisMatches(item: PromptEmphasisState) {
-    const source = item.scopeId === "__global__"
-      ? globalPrompt
-      : regions.find((region) => region.id === item.scopeId)?.prompt ?? "";
-    let offset = -1;
-    let start = 0;
-    for (let index = 0; index <= item.occurrence; index += 1) {
-      offset = source.indexOf(item.phrase, start);
-      if (offset < 0) return false;
-      start = offset + item.phrase.length;
+  function reconcileEmphases(changedScopeId: string, changedSource: string) {
+    const next = reconcilePromptEmphases(
+      emphases,
+      (scopeId) => sourceForEmphasis(scopeId, changedScopeId, changedSource),
+    );
+    if (
+      next.length !== emphases.length
+      || next.some((item, index) => item !== emphases[index])
+    ) {
+      setEmphases(next);
     }
-    return true;
+  }
+
+  function addEmphasis(scopeId: "__global__" | string, editor: HTMLTextAreaElement | null) {
+    if (!editor || editor.selectionStart === editor.selectionEnd) return;
+    const selectedEmphasis = promptEmphasisFromSelection(
+      editor.value,
+      editor.selectionStart,
+      editor.selectionEnd,
+      scopeId,
+    );
+    if (!selectedEmphasis) return;
+    const current = reconcilePromptEmphases(
+      emphases,
+      (itemScopeId) => sourceForEmphasis(itemScopeId),
+    );
+    setEmphases([...current, {
+      id: crypto.randomUUID(),
+      scopeId,
+      phrase: selectedEmphasis.phrase,
+      strength: emphasisStrength,
+      occurrence: selectedEmphasis.occurrence,
+    }]);
   }
 
   function moveSelected(offset: -1 | 1) {
@@ -158,7 +184,7 @@ export function Inspector(props: Props) {
         ...lora,
         generation: generationIds.length || lora.generation.global
           ? { ...lora.generation, regionIds: generationIds }
-          : { ...lora.generation, global: true, regionIds: [], routingMode: "standard", triggerPhrase: "" },
+          : { ...lora.generation, global: true, regionIds: [], routingMode: "standard" },
         reference: { ...lora.reference, enabled: lora.reference.global || referenceIds.length > 0, regionIds: referenceIds },
         targets: { ...lora.targets, enabled: lora.targets.global || targetIds.length > 0, regionIds: targetIds },
       };
@@ -193,7 +219,12 @@ export function Inspector(props: Props) {
             </label>
             <textarea ref={globalPromptRef} id="global-prompt" className="prompt-area global-area"
               placeholder={mode === "edit" ? "Describe the overall edit intent…" : "Describe the complete scene…"}
-              value={globalPrompt} onChange={(event) => onGlobalPrompt(event.target.value)} />
+              value={globalPrompt} onChange={(event) => {
+                onGlobalPrompt(event.target.value);
+                if (emphasisAvailable) {
+                  reconcileEmphases("__global__", event.target.value);
+                }
+              }} />
             {mode === "edit" && activeLayer === "targets" && <p className="field-help">Combined with each target prompt. Leave blank for box-only instructions.</p>}
           </div>
           {mode !== "face" && <div className="inspector-section">
@@ -218,7 +249,7 @@ export function Inspector(props: Props) {
             <div className="section-inline-title"><span>Phrase emphasis</span></div>
             <LinkedValue label="Selected phrase boost" value={emphasisStrength} min={0} max={2} step={0.1} onChange={setEmphasisStrength} />
             <div className="inline-actions"><button className="tiny-button" onClick={() => addEmphasis("__global__", globalPromptRef.current)}>Emphasize global selection</button>{selected && <button className="tiny-button" onClick={() => addEmphasis(selected.id, regionPromptRef.current)}>Region selection</button>}</div>
-            {emphases.map((item) => <div className={`emphasis-row ${emphasisMatches(item) ? "" : "invalid"}`} key={item.id}>
+            {emphases.map((item) => <div className={`emphasis-row ${promptEmphasisMatches(item, sourceForEmphasis(item.scopeId)) ? "" : "invalid"}`} key={item.id}>
               <span>{item.scopeId === "__global__" ? "Global" : regions.find((region) => region.id === item.scopeId)?.name ?? "Missing region"}: “{item.phrase}”</span>
               <DraftNumberInput min={0} max={2} step={0.1} value={item.strength} onCommit={(strength) => setEmphases(emphases.map((entry) => entry.id === item.id ? { ...entry, strength } : entry))} />
               <button className="icon-button danger" onClick={() => setEmphases(emphases.filter((entry) => entry.id !== item.id))}><Icon name="trash" /></button>
@@ -309,6 +340,19 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   function updateBinding(lora: StudioLora, patch: Partial<LoraLayerBinding>) {
     update(lora.id, { [bindingKey]: { ...lora[bindingKey], ...patch } });
   }
+  function toggleRegion(lora: StudioLora, regionId: string, checked: boolean) {
+    const binding = lora[bindingKey];
+    const regionIds = checked
+      ? [...binding.regionIds, regionId]
+      : binding.regionIds.filter((id) => id !== regionId);
+    if (regionIds.length > 0) {
+      updateBinding(lora, { enabled: true, global: false, regionIds });
+    } else if (activeLayer === "generation") {
+      updateBinding(lora, { enabled: true, global: true, regionIds: [], routingMode: "standard" });
+    } else {
+      updateBinding(lora, { enabled: false, global: false, regionIds: [] });
+    }
+  }
   return <div className="inspector-section lora-panel">
     <div className="section-inline-title"><span>LoRA library</span><button className="tiny-button" onClick={onChoose}><Icon name="plus" /> Add cloud LoRA</button></div>
     {loras.map((lora) => {
@@ -319,9 +363,9 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
         {activeLayer !== "generation" && <label className="check-row compact-check"><input type="checkbox" checked={binding.enabled} onChange={(event) => updateBinding(lora, { enabled: event.target.checked, global: event.target.checked ? (binding.global || binding.regionIds.length === 0) : false, routingMode: event.target.checked && binding.regionIds.length === 0 ? "standard" : binding.routingMode })} /><span><strong>Use on this layer</strong></span></label>}
         {binding.enabled && <>
           <label className="check-row compact-check"><input type="checkbox" checked={binding.global} onChange={(event) => updateBinding(lora, { global: event.target.checked, regionIds: event.target.checked ? [] : binding.regionIds, routingMode: event.target.checked ? "standard" : binding.routingMode })} /><span><strong>Global</strong></span></label>
-          {!binding.global && <div className="region-assignment-list">{regions.map((region) => <label className="check-row compact-check" key={region.id}><input type="checkbox" checked={binding.regionIds.includes(region.id)} onChange={(event) => updateBinding(lora, { regionIds: event.target.checked ? [...binding.regionIds, region.id] : binding.regionIds.filter((id) => id !== region.id) })} /><span>{region.name}</span></label>)}</div>}
-          <label className="field-label">Routing</label><select className="select-input compact-select" value={binding.routingMode} disabled={binding.global} onChange={(event) => updateBinding(lora, { routingMode: event.target.value as LoraLayerBinding["routingMode"] })}><option value="standard">Standard regional</option><option value="character_identity">Character identity (face)</option></select>
-          {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}
+          {!binding.global && <div className="region-assignment-list">{regions.map((region) => <label className="check-row compact-check" key={region.id}><input type="checkbox" checked={binding.regionIds.includes(region.id)} onChange={(event) => toggleRegion(lora, region.id, event.target.checked)} /><span>{region.name}</span></label>)}</div>}
+          <label className="field-label">Routing</label><select className="select-input compact-select" value={binding.routingMode} disabled={binding.global || binding.regionIds.length === 0} onChange={(event) => updateBinding(lora, { routingMode: event.target.value as LoraLayerBinding["routingMode"] })}><option value="standard">Standard regional</option><option value="character_identity">Character identity (face)</option></select>
+          {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} onBlur={() => { if (!binding.triggerPhrase.trim()) updateBinding(lora, { triggerPhrase: defaultLoraTrigger(lora.name) }); }} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}
         </>}
       </div>;
     })}
