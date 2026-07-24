@@ -76,6 +76,7 @@ class ProjectStateTests(unittest.TestCase):
             projector_identity_protection=0.65,
             vram_mode="high_vram",
             reserve_vram_gb=1.5,
+            keep_model_loaded=True,
             prompt_emphases=(
                 PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "two distinct people", 0.5),
             ),
@@ -109,6 +110,7 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(restored.projector_identity_protection, 0.65)
         self.assertEqual(restored.vram_mode, "high_vram")
         self.assertEqual(restored.reserve_vram_gb, 1.5)
+        self.assertTrue(restored.keep_model_loaded)
 
     def test_vram_controls_are_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "VRAM mode"):

@@ -54,6 +54,8 @@ class SubprocessWorkerExecutor:
         self._worker_python = worker_python
         self._working_directory = working_directory
         self._process: asyncio.subprocess.Process | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self.resident = False
 
     async def run(
         self,
@@ -66,28 +68,34 @@ class SubprocessWorkerExecutor:
                 "The configured GPU worker runtime is unavailable.",
                 503,
             )
-        environment = self._worker_environment()
-        self._process = await asyncio.create_subprocess_exec(
-            str(self._worker_python),
-            "-m",
-            "k2_region_lab.worker.entrypoint",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self._working_directory,
-            env=environment,
-        )
+        if self._process is None or self._process.returncode is not None:
+            environment = self._worker_environment()
+            self._process = await asyncio.create_subprocess_exec(
+                str(self._worker_python),
+                "-m",
+                "k2_region_lab.worker.entrypoint",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._working_directory,
+                env=environment,
+            )
+            assert self._process.stderr is not None
+            self._stderr_task = asyncio.create_task(
+                self._discard_stderr(self._process.stderr)
+            )
         assert self._process.stdin is not None
         assert self._process.stdout is not None
-        assert self._process.stderr is not None
+        keep_requested = bool(commands[-1].get("payload", {}).get("keep_model_loaded"))
+        terminal_command_id = str(commands[-1]["command_id"])
         for command in commands:
             encoded = json.dumps(command, separators=(",", ":"), allow_nan=False)
             self._process.stdin.write((encoded + "\n").encode("utf-8"))
         await self._process.stdin.drain()
-        self._process.stdin.close()
-        stderr_task = asyncio.create_task(self._discard_stderr(self._process.stderr))
+        if not keep_requested:
+            self._process.stdin.close()
         try:
-            async for encoded in self._process.stdout:
+            while encoded := await self._process.stdout.readline():
                 if len(encoded) > 1024 * 1024:
                     raise JobError(
                         "worker_protocol_invalid",
@@ -109,23 +117,44 @@ class SubprocessWorkerExecutor:
                         502,
                     )
                 await on_event(event)
-            return await self._process.wait()
+                event_payload = event.get("payload")
+                if (
+                    str(event.get("command_id")) == terminal_command_id
+                    and str(event.get("state")) == "complete"
+                    and isinstance(event_payload, dict)
+                    and bool(event_payload.get("resident"))
+                ):
+                    self.resident = True
+                    return 0
+            self.resident = False
+            if not self._process.stdin.is_closing():
+                self._process.stdin.close()
+                await self._process.stdin.wait_closed()
+            result = await self._process.wait()
+            if self._stderr_task is not None:
+                await self._stderr_task
+                self._stderr_task = None
+            return result
         except BaseException:
             await self.cancel()
             raise
-        finally:
-            await stderr_task
 
     async def cancel(self) -> None:
         process = self._process
-        if process is None or process.returncode is not None:
+        self.resident = False
+        if process is None:
             return
-        process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=3)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+        if self._stderr_task is not None:
+            await self._stderr_task
+            self._stderr_task = None
+        self._process = None
 
     @staticmethod
     async def _discard_stderr(stream: asyncio.StreamReader) -> None:
@@ -179,6 +208,8 @@ class JobManager:
         self._worker_lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._executors: dict[str, WorkerExecutor] = {}
+        self._resident_executor: WorkerExecutor | None = None
+        self._resident_key: tuple[str, ...] | None = None
         self._cancelled: set[str] = set()
         self._recover_interrupted()
 
@@ -246,6 +277,8 @@ class JobManager:
         tasks = list(self._tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._worker_lock:
+            await self._drop_resident_executor()
 
     async def release_worker_memory(self) -> list[str]:
         job_ids = list(self._tasks)
@@ -257,6 +290,8 @@ class JobManager:
         tasks = list(self._tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._worker_lock:
+            await self._drop_resident_executor()
         self._readiness_callback(False)
         return job_ids
 
@@ -278,7 +313,13 @@ class JobManager:
                     message="Starting an isolated GPU worker.",
                 )
                 payload = await self._job_payload(job_id, request, project_state_value, project)
-                executor = self._executor_factory()
+                keep_requested = bool(payload.get("keep_model_loaded"))
+                resident_key = self._resident_cache_key(payload)
+                if self._resident_executor is not None and (
+                    not keep_requested or self._resident_key != resident_key
+                ):
+                    await self._drop_resident_executor()
+                executor = self._resident_executor or self._executor_factory()
                 async with self._lock:
                     self._executors[job_id] = executor
                 worker_errors: list[str] = []
@@ -301,6 +342,12 @@ class JobManager:
                         )
 
                 exit_code = await executor.run(self._commands(job_id, request, payload), on_event)
+                if keep_requested and bool(getattr(executor, "resident", False)):
+                    self._resident_executor = executor
+                    self._resident_key = resident_key
+                elif self._resident_executor is executor:
+                    self._resident_executor = None
+                    self._resident_key = None
                 async with self._lock:
                     self._executors.pop(job_id, None)
                 if job_id in self._cancelled:
@@ -345,6 +392,35 @@ class JobManager:
         finally:
             async with self._lock:
                 self._executors.pop(job_id, None)
+
+    async def _drop_resident_executor(self) -> None:
+        executor = self._resident_executor
+        self._resident_executor = None
+        self._resident_key = None
+        if executor is not None:
+            await executor.cancel()
+
+    @staticmethod
+    def _resident_cache_key(payload: dict[str, Any]) -> tuple[str, ...]:
+        keys = (
+            "comfyui_root",
+            "diffusion_models",
+            "text_encoders",
+            "vae",
+            "diffusion_model_file",
+            "text_encoder_file",
+            "vae_file",
+            "face_detector_path",
+            "memory_policy",
+            "vram_mode",
+            "reserve_vram_gb",
+            "minimum_system_ram_gb",
+            "cpu_vae",
+        )
+        return tuple(
+            json.dumps(payload.get(key), sort_keys=True, separators=(",", ":"))
+            for key in keys
+        )
 
     async def _handle_worker_event(self, job_id: str, raw: dict[str, Any]) -> str | None:
         raw_state = str(raw.get("state", "unknown"))
@@ -561,6 +637,7 @@ class JobManager:
             "memory_policy": "custom",
             "vram_mode": state.vram_mode,
             "reserve_vram_gb": state.reserve_vram_gb,
+            "keep_model_loaded": state.keep_model_loaded,
             "minimum_system_ram_gb": 12.0,
             "cpu_vae": False,
             "oom_recovery": True,

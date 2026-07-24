@@ -69,6 +69,27 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
     )
 
 
+def finish_job(
+    runtime: ComfyBaselineRuntime,
+    *,
+    command_id: str | None,
+    completed_label: str,
+) -> bool:
+    retention = runtime.retain_baseline_model_if_safe()
+    resident = bool(retention["resident"])
+    emit(
+        WorkerState.COMPLETE,
+        (
+            f"{completed_label}; baseline model retained in VRAM"
+            if resident
+            else f"{completed_label}; worker releasing GPU and system RAM"
+        ),
+        command_id=command_id,
+        payload=retention,
+    )
+    return resident
+
+
 def main() -> int:
     configure_debug_logging("worker")
     logger = logging.getLogger("k2_region_lab.worker.entrypoint")
@@ -147,6 +168,7 @@ def main() -> int:
                     memory_policy_key=str(payload.get("memory_policy", "safe_16gb")),
                     vram_mode=str(payload.get("vram_mode", "auto")),
                     reserve_vram_gb=float(payload.get("reserve_vram_gb", 4.0)),
+                    keep_model_loaded=bool(payload.get("keep_model_loaded", False)),
                     minimum_system_ram_gb=float(
                         payload.get("minimum_system_ram_gb", 14.0)
                     ),
@@ -283,11 +305,12 @@ def main() -> int:
                     command_id=command_id,
                     payload=generated,
                 )
-                emit(
-                    WorkerState.COMPLETE,
-                    "Generation worker releasing GPU and system RAM",
+                if finish_job(
+                    runtime,
                     command_id=command_id,
-                )
+                    completed_label="Generation complete",
+                ):
+                    continue
                 return 0
             elif kind == CommandKind.EDIT_IMAGE:
                 if runtime is None or not runtime.loaded:
@@ -400,11 +423,12 @@ def main() -> int:
                     command_id=command_id,
                     payload=edited,
                 )
-                emit(
-                    WorkerState.COMPLETE,
-                    "Image-edit worker releasing GPU and system RAM",
+                if finish_job(
+                    runtime,
                     command_id=command_id,
-                )
+                    completed_label="Image edit complete",
+                ):
+                    continue
                 return 0
             elif kind == CommandKind.REFINE_FACES:
                 if runtime is None or not runtime.loaded:
@@ -468,11 +492,12 @@ def main() -> int:
                     command_id=command_id,
                     payload=refined,
                 )
-                emit(
-                    WorkerState.COMPLETE,
-                    "Face refinement worker releasing GPU and system RAM",
+                if finish_job(
+                    runtime,
                     command_id=command_id,
-                )
+                    completed_label="Face refinement complete",
+                ):
+                    continue
                 return 0
             elif kind == CommandKind.SHUTDOWN:
                 emit(WorkerState.COMPLETE, "GPU worker stopped", command_id=command_id)

@@ -18,8 +18,10 @@ assert.ok(
   inspector.includes('label="Execution mode"')
     && inspector.includes('label="VRAM reserve · GiB"')
     && inspector.includes('updateRuntime({ vramMode')
-    && inspector.includes('updateRuntime({ reserveVramGb'),
-  "Generation Advanced settings must expose working GPU execution-mode and reserve controls",
+    && inspector.includes('updateRuntime({ reserveVramGb')
+    && inspector.includes('label="Keep baseline model loaded between runs"')
+    && inspector.includes('updateRuntime({ keepModelLoaded'),
+  "Generation Advanced settings must expose working GPU execution-mode, reserve, and residency controls",
 );
 assert.ok(
   inspector.includes("toggleRegion(lora, region.id")

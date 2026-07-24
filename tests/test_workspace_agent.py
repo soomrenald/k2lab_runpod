@@ -151,7 +151,11 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_generation_payload_uses_project_vram_controls(self) -> None:
         document = self._project_document("portrait")
         document["runtime"].update(
-            {"vram_mode": "high_vram", "reserve_vram_gb": 1.5}
+            {
+                "vram_mode": "high_vram",
+                "reserve_vram_gb": 1.5,
+                "keep_model_loaded": True,
+            }
         )
         request = JobSubmitRequest.model_validate(
             {
@@ -167,6 +171,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["memory_policy"], "custom")
         self.assertEqual(payload["vram_mode"], "high_vram")
         self.assertEqual(payload["reserve_vram_gb"], 1.5)
+        self.assertTrue(payload["keep_model_loaded"])
 
     async def test_generation_payload_resolves_selected_models_and_output_prefix(self) -> None:
         selections: dict[FileKind, str] = {}
@@ -1382,6 +1387,91 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Krea 2 model loading failed", events.text)
             self.assertNotIn("private prompt", events.text)
             self.assertNotIn("/workspace/private", events.text)
+
+    async def test_resident_high_vram_worker_is_reused_and_explicitly_released(self) -> None:
+        executors = []
+
+        class ResidentExecutor:
+            def __init__(self):
+                self.resident = False
+                self.runs = 0
+                self.cancelled = False
+
+            async def run(self, commands, on_event):
+                self.runs += 1
+                self.resident = bool(
+                    commands[-1]["payload"].get("keep_model_loaded")
+                )
+                target = commands[-1]
+                output = (
+                    Path(target["payload"]["output_directory"])
+                    / f"resident-result-{self.runs}.png"
+                )
+                output.write_bytes(b"fake-png")
+                await on_event(
+                    {
+                        "command_id": target["command_id"],
+                        "state": "ready",
+                        "message": "Generation complete",
+                        "payload": {"image_path": str(output)},
+                    }
+                )
+                return 0
+
+            async def cancel(self):
+                self.resident = False
+                self.cancelled = True
+
+        def factory():
+            executor = ResidentExecutor()
+            executors.append(executor)
+            return executor
+
+        app = create_agent_app(self.settings, job_executor_factory=factory)
+        app.state.layout.initialize()
+        document = self._project_document("cached portrait")
+        document["runtime"] = {
+            "vram_mode": "high_vram",
+            "reserve_vram_gb": 2.0,
+            "keep_model_loaded": True,
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            for index in range(2):
+                submitted = await client.post(
+                    "/v1/jobs",
+                    headers=self.headers,
+                    json={
+                        "command_id": f"resident-command-{index}",
+                        "kind": "generate",
+                        "project_id": "resident-project",
+                        "project": document,
+                    },
+                )
+                job = await self._wait_for_job(client, submitted.json()["id"])
+                self.assertEqual(job["state"], "completed", job)
+            document["runtime"]["reserve_vram_gb"] = 3.0
+            changed = await client.post(
+                "/v1/jobs",
+                headers=self.headers,
+                json={
+                    "command_id": "resident-command-changed",
+                    "kind": "generate",
+                    "project_id": "resident-project",
+                    "project": document,
+                },
+            )
+            changed_job = await self._wait_for_job(client, changed.json()["id"])
+            self.assertEqual(changed_job["state"], "completed", changed_job)
+            released = await client.post("/v1/worker/release", headers=self.headers)
+
+        self.assertEqual(len(executors), 2)
+        self.assertEqual(executors[0].runs, 2)
+        self.assertTrue(executors[0].cancelled)
+        self.assertEqual(executors[1].runs, 1)
+        self.assertTrue(executors[1].cancelled)
+        self.assertEqual(released.status_code, 200)
 
     async def test_remote_job_cancellation_stops_isolated_executor(self) -> None:
         started = asyncio.Event()
