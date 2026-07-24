@@ -72,7 +72,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [connectWithoutTimeLimit, setConnectWithoutTimeLimit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [utilityPanel, setUtilityPanel] = useState<"assets" | "transfers" | "setup" | null>(null);
-  const [eventDockOpen, setEventDockOpen] = useState(true);
+  const [eventDockOpen, setEventDockOpen] = useState(false);
   const [eventDockHeight, setEventDockHeight] = useState(138);
   const [showMigration, setShowMigration] = useState(false);
   const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
@@ -130,6 +130,23 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (!eventDockOpen || !eventListRef.current) return;
     eventListRef.current.scrollTop = eventListRef.current.scrollHeight;
   }, [eventDockOpen, eventLog]);
+
+  useEffect(() => {
+    if (developmentBackend || workspace.state !== "ready") return undefined;
+    let cancelled = false;
+    void controlPlane.files(workspace.id, "outputs").then((page) => {
+      const latest = page.items.reduce<FileRecord | null>((newest, candidate) => (
+        !newest || new Date(candidate.modified_at).getTime() > new Date(newest.modified_at).getTime()
+          ? candidate
+          : newest
+      ), null);
+      if (cancelled || !latest) return;
+      setLatestOutputFileId((current) => current ?? latest.id);
+      setResultUrl((current) => current ?? controlPlane.outputUrl(workspace.id, latest.id));
+      setComparePosition(1);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [developmentBackend, workspace.id, workspace.state]);
 
   useEffect(() => {
     if (developmentBackend || workspace.state === "deleted") return undefined;

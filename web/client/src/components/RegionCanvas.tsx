@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
 import { Icon } from "./Icon";
 
@@ -275,7 +275,7 @@ export function RegionCanvas({
           {sourceUrl ? (
             <img className="canvas-image" src={sourceUrl} alt="Loaded source" draggable={false} />
           ) : resultUrl ? (
-            <img className="canvas-image result-image" src={resultUrl} alt="Generated result" draggable={false} />
+            <RetryingResultImage source={resultUrl} alt="Generated result" />
           ) : (
             <div className="empty-canvas">
               <div className="empty-orbit"><Icon name={mode === "edit" ? "edit" : mode === "face" ? "face" : "spark"} /></div>
@@ -285,7 +285,7 @@ export function RegionCanvas({
           )}
           {sourceUrl && resultUrl && (
             <div className="result-clip" style={{ clipPath: `inset(0 ${100 - comparePosition * 100}% 0 0)` }}>
-              <img className="canvas-image result-image" src={resultUrl} alt="Generation result" draggable={false} />
+              <RetryingResultImage source={resultUrl} alt="Generation result" />
             </div>
           )}
           <svg
@@ -348,6 +348,43 @@ export function RegionCanvas({
         </div>
       </div>
     </div>
+  );
+}
+
+function RetryingResultImage({ source, alt }: { source: string; alt: string }) {
+  const [displaySource, setDisplaySource] = useState(source);
+  const retryCount = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    retryCount.current = 0;
+    setDisplaySource(source);
+    return () => {
+      if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    };
+  }, [source]);
+
+  function retry() {
+    if (retryTimer.current !== null || retryCount.current >= 6) return;
+    const delay = Math.min(8_000, 500 * (2 ** retryCount.current));
+    retryTimer.current = window.setTimeout(() => {
+      retryCount.current += 1;
+      retryTimer.current = null;
+      const separator = source.includes("?") ? "&" : "?";
+      setDisplaySource(`${source}${separator}retry=${Date.now()}`);
+    }, delay);
+  }
+
+  return (
+    <img
+      className="canvas-image result-image"
+      src={displaySource}
+      alt={alt}
+      draggable={false}
+      onError={retry}
+      onLoad={() => { retryCount.current = 0; }}
+    />
   );
 }
 
