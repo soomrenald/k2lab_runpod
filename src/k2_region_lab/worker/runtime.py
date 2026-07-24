@@ -466,6 +466,7 @@ class ComfyBaselineRuntime:
         self.requested_vram_mode = "auto"
         self.vram_mode = "dynamic"
         self.reserve_vram_gb = 4.0
+        self.keep_model_loaded = False
         self.warning_free_gb = 4.0
         self.critical_free_gb = 2.0
         self.minimum_system_ram_gb = 14.0
@@ -479,6 +480,7 @@ class ComfyBaselineRuntime:
         memory_policy_key: str = "safe_16gb",
         vram_mode: str = "auto",
         reserve_vram_gb: float = 4.0,
+        keep_model_loaded: bool = False,
         minimum_system_ram_gb: float = 14.0,
         cpu_vae: bool = False,
         oom_recovery: bool = True,
@@ -512,6 +514,7 @@ class ComfyBaselineRuntime:
         self.reserve_vram_gb = effective_reserve_vram_gb(
             policy.key, reserve_vram_gb
         )
+        self.keep_model_loaded = bool(keep_model_loaded)
         self.warning_free_gb = max(self.reserve_vram_gb, policy.warning_free_gb)
         self.critical_free_gb = min(self.warning_free_gb, policy.critical_free_gb)
         self.minimum_system_ram_gb = effective_minimum_system_ram_gb(
@@ -555,6 +558,7 @@ class ComfyBaselineRuntime:
             "requested_vram_mode": self.requested_vram_mode,
             "vram_mode": self.vram_mode,
             "reserve_vram_gb": self.reserve_vram_gb,
+            "keep_model_loaded": self.keep_model_loaded,
             "minimum_system_ram_gb": self.minimum_system_ram_gb,
             "cpu_vae": self.cpu_vae,
             "oom_recovery": self.oom_recovery,
@@ -1094,6 +1098,50 @@ class ComfyBaselineRuntime:
                 {"memory": self.memory_snapshot("post-upscale handoff")},
             )
 
+    def retain_baseline_model_if_safe(self) -> dict[str, Any]:
+        """Keep the baseline transformer on the GPU only above the configured reserve."""
+
+        before = self.memory_snapshot("before resident-model cache")
+        if not self.keep_model_loaded:
+            return {"resident": False, "reason": "disabled", "memory": before}
+        if self.vram_mode != "high_vram":
+            return {
+                "resident": False,
+                "reason": "requires_high_vram",
+                "memory": before,
+            }
+
+        import comfy.model_management
+
+        try:
+            comfy.model_management.load_models_gpu(
+                [self.model],
+                minimum_memory_required=0,
+                force_full_load=True,
+            )
+            after = self.memory_snapshot("resident-model cache loaded")
+        except Exception as error:
+            comfy.model_management.unload_all_models()
+            gc.collect()
+            comfy.model_management.soft_empty_cache(force=True)
+            return {
+                "resident": False,
+                "reason": "insufficient_vram" if self._is_oom(error) else "cache_load_failed",
+                "memory": self.memory_snapshot("resident-model cache declined"),
+            }
+
+        reserve_bytes = int(self.reserve_vram_gb * GIB)
+        if after["gpu_free_bytes"] < reserve_bytes:
+            comfy.model_management.unload_all_models()
+            gc.collect()
+            comfy.model_management.soft_empty_cache(force=True)
+            return {
+                "resident": False,
+                "reason": "reserve_not_met",
+                "memory": self.memory_snapshot("resident-model cache released"),
+            }
+        return {"resident": True, "reason": "reserve_met", "memory": after}
+
     def _post_upscale_image(
         self,
         image,
@@ -1211,6 +1259,7 @@ class ComfyBaselineRuntime:
             "memory_policy": self.memory_policy_key,
             "requested_vram_mode": self.requested_vram_mode,
             "vram_mode": self.vram_mode,
+            "keep_model_loaded": self.keep_model_loaded,
             "cpu_vae": self.cpu_vae,
         }
 

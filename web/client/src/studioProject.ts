@@ -116,6 +116,7 @@ export interface FaceSettings {
 export interface RuntimeSettings {
   vramMode: VramMode;
   reserveVramGb: number;
+  keepModelLoaded: boolean;
   filenamePrefix: string;
   diffusionModelFileId: string;
   diffusionModelName: string;
@@ -234,6 +235,7 @@ export function createStudioSettings(): StudioSettings {
     runtime: {
       vramMode: "auto",
       reserveVramGb: 1,
+      keepModelLoaded: false,
       filenamePrefix: "baseline",
       diffusionModelFileId: "",
       diffusionModelName: "",
@@ -374,6 +376,7 @@ export function buildProjectDocument(
     runtime: {
       vram_mode: runtime.vramMode,
       reserve_vram_gb: runtime.reserveVramGb,
+      keep_model_loaded: runtime.keepModelLoaded,
       filename_prefix: runtime.filenamePrefix,
       diffusion_model_file: runtime.diffusionModelName || null,
       text_encoder_file: runtime.textEncoderName || null,
@@ -553,6 +556,7 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   settings.runtime = {
     vramMode: vramModeValue(runtime.vram_mode),
     reserveVramGb: numberValue(runtime.reserve_vram_gb, settings.runtime.reserveVramGb),
+    keepModelLoaded: booleanValue(runtime.keep_model_loaded, settings.runtime.keepModelLoaded),
     filenamePrefix: stringValue(runtime.filename_prefix, settings.runtime.filenamePrefix),
     diffusionModelFileId: "",
     diffusionModelName: basename(stringValue(runtime.diffusion_model_file, "")),

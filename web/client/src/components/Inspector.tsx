@@ -435,9 +435,15 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
         step={0.5}
         onChange={(reserveVramGb) => updateRuntime({ reserveVramGb })}
       />
+      <Check
+        label="Keep baseline model loaded between runs"
+        checked={settings.runtime.keepModelLoaded}
+        onChange={(keepModelLoaded) => updateRuntime({ keepModelLoaded })}
+      />
       <p className="field-help">
-        Reserve is safety headroom kept free. High VRAM keeps the model resident and is intended
-        for 40+ GiB GPUs. OOM recovery still performs one safer retry.
+        With this option enabled, resolved High VRAM mode retains the worker and baseline
+        transformer only while the configured reserve remains free. Other modes, memory pressure,
+        model changes, OOM recovery, and Release memory safely discard the cache.
       </p>
     </>}
     {mode === "generation" && <Choice label="Seed behavior" value={generation.seedMode} options={generation.batchMode ? [["random", "Random"], ["increment", "Increment"]] : [["fixed", "Fixed"], ["random", "Random"], ["increment", "Increment"]]} onChange={(seedMode) => updateGeneration({ seedMode: seedMode as GenerationSettings["seedMode"] })} />}

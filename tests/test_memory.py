@@ -119,6 +119,39 @@ class MemoryPolicyTests(unittest.TestCase):
         )
         runtime._recover_from_oom.assert_called_once()
 
+    def test_high_vram_resident_cache_keeps_transformer_only_above_reserve(self) -> None:
+        runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.model = object()
+        runtime.keep_model_loaded = True
+        runtime.vram_mode = "high_vram"
+        runtime.reserve_vram_gb = 2.0
+        runtime.memory_snapshot = Mock(
+            side_effect=[
+                {"gpu_free_bytes": 8 * 1024**3},
+                {"gpu_free_bytes": 3 * 1024**3},
+            ]
+        )
+        management = SimpleNamespace(
+            load_models_gpu=Mock(),
+            unload_all_models=Mock(),
+            soft_empty_cache=Mock(),
+        )
+        comfy = SimpleNamespace(model_management=management)
+
+        with patch.dict(
+            "sys.modules",
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            result = runtime.retain_baseline_model_if_safe()
+
+        self.assertTrue(result["resident"])
+        management.load_models_gpu.assert_called_once_with(
+            [runtime.model],
+            minimum_memory_required=0,
+            force_full_load=True,
+        )
+        management.unload_all_models.assert_not_called()
+
     def test_vae_decode_stays_inside_torch_inference_mode(self) -> None:
         active = False
 
