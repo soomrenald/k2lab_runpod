@@ -1,19 +1,59 @@
 import assert from "node:assert/strict";
 import {
   buildProjectDocument,
+  createStudioLora,
   createStudioSettings,
+  defaultLoraTrigger,
   loadStudioProjectDocument,
   projectDocumentFromPng,
 } from "../src/studioProject.ts";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../src/eventLog.ts";
+import {
+  promptEmphasisFromSelection,
+  promptEmphasisMatches,
+  reconcilePromptEmphases,
+} from "../src/promptEmphasis.ts";
+
+assert.deepEqual(
+  promptEmphasisFromSelection("red coat, red coat", 10, 18, "__global__"),
+  { phrase: "red coat", occurrence: 1 },
+);
+assert.deepEqual(
+  promptEmphasisFromSelection("  portrait subject.  ", 2, 19, "person"),
+  { phrase: "portrait subject", occurrence: 0 },
+);
+assert.equal(
+  promptEmphasisMatches(
+    { scopeId: "__global__", phrase: "portrait", occurrence: 1 },
+    "portrait reference",
+  ),
+  false,
+);
+assert.deepEqual(
+  reconcilePromptEmphases(
+    [
+      { id: "stale-copy", scopeId: "__global__", phrase: "portrait", occurrence: 4 },
+      { id: "deleted", scopeId: "__global__", phrase: "missing", occurrence: 0 },
+    ],
+    () => "portrait reference",
+  ),
+  [{ id: "stale-copy", scopeId: "__global__", phrase: "portrait", occurrence: 0 }],
+);
 
 const settings = createStudioSettings();
+const newLora = createStudioLora("opaque-new-lora", "folder/character.safetensors");
+assert.equal(defaultLoraTrigger("folder/character.safetensors"), "character");
+assert.equal(newLora.generation.triggerPhrase, "character");
+assert.equal(newLora.reference.triggerPhrase, "character");
+assert.equal(newLora.targets.triggerPhrase, "character");
 settings.generation.seed = 8123;
 settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;
 settings.generation.batchCount = 4;
 settings.generation.promptEmphases = [{
-  id: "not-persisted", scopeId: "person", phrase: "red coat", strength: 1.2, occurrence: 0,
+  id: "not-persisted", scopeId: "person", phrase: "red coat", strength: 1.2, occurrence: 7,
+}, {
+  id: "stale-not-persisted", scopeId: "person", phrase: "missing phrase", strength: 0.4, occurrence: 0,
 }];
 settings.edit.width = 768;
 settings.edit.height = 1152;
@@ -46,6 +86,12 @@ const loras = [{
 }];
 const prompts = { generation: "studio portrait", reference: "portrait reference", targets: "change clothing" };
 const first = buildProjectDocument(regions, prompts, settings, loras, "source.png");
+assert.deepEqual(first.generation.prompt_emphases, [{
+  scope_id: "person", phrase: "red coat", strength: 1.2, occurrence: 0,
+}]);
+assert.deepEqual(first.image_edit.reference_prompt_emphases, [{
+  scope_id: "__global__", phrase: "portrait", strength: 0.7, occurrence: 0,
+}]);
 const loaded = loadStudioProjectDocument(first);
 const second = buildProjectDocument(loaded.regions, loaded.prompts, loaded.settings, loaded.loras, loaded.sourceName);
 assert.deepEqual(second, first);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { CSSProperties } from "react";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -35,6 +36,7 @@ interface Props {
 }
 
 const starterRegions: RegionBox[] = [];
+const FACE_DETECTOR_SOURCE = "https://huggingface.co/acvlab/FantasyPortrait/resolve/14df15cac6721a1cabdb9ecbdc0fbd6d3e49154b/face_det.onnx";
 type StudioEventKind = "info" | "error" | "worker";
 
 interface StudioEvent {
@@ -69,7 +71,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [connectPodId, setConnectPodId] = useState("");
   const [connectWithoutTimeLimit, setConnectWithoutTimeLimit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
-  const [utilityPanel, setUtilityPanel] = useState<"assets" | "transfers" | "events" | "setup" | null>(null);
+  const [utilityPanel, setUtilityPanel] = useState<"assets" | "transfers" | "setup" | null>(null);
+  const [eventDockOpen, setEventDockOpen] = useState(true);
+  const [eventDockHeight, setEventDockHeight] = useState(138);
   const [showMigration, setShowMigration] = useState(false);
   const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
   const [migrationConfirmation, setMigrationConfirmation] = useState("");
@@ -90,7 +94,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [lassoMode, setLassoMode] = useState(false);
   const [faceDimensions, setFaceDimensions] = useState({ width: 1024, height: 1024 });
   const [latestOutputFileId, setLatestOutputFileId] = useState<string | null>(null);
+  const [showFaceDetectorInstall, setShowFaceDetectorInstall] = useState(false);
+  const [faceDetectorInstalling, setFaceDetectorInstalling] = useState(false);
+  const [faceDetectorTransfer, setFaceDetectorTransfer] = useState<RemoteTransfer | null>(null);
+  const [faceDetectorInstallError, setFaceDetectorInstallError] = useState("");
   const eventCursor = useRef<string | undefined>(undefined);
+  const eventListRef = useRef<HTMLDivElement>(null);
+  const eventResize = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const openProjectInput = useRef<HTMLInputElement>(null);
   const importPngInput = useRef<HTMLInputElement>(null);
 
@@ -115,6 +125,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   )).length;
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
+
+  useEffect(() => {
+    if (!eventDockOpen || !eventListRef.current) return;
+    eventListRef.current.scrollTop = eventListRef.current.scrollHeight;
+  }, [eventDockOpen, eventLog]);
 
   useEffect(() => {
     if (developmentBackend || workspace.state === "deleted") return undefined;
@@ -157,6 +172,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (next.state === "completed" && next.output_file_ids[0]) {
           setLatestOutputFileId(next.output_file_ids[0]);
           setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
+          setComparePosition(next.kind === "generate" ? 1 : 0.5);
           report(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.", "worker");
         } else if (next.error_message) {
           report(next.error_message, "error");
@@ -189,7 +205,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const canStart = workspace.state === "stopped" || workspace.state === "error";
   const showAssets = utilityPanel === "assets";
   const showTransfers = utilityPanel === "transfers";
-  const showEvents = utilityPanel === "events";
   const showSetup = utilityPanel === "setup";
   const leaseMinutes = Math.max(0, Math.round((new Date(workspace.lease_expires_at).getTime() - Date.now()) / 60_000));
   const readiness = useMemo(() => Object.entries(workspace.readiness), [workspace.readiness]);
@@ -393,22 +408,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report("Project filename must be a filename, not a path.", "error");
       return;
     }
+    if (workspace.state !== "ready") {
+      report("Start the workspace before saving a project to persistent storage.", "error");
+      return;
+    }
     const projectDocument = buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null);
-    const url = URL.createObjectURL(new Blob([`${JSON.stringify(projectDocument, null, 2)}\n`], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    if (!developmentBackend && workspace.state === "ready") {
-      try {
-        await controlPlane.saveProject(workspace.id, name, projectDocument);
-        report(`Saved project ${name} locally and to persistent workspace storage.`);
-      } catch (caught) {
-        report(caught instanceof Error ? `Local copy saved, but cloud project save failed: ${caught.message}` : "Local copy saved, but cloud project save failed.", "error");
-      }
-    } else {
-      report(`Saved local project ${name}. Start the workspace to persist a cloud copy.`);
+    try {
+      await controlPlane.saveProject(workspace.id, name, projectDocument);
+      report(`Saved ${name} to workspace Assets › Projects. Download it there when needed.`);
+    } catch (caught) {
+      report(caught instanceof Error ? `Project save failed: ${caught.message}` : "Project save failed.", "error");
     }
   }
 
@@ -587,7 +596,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }
     setBusy(true);
     setMessage("");
-    setResultUrl(null);
     eventCursor.current = undefined;
     try {
       await controlPlane.previewUnifiedPrompt(
@@ -690,19 +698,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }
   }
 
-  async function detectFaces() {
-    if (!cloudSource) {
-      report("Choose an uploaded input or prior output before detecting faces.", "error");
-      setAssetPurpose("source");
-      setUtilityPanel("assets");
-      return;
-    }
+  async function runFaceDetection(faceDetectorFileId: string) {
+    if (!cloudSource) return;
     setBusy(true);
     report("Detecting faces in the isolated worker…", "worker");
     try {
       const result = await controlPlane.detectFaces(workspace.id, {
         input_file_id: cloudSource.id,
-        face_detector_file_id: studioSettings.runtime.faceDetectorFileId || undefined,
+        face_detector_file_id: faceDetectorFileId,
         threshold: studioSettings.face.detectorThreshold,
         provider: studioSettings.face.detectorProvider,
       });
@@ -716,6 +719,87 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report(caught instanceof Error ? caught.message : "Face detection failed", "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function detectFaces() {
+    if (!cloudSource) {
+      report("Choose an uploaded input or prior output before detecting faces.", "error");
+      setAssetPurpose("source");
+      setUtilityPanel("assets");
+      return;
+    }
+    if (studioSettings.runtime.faceDetectorFileId) {
+      await runFaceDetection(studioSettings.runtime.faceDetectorFileId);
+      return;
+    }
+    setBusy(true);
+    try {
+      const installed = await allFiles("face_detection");
+      const detector = installed[0];
+      if (!detector) {
+        setFaceDetectorInstallError("");
+        setFaceDetectorTransfer(null);
+        setShowFaceDetectorInstall(true);
+        return;
+      }
+      setStudioSettings((current) => ({
+        ...current,
+        runtime: {
+          ...current.runtime,
+          faceDetectorFileId: detector.id,
+          faceDetectorName: detector.display_name,
+        },
+      }));
+      await runFaceDetection(detector.id);
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not inspect installed face detectors", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function installFaceDetector() {
+    setFaceDetectorInstalling(true);
+    setFaceDetectorInstallError("");
+    try {
+      report("Inspecting the pinned FantasyPortrait face detector…");
+      await controlPlane.previewHuggingFace(workspace.id, FACE_DETECTOR_SOURCE, []);
+      let transfer = await controlPlane.startHuggingFace(workspace.id, {
+        source_url: FACE_DETECTOR_SOURCE,
+        destination_kind: "face_detection",
+        allow_patterns: [],
+        allow_unsafe_format: false,
+      });
+      setFaceDetectorTransfer(transfer);
+      report("Downloading face_det.onnx into persistent workspace storage…");
+      for (let attempt = 0; attempt < 600 && !["completed", "failed", "cancelled"].includes(transfer.state); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        transfer = await controlPlane.transfer(workspace.id, transfer.id);
+        setFaceDetectorTransfer(transfer);
+      }
+      if (transfer.state !== "completed") {
+        throw new Error(transfer.error_message ?? `Face detector installation ${transfer.state}.`);
+      }
+      const detector = transfer.files.find((file) => file.kind === "face_detection");
+      if (!detector) throw new Error("The face detector download completed without an installed ONNX file.");
+      setStudioSettings((current) => ({
+        ...current,
+        runtime: {
+          ...current.runtime,
+          faceDetectorFileId: detector.id,
+          faceDetectorName: detector.display_name,
+        },
+      }));
+      setShowFaceDetectorInstall(false);
+      report(`Installed and selected ${detector.display_name}.`, "worker");
+      await runFaceDetection(detector.id);
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : "Face detector installation failed";
+      setFaceDetectorInstallError(detail);
+      report(detail, "error");
+    } finally {
+      setFaceDetectorInstalling(false);
     }
   }
 
@@ -787,8 +871,26 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     return () => window.removeEventListener("keydown", projectShortcut);
   });
 
+  function resizeEventDock(event: React.PointerEvent<HTMLDivElement>) {
+    const resize = eventResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const maximum = Math.max(120, Math.floor(window.innerHeight * 0.55));
+    setEventDockHeight(Math.max(82, Math.min(maximum, resize.startHeight + resize.startY - event.clientY)));
+  }
+
+  function finishEventDockResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (eventResize.current?.pointerId !== event.pointerId) return;
+    eventResize.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
   return (
-    <div className="studio-shell">
+    <div
+      className={`studio-shell ${eventDockOpen ? "with-event-dock" : ""}`}
+      style={{ "--event-dock-height": `${eventDockHeight}px` } as CSSProperties}
+    >
       <header className="studio-topbar">
         <div className="brand-lockup"><span className="brand-mark">K2</span><span><strong>Region Lab</strong><small>Cloud studio</small></span></div>
         <div className="project-actions">
@@ -868,7 +970,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         <div className="utility-rail">
           <RailButton icon="folder" label={pendingUploadCount ? `Assets · ${pendingUploadCount}` : "Assets"} active={showAssets} onClick={() => { setAssetPurpose("source"); setUtilityPanel("assets"); }} />
           <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setUtilityPanel("transfers")} />
-          <RailButton icon="events" label="Events" active={showEvents} onClick={() => setUtilityPanel("events")} />
+          <RailButton icon="events" label="Events" active={eventDockOpen} onClick={() => {
+            setUtilityPanel(null);
+            setEventDockOpen((current) => !current);
+          }} />
           <RailButton icon="settings" label="Setup" active={showSetup} onClick={() => setUtilityPanel("setup")} />
         </div>
       </aside>
@@ -945,6 +1050,40 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         </div>
       </main>
 
+      {eventDockOpen && (
+        <section className="event-dock" aria-label="Studio event log">
+          <div
+            className="event-dock-resize"
+            role="separator"
+            aria-label="Resize event log"
+            aria-orientation="horizontal"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              eventResize.current = {
+                pointerId: event.pointerId,
+                startY: event.clientY,
+                startHeight: eventDockHeight,
+              };
+            }}
+            onPointerMove={resizeEventDock}
+            onPointerUp={finishEventDockResize}
+            onPointerCancel={finishEventDockResize}
+          ><span /></div>
+          <div className="event-dock-toolbar">
+            <div><strong>Event history</strong><small>{eventLog.length} / {EVENT_LOG_LIMIT}</small></div>
+            <span>Drag the handle to show more or fewer lines</span>
+            <button className="quiet-button" disabled={eventLog.length === 0} onClick={() => setEventLog([])}>Clear</button>
+            <button className="quiet-button" disabled={busy || !running || developmentBackend} onClick={() => void releaseWorkerMemory()}>Release memory</button>
+            <button className="quiet-button" onClick={() => setEventDockOpen(false)}>Hide</button>
+          </div>
+          <div ref={eventListRef} className="event-list event-dock-list" role="log" aria-live="polite">
+            {eventLog.length === 0
+              ? <p className="field-help">Events from generation, transfers, saves, and face tools will appear here.</p>
+              : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.kind}</span><p>{entry.message}</p></article>)}
+          </div>
+        </section>
+      )}
+
       <footer className="action-bar">
         <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
         <div className="memory-meter"><span>Job</span><div><i style={{ width: job?.progress_total ? `${Math.min(100, job.progress_current / job.progress_total * 100)}%` : "0%" }} /></div><small>{job?.progress_total ? `${job.progress_current}/${job.progress_total}` : running ? "Idle" : "Released"}</small></div>
@@ -984,19 +1123,24 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showEvents && (
-        <div className="asset-backdrop">
-          <section className="asset-panel event-panel glass-card" aria-label="Studio event log">
-            <header><div><p className="kicker">Bounded local history</p><h2>Event log</h2><small>{eventLog.length} / {EVENT_LOG_LIMIT} events retained</small></div><button className="quiet-button" onClick={() => setUtilityPanel(null)}>Close</button></header>
-            <div className="event-actions">
-              <p>Oldest entries are automatically discarded when the log reaches its limit.</p>
-              <button className="quiet-button" disabled={eventLog.length === 0} onClick={() => setEventLog([])}>Clear log</button>
-              <button className="quiet-button" disabled={busy || !running || developmentBackend} onClick={() => void releaseWorkerMemory()}>Release worker memory</button>
-            </div>
-            <div className="event-list" role="log" aria-live="polite">
-              {eventLog.length === 0
-                ? <p className="field-help">No events yet.</p>
-                : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.kind}</span><p>{entry.message}</p></article>)}
+      {showFaceDetectorInstall && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal face-detector-modal" role="dialog" aria-modal="true" aria-labelledby="face-detector-install-title">
+            <div className="danger-icon face-detector-icon"><Icon name="face" /></div>
+            <p className="kicker">Optional model required</p>
+            <h2 id="face-detector-install-title">Install face detection?</h2>
+            <p>Face detection needs the 371 KB FantasyPortrait <code>face_det.onnx</code> model. K2 can download the pinned Apache-2.0 upstream file directly into this workspace and select it automatically.</p>
+            {faceDetectorTransfer && (
+              <div className="transfer-progress">
+                <div><i style={{ width: `${faceDetectorTransfer.bytes_total ? Math.min(100, faceDetectorTransfer.bytes_complete / faceDetectorTransfer.bytes_total * 100) : 0}%` }} /></div>
+                <span>{faceDetectorTransfer.state}{faceDetectorTransfer.bytes_total ? ` · ${Math.round(faceDetectorTransfer.bytes_complete / faceDetectorTransfer.bytes_total * 100)}%` : ""}</span>
+              </div>
+            )}
+            {faceDetectorInstallError && <div className="error-banner">{faceDetectorInstallError}</div>}
+            <p className="field-help">Source: <a href="https://huggingface.co/acvlab/FantasyPortrait/blob/14df15cac6721a1cabdb9ecbdc0fbd6d3e49154b/face_det.onnx" target="_blank" rel="noreferrer">acvlab/FantasyPortrait</a></p>
+            <div className="modal-actions">
+              <button className="quiet-button" disabled={faceDetectorInstalling} onClick={() => setShowFaceDetectorInstall(false)}>Not now</button>
+              <button className="primary-button" disabled={faceDetectorInstalling} onClick={() => void installFaceDetector()}>{faceDetectorInstalling ? "Installing…" : faceDetectorInstallError ? "Retry install" : "Install and detect faces"}</button>
             </div>
           </section>
         </div>
