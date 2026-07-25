@@ -224,6 +224,33 @@ class TransferManager:
                     return record, path
         raise TransferError("file_not_found", "The file does not exist.", 404)
 
+    async def delete_file(self, file_id: str) -> FileRecord:
+        if not file_id.isalnum() or len(file_id) > 64:
+            raise TransferError("file_not_found", "The file does not exist.", 404)
+        async with self._lock:
+            index = self._read_index()
+            for key, value in list(index.items()):
+                record_data = value.get("record") if isinstance(value, dict) else None
+                if not record_data or record_data.get("id") != file_id:
+                    continue
+                record = FileRecord.model_validate(record_data)
+                path = self._layout.resolve_relative(record.kind.value, record.display_name)
+                if not path.is_file() or path.is_symlink():
+                    break
+                path.unlink()
+                index.pop(key)
+                self._write_index(index)
+                destination = self._layout.destination(record.kind.value).resolve(strict=True)
+                parent = path.parent
+                while parent != destination and destination in parent.parents:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+                return record
+        raise TransferError("file_not_found", "The file does not exist.", 404)
+
     async def index_existing_file(self, kind: FileKind, path: Path) -> FileRecord:
         destination = self._layout.destination(kind.value).resolve(strict=True)
         if path.is_symlink():

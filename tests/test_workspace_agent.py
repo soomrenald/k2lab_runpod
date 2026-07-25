@@ -312,6 +312,31 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(blocked.status_code, 404)
 
+    async def test_workspace_file_delete_removes_content_and_inventory_record(self) -> None:
+        path = self.root / "models" / "loras" / "character.safetensors"
+        path.write_bytes(b"character weights")
+        record = await asyncio.wait_for(
+            self.app.state.transfer_manager.index_existing_file(FileKind.LORAS, path),
+            timeout=2,
+        )
+
+        deleted = await asyncio.wait_for(
+            self.client.delete(f"/v1/files/{record.id}", headers=self.headers),
+            timeout=2,
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["id"], record.id)
+        self.assertFalse(path.exists())
+
+        inventory = self.app.state.transfer_manager._scan_kind(FileKind.LORAS)
+        self.assertEqual(inventory, [])
+        missing = await asyncio.wait_for(
+            self.client.delete(f"/v1/files/{record.id}", headers=self.headers),
+            timeout=2,
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["code"], "file_not_found")
+
     async def test_face_detection_indexes_boxes_and_uses_opaque_input(self) -> None:
         observed: dict[str, object] = {}
 

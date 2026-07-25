@@ -149,6 +149,13 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         inventory = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/files?kind=inputs")
         self.assertEqual(inventory.status_code, 200)
         self.assertEqual(inventory.json(), {"items": [], "next_cursor": None})
+        unavailable_delete = await self.client.delete(
+            f"/api/v1/workspaces/{workspace['id']}/files/missing-file"
+        )
+        self.assertEqual(unavailable_delete.status_code, 501)
+        self.assertEqual(
+            unavailable_delete.json()["code"], "development_feature_unavailable"
+        )
         unavailable_upload = await self.client.post(
             f"/api/v1/workspaces/{workspace['id']}/uploads",
             json={

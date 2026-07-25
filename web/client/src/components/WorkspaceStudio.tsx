@@ -56,6 +56,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [sourceName, setSourceName] = useState("");
   const [cloudSource, setCloudSource] = useState<FileRecord | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [resultName, setResultName] = useState("");
   const [comparePosition, setComparePosition] = useState(0.5);
   const [globalPrompts, setGlobalPrompts] = useState<Record<RegionLayer, string>>({
     generation: "",
@@ -145,6 +146,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       if (cancelled || !latest) return;
       setLatestOutputFileId((current) => current ?? latest.id);
       setResultUrl((current) => current ?? controlPlane.outputUrl(workspace.id, latest.id));
+      setResultName((current) => current || latest.display_name);
       setComparePosition(1);
     }).catch(() => undefined);
     return () => { cancelled = true; };
@@ -227,8 +229,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         }
         setJob(next);
         if (next.state === "completed" && next.output_file_ids[0]) {
-          setLatestOutputFileId(next.output_file_ids[0]);
-          setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
+          const outputFileId = next.output_file_ids[0];
+          setLatestOutputFileId(outputFileId);
+          setResultUrl(controlPlane.outputUrl(workspace.id, outputFileId));
+          setResultName(`k2lab-${outputFileId.slice(0, 12)}.png`);
+          void allFiles("outputs").then((items) => {
+            const output = items.find((file) => file.id === outputFileId);
+            if (output) setResultName(output.display_name);
+          }).catch(() => undefined);
           setComparePosition(next.kind === "generate" ? 1 : 0.5);
           report(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.", "worker");
         } else if (next.error_message) {
@@ -324,6 +332,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setSourceName("");
     setCloudSource(null);
     setResultUrl(null);
+    setResultName("");
     setFaceDetections([]);
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
@@ -342,6 +351,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setSourceName("");
     setCloudSource(null);
     setResultUrl(null);
+    setResultName("");
     setGlobalPrompts({ generation: "", reference: "", targets: "" });
     setStudioSettings(createStudioSettings());
     setLoras([]);
@@ -414,6 +424,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setStudioSettings(loaded.settings);
     setLoras(loaded.loras);
     setResultUrl(null);
+    setResultName("");
     const restoredSource = byName([...inputFiles, ...outputFiles], loaded.sourceName);
     setCloudSource(restoredSource ?? null);
     setFaceDetections([]);
@@ -1086,6 +1097,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             sourceUrl={sourceUrl}
             sourceName={sourceName}
             resultUrl={resultUrl}
+            resultName={resultName}
             regions={regions}
             selectedId={selectedId}
             drawMode={drawMode}

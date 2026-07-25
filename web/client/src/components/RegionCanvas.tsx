@@ -37,6 +37,7 @@ interface Props {
   sourceUrl: string | null;
   sourceName: string;
   resultUrl: string | null;
+  resultName: string;
   regions: RegionBox[];
   selectedId: string | null;
   drawMode: boolean;
@@ -65,6 +66,7 @@ export function RegionCanvas({
   sourceUrl,
   sourceName,
   resultUrl,
+  resultName,
   regions,
   selectedId,
   drawMode,
@@ -90,6 +92,10 @@ export function RegionCanvas({
   const [draftLasso, setDraftLasso] = useState<number[][]>([]);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const lassoPoints = useRef<number[][]>([]);
+  const downloadUrl = resultUrl || sourceUrl;
+  const downloadName = resultUrl
+    ? (resultName || "k2lab-generated-image.png")
+    : (sourceName || "k2lab-canvas-image.png");
 
   const visibleRegions = mode === "face"
     ? []
@@ -255,6 +261,11 @@ export function RegionCanvas({
               event.target.value = "";
             }} />
           </label>
+          {downloadUrl && (
+            <a className="quiet-button canvas-download" href={downloadUrl} download={downloadName}>
+              <Icon name="download" /> Download image
+            </a>
+          )}
           {(sourceUrl || resultUrl) && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear canvas</button>}
           {mode !== "face" && (
             <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={() => onDrawMode(!drawMode)}>

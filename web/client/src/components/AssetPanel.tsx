@@ -36,10 +36,12 @@ export function AssetPanel({
 }: Props) {
   const [kind, setKind] = useState<FileKind>(initialKind);
   const [files, setFiles] = useState<FileRecord[]>([]);
-  const [selected, setSelected] = useState<File[]>([]);
+  const [selectedUploads, setSelectedUploads] = useState<File[]>([]);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [uploadHistory, setUploadHistory] = useState<UploadSession[]>([]);
   const [previewed, setPreviewed] = useState<FileRecord | null>(null);
   const [outputSort, setOutputSort] = useState<OutputSort>("newest");
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
   const completedCount = uploadQueue.items.filter((item) => item.state === "completed").length;
   const activeCount = uploadQueue.items.filter((item) => (
@@ -61,6 +63,10 @@ export function AssetPanel({
         cursor = page.next_cursor ?? undefined;
       } while (cursor);
       setFiles(items);
+      const availableIds = new Set(items.map((file) => file.id));
+      setSelectedFileIds((current) => new Set(
+        [...current].filter((fileId) => availableIds.has(fileId)),
+      ));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load cloud files");
     }
@@ -68,6 +74,10 @@ export function AssetPanel({
 
   useEffect(() => {
     setPreviewed(null);
+    setSelectedFileIds(new Set());
+  }, [kind, workspaceId]);
+
+  useEffect(() => {
     void refresh(kind);
   }, [kind, workspaceId, completedCount]);
 
@@ -81,12 +91,55 @@ export function AssetPanel({
   }, [workspaceId]);
 
   function enqueueSelected() {
-    if (!selected.length) return;
+    if (!selectedUploads.length) return;
     setError("");
-    uploadQueue.enqueue(selected, kind);
-    setSelected([]);
+    uploadQueue.enqueue(selectedUploads, kind);
+    setSelectedUploads([]);
     onEvent?.("Uploads continue in the background when this panel is closed.", "info");
   }
+
+  function toggleFile(fileId: string) {
+    setSelectedFileIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  }
+
+  async function deleteFiles(targets: FileRecord[]) {
+    if (!targets.length || deleting) return;
+    const description = targets.length === 1
+      ? `"${targets[0].display_name}"`
+      : `${targets.length} selected files`;
+    if (!window.confirm(`Permanently delete ${description} from the workspace? This cannot be undone.`)) return;
+    setDeleting(true);
+    setError("");
+    const deletedIds = new Set<string>();
+    const failures: string[] = [];
+    for (const file of targets) {
+      try {
+        await controlPlane.deleteFile(workspaceId, file.id);
+        deletedIds.add(file.id);
+      } catch (caught) {
+        failures.push(`${file.display_name}: ${caught instanceof Error ? caught.message : "delete failed"}`);
+      }
+    }
+    if (deletedIds.size) {
+      setFiles((current) => current.filter((file) => !deletedIds.has(file.id)));
+      setSelectedFileIds((current) => new Set(
+        [...current].filter((fileId) => !deletedIds.has(fileId)),
+      ));
+      setPreviewed((current) => current && deletedIds.has(current.id) ? null : current);
+      onEvent?.(`Deleted ${deletedIds.size} workspace file${deletedIds.size === 1 ? "" : "s"}.`, "info");
+    }
+    if (failures.length) {
+      setError(`Could not delete ${failures.length} file${failures.length === 1 ? "" : "s"}. ${failures.join(" · ")}`);
+    }
+    setDeleting(false);
+  }
+
+  const selectedFiles = displayedFiles.filter((file) => selectedFileIds.has(file.id));
 
   return (
     <div className="asset-backdrop">
@@ -94,9 +147,9 @@ export function AssetPanel({
         <header><div><p className="kicker">Persistent workspace</p><h2>Cloud files</h2></div><button className="quiet-button" onClick={onClose}>Close</button></header>
         <div className="asset-kind-tabs">{kinds.map((item) => <button key={item.value} className={kind === item.value ? "active" : ""} onClick={() => setKind(item.value)}>{item.label}</button>)}</div>
         <div className="asset-upload">
-          <label className="quiet-button">Choose local files<input type="file" multiple hidden onClick={(event) => { event.currentTarget.value = ""; }} onChange={(event) => { setSelected(Array.from(event.target.files ?? [])); }} /></label>
-          <span>{selected.length ? `${selected.length} file${selected.length === 1 ? "" : "s"} selected` : "No files selected"}</span>
-          <button className="primary-button" disabled={!selected.length} onClick={enqueueSelected}>Queue for {kinds.find((item) => item.value === kind)?.label}</button>
+          <label className="quiet-button">Choose local files<input type="file" multiple hidden onClick={(event) => { event.currentTarget.value = ""; }} onChange={(event) => { setSelectedUploads(Array.from(event.target.files ?? [])); }} /></label>
+          <span>{selectedUploads.length ? `${selectedUploads.length} file${selectedUploads.length === 1 ? "" : "s"} selected` : "No files selected"}</span>
+          <button className="primary-button" disabled={!selectedUploads.length} onClick={enqueueSelected}>Queue for {kinds.find((item) => item.value === kind)?.label}</button>
         </div>
         <p className="field-help">Uploads run one at a time in queue order and continue when you close Assets or open another panel.</p>
         {error && <div className="error-banner">{error}</div>}
@@ -121,26 +174,37 @@ export function AssetPanel({
           </div>
         )}
         {uploadHistory.length > 0 && <div className="transfer-history"><strong>Uploads retained by the workspace</strong>{uploadHistory.map((item) => <button key={item.id} onClick={() => setKind(item.destination_kind)}><span><b>{item.display_name}</b><small>{item.destination_kind.replaceAll("_", " ")} · {formatBytes(item.size_bytes)}{item.state === "uploading" ? " · reselect this file to resume after a browser restart" : ""}</small></span><em className={item.state}>{item.state}</em></button>)}</div>}
-        {kind === "outputs" && (
-          <div className="asset-output-toolbar">
-            <span>{files.length} output{files.length === 1 ? "" : "s"}</span>
-            <label>
-              <span>Sort</span>
-              <select className="select-input" value={outputSort} onChange={(event) => setOutputSort(event.target.value as OutputSort)}>
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="name-asc">Name A–Z</option>
-                <option value="name-desc">Name Z–A</option>
-                <option value="size-desc">Largest first</option>
-                <option value="size-asc">Smallest first</option>
-              </select>
-            </label>
+        <div className="asset-file-toolbar">
+          <span>{files.length} file{files.length === 1 ? "" : "s"} · {selectedFileIds.size} selected</span>
+          <div>
+            {kind === "outputs" && (
+              <label>
+                <span>Sort</span>
+                <select className="select-input" value={outputSort} onChange={(event) => setOutputSort(event.target.value as OutputSort)}>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="name-asc">Name A–Z</option>
+                  <option value="name-desc">Name Z–A</option>
+                  <option value="size-desc">Largest first</option>
+                  <option value="size-asc">Smallest first</option>
+                </select>
+              </label>
+            )}
+            <button className="quiet-button" disabled={!displayedFiles.length || selectedFileIds.size === displayedFiles.length} onClick={() => setSelectedFileIds(new Set(displayedFiles.map((file) => file.id)))}>Select all</button>
+            <button className="quiet-button" disabled={!selectedFileIds.size} onClick={() => setSelectedFileIds(new Set())}>Clear selection</button>
+            <button className="quiet-button asset-delete" disabled={!selectedFiles.length || deleting} onClick={() => void deleteFiles(selectedFiles)}>
+              {deleting ? "Deleting…" : `Delete selected${selectedFiles.length ? ` (${selectedFiles.length})` : ""}`}
+            </button>
           </div>
-        )}
+        </div>
         {kind === "outputs" && displayedFiles.length > 0 ? (
           <div className="asset-thumbnail-grid">
             {displayedFiles.map((file) => (
               <article className="asset-thumbnail-card" key={file.id}>
+                <label className="asset-thumbnail-selection">
+                  <input type="checkbox" checked={selectedFileIds.has(file.id)} onChange={() => toggleFile(file.id)} />
+                  <span>Select</span>
+                </label>
                 <button className="asset-thumbnail" onClick={() => setPreviewed(file)} aria-label={`Preview ${file.display_name}`}>
                   <QueuedFileImage
                     src={controlPlane.fileUrl(workspaceId, file.id)}
@@ -155,13 +219,14 @@ export function AssetPanel({
                 <div className="asset-thumbnail-actions">
                   <button className="quiet-button" onClick={() => setPreviewed(file)}>Preview</button>
                   <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>
+                  <button className="quiet-button asset-delete" disabled={deleting} onClick={() => void deleteFiles([file])}>Delete</button>
                   {onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>Use in studio</button>}
                 </div>
               </article>
             ))}
           </div>
         ) : (
-          <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{["inputs", "projects"].includes(file.kind) && <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>}{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>{file.kind === "projects" ? "Open project" : "Use in studio"}</button>}</div>)}</div>
+          <div className="asset-list">{displayedFiles.length === 0 ? <p className="field-help">No files in this category.</p> : displayedFiles.map((file) => <div key={file.id}><input className="asset-file-checkbox" type="checkbox" aria-label={`Select ${file.display_name}`} checked={selectedFileIds.has(file.id)} onChange={() => toggleFile(file.id)} /><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{["inputs", "projects"].includes(file.kind) && <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>}<button className="quiet-button asset-delete" disabled={deleting} onClick={() => void deleteFiles([file])}>Delete</button>{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>{file.kind === "projects" ? "Open project" : "Use in studio"}</button>}</div>)}</div>
         )}
         {previewed && (
           <div className="asset-image-preview" role="presentation" onClick={(event) => {

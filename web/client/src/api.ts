@@ -448,6 +448,8 @@ export const controlPlane = {
     }),
   files: (workspaceId: string, kind: FileKind, cursor?: string) =>
     request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  deleteFile: (workspaceId: string, fileId: string) =>
+    request<FileRecord>(`/api/v1/workspaces/${workspaceId}/files/${fileId}`, { method: "DELETE" }),
   saveProject: (workspaceId: string, filename: string, project: Record<string, unknown>) =>
     request<FileRecord>(`/api/v1/workspaces/${workspaceId}/projects/${encodeURIComponent(filename)}`, {
       method: "PUT", body: JSON.stringify({ project }),

@@ -204,6 +204,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .canvas-title small { padding-left: 8px; color: var(--muted); border-left: 1px solid var(--line); font-size: 8px; }
 .canvas-actions { display: flex; gap: 6px; }
 .canvas-actions .quiet-button { min-height: 30px; height: 30px; padding: 0 10px; font-size: 8px; }
+.canvas-download { text-decoration: none; }
 .file-button { position: relative; cursor: pointer; }
 .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .image-stage { min-height: 0; display: grid; place-items: center; padding: 20px; overflow: hidden; background-color: #080a0e; background-image: linear-gradient(#0f131a 1px, transparent 1px), linear-gradient(90deg, #0f131a 1px, transparent 1px); background-size: 28px 28px; }
@@ -397,15 +398,22 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list { display: grid; gap: 6px; margin-top: 14px; }
 .asset-list > div { display: flex; align-items: center; gap: 10px; padding: 10px; background: #0d1118; border: 1px solid #252c36; border-radius: 8px; }
 .asset-list svg { width: 17px; color: var(--accent); }
-.asset-list span { min-width: 0; display: grid; }
+.asset-list span { min-width: 0; flex: 1; display: grid; }
 .asset-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.asset-file-checkbox { flex: 0 0 auto; accent-color: var(--accent); }
 .asset-download { text-decoration: none; }
 .asset-thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-top: 14px; }
-.asset-output-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--muted); font-size: 9px; }
-.asset-output-toolbar label { display: flex; align-items: center; gap: 7px; }
-.asset-output-toolbar .select-input { width: 132px; height: 32px; font-size: 8px; }
-.asset-thumbnail-card { min-width: 0; overflow: hidden; background: #0d1118; border: 1px solid #252c36; border-radius: 10px; }
+.asset-file-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--muted); font-size: 9px; }
+.asset-file-toolbar > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.asset-file-toolbar label { display: flex; align-items: center; gap: 7px; }
+.asset-file-toolbar .select-input { width: 132px; height: 32px; font-size: 8px; }
+.asset-file-toolbar .quiet-button { min-height: 32px; padding: 0 10px; font-size: 8px; }
+.asset-delete { color: #ffc0bf; border-color: rgba(255,112,111,.25); background: rgba(255,112,111,.07); }
+.asset-delete:hover { border-color: rgba(255,112,111,.45); background: rgba(255,112,111,.13); }
+.asset-thumbnail-card { position: relative; min-width: 0; overflow: hidden; background: #0d1118; border: 1px solid #252c36; border-radius: 10px; }
+.asset-thumbnail-selection { position: absolute; z-index: 2; top: 8px; left: 8px; display: flex; align-items: center; gap: 5px; padding: 5px 7px; color: #e8edf4; background: rgba(8, 11, 16, .88); border: 1px solid #3a4350; border-radius: 6px; cursor: pointer; font-size: 8px; }
+.asset-thumbnail-selection input { margin: 0; accent-color: var(--accent); }
 .asset-thumbnail { width: 100%; aspect-ratio: 1; display: block; padding: 0; overflow: hidden; background: #07090d; border: 0; border-bottom: 1px solid #252c36; cursor: zoom-in; }
 .asset-thumbnail img { width: 100%; height: 100%; display: block; object-fit: contain; transition: transform .18s ease; }
 .asset-thumbnail-loading { width: 100%; height: 100%; display: block; background: linear-gradient(110deg, #080b10 30%, #151b24 45%, #080b10 60%); background-size: 220% 100%; animation: asset-loading 1.3s linear infinite; }
@@ -523,6 +531,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
   .asset-backdrop { inset: 106px 0 64px; }
   .asset-image-preview { top: 106px; bottom: 64px; width: 100%; }
   .asset-upload { align-items: stretch; flex-direction: column; }
+  .asset-file-toolbar { align-items: stretch; flex-direction: column; }
+  .asset-file-toolbar > div { justify-content: flex-start; }
   .provider-credential, .download-form { display: flex; align-items: stretch; flex-direction: column; }
   .provider-credential .text-input { width: 100%; }
 }

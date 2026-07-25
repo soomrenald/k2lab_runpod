@@ -1272,6 +1272,9 @@ class RunPodPersistentPodBackend:
     ) -> FilePage:
         return await (await self._workspace_agent(workspace_id)).inventory(kind, cursor=cursor)
 
+    async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord:
+        return await (await self._workspace_agent(workspace_id)).delete_file(file_id)
+
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest
     ) -> FileRecord:
