@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from k2_region_lab.worker.entrypoint import model_directories
-from k2_region_lab.worker.protocol import CommandKind
+from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
 
 
 def descriptor(shape: list[int], dtype: str = "BF16") -> dict:
@@ -70,6 +70,15 @@ def write_compatible_artifacts(root: Path) -> tuple[Path, Path, Path]:
 class WorkerProtocolTests(unittest.TestCase):
     def test_image_edit_has_a_dedicated_worker_command(self) -> None:
         self.assertEqual(CommandKind.EDIT_IMAGE.value, "edit_image")
+
+    def test_system_ram_guard_is_not_misreported_as_a_lora_failure(self) -> None:
+        code, message = classify_worker_error(
+            MemoryError("available system RAM is below the 12.0 GiB guard"),
+            CommandKind.GENERATE_BASELINE,
+        )
+
+        self.assertEqual(code, "worker_ram_low")
+        self.assertIn("system RAM", message)
 
     def test_lora_directory_is_distinct_from_lora_job_specifications(self) -> None:
         payload = {

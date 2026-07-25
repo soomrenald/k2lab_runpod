@@ -291,6 +291,22 @@ class WorkerReleaseResult(BaseModel):
     cancelled_job_ids: list[str] = Field(default_factory=list)
 
 
+class WorkerMemoryStatus(BaseModel):
+    source: str
+    total_bytes: int = Field(ge=0)
+    current_bytes: int = Field(ge=0)
+    non_reclaimable_bytes: int = Field(ge=0)
+    allocatable_bytes: int = Field(ge=0)
+    anonymous_bytes: int | None = Field(default=None, ge=0)
+    file_cache_bytes: int | None = Field(default=None, ge=0)
+    reclaimable_file_bytes: int | None = Field(default=None, ge=0)
+    shared_memory_bytes: int | None = Field(default=None, ge=0)
+    dirty_file_bytes: int | None = Field(default=None, ge=0)
+    writeback_file_bytes: int | None = Field(default=None, ge=0)
+    worker_active: bool
+    worker_resident: bool
+
+
 class GenerationJob(BaseModel):
     id: str
     command_id: str

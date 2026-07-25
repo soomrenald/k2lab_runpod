@@ -37,6 +37,7 @@ from k2_region_lab.agent.domain import (
     UploadCreateRequest,
     UploadSession,
     WorkerReleaseResult,
+    WorkerMemoryStatus,
 )
 from k2_region_lab.project import project_state
 from k2_region_lab.regional_lora import character_identity_triggers
@@ -98,7 +99,7 @@ def backend_from_environment() -> WorkspaceBackend:
         credential_vault=DatabaseCredentialVault(state_store, encryption_key),
         state_store=state_store,
         image_digest=image_digest,
-        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.12"),
+        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.13"),
     )
 
 
@@ -163,7 +164,7 @@ def create_app(
 
     application = FastAPI(
         title="K2 Region Lab Control Plane",
-        version="0.1.12",
+        version="0.1.13",
         description=(
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."
@@ -555,6 +556,13 @@ def create_app(
     )
     async def release_worker_memory(workspace_id: str) -> WorkerReleaseResult:
         return await workspace_backend.release_worker_memory(workspace_id)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/worker/memory",
+        response_model=WorkerMemoryStatus,
+    )
+    async def worker_memory_status(workspace_id: str) -> WorkerMemoryStatus:
+        return await workspace_backend.worker_memory(workspace_id)
 
     @application.get(
         "/api/v1/workspaces/{workspace_id}/jobs/{job_id}",

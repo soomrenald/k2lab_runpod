@@ -38,12 +38,15 @@ class MemoryPolicyTests(unittest.TestCase):
             SystemMemorySnapshot(
                 source="cgroup_v2",
                 total_bytes=50_000_000_000,
-                used_bytes=34_500_000_000,
-                available_bytes=15_500_000_000,
+                used_bytes=33_500_000_000,
+                available_bytes=16_500_000_000,
                 anonymous_bytes=32_000_000_000,
                 file_cache_bytes=9_000_000_000,
                 current_bytes=42_500_000_000,
-                reclaimable_file_bytes=8_000_000_000,
+                reclaimable_file_bytes=9_000_000_000,
+                shared_memory_bytes=0,
+                dirty_file_bytes=0,
+                writeback_file_bytes=0,
             ),
         )
 
@@ -62,29 +65,48 @@ class MemoryPolicyTests(unittest.TestCase):
             snapshot = system_memory_snapshot(root)
 
         self.assertEqual(snapshot.source, "cgroup_v1")
-        self.assertEqual(snapshot.used_bytes, 24)
-        self.assertEqual(snapshot.available_bytes, 76)
+        self.assertEqual(snapshot.used_bytes, 22)
+        self.assertEqual(snapshot.available_bytes, 78)
         self.assertEqual(snapshot.anonymous_bytes, 20)
         self.assertEqual(snapshot.file_cache_bytes, 8)
         self.assertEqual(snapshot.current_bytes, 30)
-        self.assertEqual(snapshot.reclaimable_file_bytes, 6)
+        self.assertEqual(snapshot.reclaimable_file_bytes, 8)
 
-    def test_active_file_cache_is_not_counted_as_reclaimable_ram(self) -> None:
+    def test_clean_active_file_cache_is_counted_as_reclaimable_ram(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "memory.current").write_text("90\n", encoding="utf-8")
             (root / "memory.max").write_text("100\n", encoding="utf-8")
             (root / "memory.stat").write_text(
-                "anon 20\nfile 65\ninactive_file 5\nactive_file 60\n",
+                "anon 20\nfile 65\ninactive_file 5\nactive_file 60\n"
+                "shmem 10\nfile_dirty 5\nfile_writeback 2\n",
                 encoding="utf-8",
             )
 
             snapshot = system_memory_snapshot(root)
 
         self.assertEqual(snapshot.current_bytes, 90)
-        self.assertEqual(snapshot.reclaimable_file_bytes, 5)
-        self.assertEqual(snapshot.used_bytes, 85)
-        self.assertEqual(snapshot.available_bytes, 15)
+        self.assertEqual(snapshot.reclaimable_file_bytes, 48)
+        self.assertEqual(snapshot.used_bytes, 42)
+        self.assertEqual(snapshot.available_bytes, 58)
+
+    def test_recent_model_reads_do_not_trip_the_system_ram_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "memory.current").write_text("45444177920\n", encoding="utf-8")
+            (root / "memory.max").write_text("49999998976\n", encoding="utf-8")
+            (root / "memory.stat").write_text(
+                "anon 6942031872\nfile 38361714688\ninactive_file 7110656\n"
+                "active_file 38354604032\nshmem 0\nfile_dirty 0\nfile_writeback 0\n",
+                encoding="utf-8",
+            )
+
+            snapshot = system_memory_snapshot(root)
+
+        self.assertEqual(snapshot.current_bytes, 45_444_177_920)
+        self.assertEqual(snapshot.reclaimable_file_bytes, 38_361_714_688)
+        self.assertEqual(snapshot.used_bytes, 7_082_463_232)
+        self.assertEqual(snapshot.available_bytes, 42_917_535_744)
 
     def test_safe_16gb_policy_keeps_four_gib_free(self) -> None:
         policy = memory_policy("safe_16gb")
@@ -277,6 +299,43 @@ class MemoryPolicyTests(unittest.TestCase):
             force_full_load=True,
         )
         management.unload_all_models.assert_called_once()
+
+    def test_disabled_system_ram_guard_allows_resident_cache(self) -> None:
+        runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.model = object()
+        runtime.keep_model_loaded = True
+        runtime.vram_mode = "high_vram"
+        runtime.reserve_vram_gb = 2.0
+        runtime.system_ram_guard_enabled = False
+        runtime.memory_snapshot = Mock(
+            side_effect=[
+                {
+                    "gpu_free_bytes": 8 * 1024**3,
+                    "ram_available_bytes": 1 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+                {
+                    "gpu_free_bytes": 3 * 1024**3,
+                    "ram_available_bytes": 1 * 1024**3,
+                    "minimum_ram_bytes": 14 * 1024**3,
+                },
+            ]
+        )
+        management = SimpleNamespace(
+            load_models_gpu=Mock(),
+            unload_all_models=Mock(),
+            soft_empty_cache=Mock(),
+        )
+        comfy = SimpleNamespace(model_management=management)
+
+        with patch.dict(
+            "sys.modules",
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            result = runtime.retain_baseline_model_if_safe()
+
+        self.assertTrue(result["resident"])
+        management.unload_all_models.assert_not_called()
 
     def test_vae_decode_stays_inside_torch_inference_mode(self) -> None:
         active = False

@@ -41,6 +41,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerMemoryStatus,
     WorkerReleaseResult,
     WorkspaceManifest,
 )
@@ -51,6 +52,7 @@ from k2_region_lab.agent.migrations import WorkspaceMigrationManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.http_security import SlidingWindowRateLimiter
+from k2_region_lab.memory import system_memory_snapshot
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION, project_state
 
 
@@ -587,6 +589,29 @@ def create_agent_app(
     async def release_worker_memory() -> WorkerReleaseResult:
         return WorkerReleaseResult(
             cancelled_job_ids=await job_manager.release_worker_memory()
+        )
+
+    @application.get(
+        "/v1/worker/memory",
+        response_model=WorkerMemoryStatus,
+        dependencies=authentication,
+    )
+    async def worker_memory_status() -> WorkerMemoryStatus:
+        memory = system_memory_snapshot()
+        return WorkerMemoryStatus(
+            source=memory.source,
+            total_bytes=memory.total_bytes,
+            current_bytes=memory.current_bytes or memory.used_bytes,
+            non_reclaimable_bytes=memory.used_bytes,
+            allocatable_bytes=memory.available_bytes,
+            anonymous_bytes=memory.anonymous_bytes,
+            file_cache_bytes=memory.file_cache_bytes,
+            reclaimable_file_bytes=memory.reclaimable_file_bytes,
+            shared_memory_bytes=memory.shared_memory_bytes,
+            dirty_file_bytes=memory.dirty_file_bytes,
+            writeback_file_bytes=memory.writeback_file_bytes,
+            worker_active=job_manager.worker_active,
+            worker_resident=job_manager.worker_resident,
         )
 
     @application.get(

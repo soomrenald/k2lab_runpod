@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { DetectedFaceRecord } from "../api";
+import type { DetectedFaceRecord, WorkerMemoryStatus } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
 import { DraftNumberInput } from "./DraftNumberInput";
@@ -51,6 +51,11 @@ interface Props {
   onUseLatestFaceSource: () => void;
   onRegions: (regions: RegionBox[]) => void;
   onSelect: (id: string | null) => void;
+  workerMemory: WorkerMemoryStatus | null;
+  memoryRefreshing: boolean;
+  memoryActionsDisabled: boolean;
+  onRefreshMemory: () => void;
+  onReleaseMemory: () => void;
 }
 
 export function Inspector(props: Props) {
@@ -60,6 +65,7 @@ export function Inspector(props: Props) {
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
+    workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory,
   } = props;
   const [tab, setTab] = useState<InspectorTab>("prompt");
   const [emphasisStrength, setEmphasisStrength] = useState(0.5);
@@ -290,7 +296,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
       </div>
     </aside>
   );
@@ -373,7 +379,7 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
@@ -381,6 +387,11 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
+  workerMemory: WorkerMemoryStatus | null;
+  memoryRefreshing: boolean;
+  memoryActionsDisabled: boolean;
+  onRefreshMemory: () => void;
+  onReleaseMemory: () => void;
 }) {
   const generation = settings.generation;
   const edit = settings.edit;
@@ -394,6 +405,7 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     ]} />
     <Choice label="Crop working resolution" value={face.cropSize} options={[[256, "256 px"], [512, "512 px"], [768, "768 px"], [1024, "1024 px"]]} onChange={(value) => updateFace({ cropSize: value as typeof face.cropSize })} />
     <Choice label="Detector device" value={face.detectorProvider} options={[["auto", "Auto (CUDA when available)"], ["cpu", "CPU"], ["cuda", "NVIDIA CUDA"]]} onChange={(value) => updateFace({ detectorProvider: value as typeof face.detectorProvider })} />
+    <MemoryControls settings={settings} updateRuntime={updateRuntime} status={workerMemory} refreshing={memoryRefreshing} actionsDisabled={memoryActionsDisabled} onRefresh={onRefreshMemory} onRelease={onReleaseMemory} />
   </div>;
   const values = mode === "generation" ? generation : edit;
   const update = mode === "generation" ? updateGeneration : updateEdit;
@@ -456,6 +468,7 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
         model changes, OOM recovery, and Release memory safely discard the cache.
       </p>
     </>}
+    <MemoryControls settings={settings} updateRuntime={updateRuntime} status={workerMemory} refreshing={memoryRefreshing} actionsDisabled={memoryActionsDisabled} onRefresh={onRefreshMemory} onRelease={onReleaseMemory} />
     {mode === "generation" && <Check label="Run generation in batch mode" checked={generation.batchMode} onChange={(batchMode) => updateGeneration({ batchMode, seedMode: batchMode && generation.seedMode === "fixed" ? "random" : generation.seedMode })} />}
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
@@ -469,6 +482,51 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     {mode === "generation" && <><SectionTitle text="Post-upscale" /><Check label="Post-upscale after releasing Krea VRAM" checked={generation.postUpscale} onChange={(postUpscale) => updateGeneration({ postUpscale })} />{generation.postUpscale && <><Choice label="Output scale" value={generation.upscaleScale} options={[[2, "2×"], [4, "4×"]]} onChange={(upscaleScale) => updateGeneration({ upscaleScale: upscaleScale as 2 | 4 })} /><Choice label="Upscaler" value={generation.upscaleMethod} options={[["lanczos", "CPU Lanczos"], ["model", "Neural model (tiled GPU)"]]} onChange={(upscaleMethod) => updateGeneration({ upscaleMethod: upscaleMethod as GenerationSettings["upscaleMethod"] })} />{generation.upscaleMethod === "model" && <button className="quiet-button full-button" onClick={onChooseUpscaleModel}>{generation.upscaleModelName || "Choose cloud upscaler model…"}</button>}</>}</>}
     {(mode === "generation" || activeLayer === "reference") && <ProjectorPanel projector={mode === "generation" ? generation.projector : edit.referenceProjector} onChange={(projector) => mode === "generation" ? updateGeneration({ projector }) : updateEdit({ referenceProjector: projector })} />}
   </div>;
+}
+
+function MemoryControls({ settings, updateRuntime, status, refreshing, actionsDisabled, onRefresh, onRelease }: {
+  settings: StudioSettings;
+  updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
+  status: WorkerMemoryStatus | null;
+  refreshing: boolean;
+  actionsDisabled: boolean;
+  onRefresh: () => void;
+  onRelease: () => void;
+}) {
+  return <>
+    <SectionTitle text="Pod RAM diagnostics" />
+    <Check
+      label="Enable system RAM safeguard"
+      checked={settings.runtime.systemRamGuardEnabled}
+      onChange={(systemRamGuardEnabled) => updateRuntime({ systemRamGuardEnabled })}
+    />
+    {!settings.runtime.systemRamGuardEnabled && <div className="memory-warning">
+      K2 RAM preflight checks are disabled. Linux cgroup limits and the kernel OOM killer still apply,
+      so the worker may be terminated if real resident memory is exhausted.
+    </div>}
+    {status ? <div className="memory-diagnostics">
+      <div><span>Allocatable now</span><strong>{formatGib(status.allocatable_bytes)}</strong></div>
+      <div><span>Actual non-cache use</span><strong>{formatGib(status.non_reclaimable_bytes)}</strong></div>
+      <div><span>Clean reclaimable cache</span><strong>{formatGib(status.reclaimable_file_bytes)}</strong></div>
+      <div><span>Raw cgroup charge</span><strong>{formatGib(status.current_bytes)} / {formatGib(status.total_bytes)}</strong></div>
+      <div><span>Anonymous/process RAM</span><strong>{formatGib(status.anonymous_bytes)}</strong></div>
+      <div><span>Shared + dirty files</span><strong>{formatGib((status.shared_memory_bytes ?? 0) + (status.dirty_file_bytes ?? 0) + (status.writeback_file_bytes ?? 0))}</strong></div>
+      <div className="memory-worker-state"><span>Worker</span><strong>{status.worker_resident ? "Baseline resident" : status.worker_active ? "Active" : "Released"}</strong></div>
+    </div> : <p className="field-help">Pod RAM telemetry is unavailable until the workspace agent is ready.</p>}
+    <p className="field-help">
+      Raw cgroup charge includes filesystem cache. K2 uses actual non-cache use for safeguards;
+      clean cache is evictable and does not count against allocatable RAM.
+    </p>
+    <div className="inline-actions memory-actions">
+      <button className="tiny-button" disabled={actionsDisabled || refreshing} onClick={onRefresh}>{refreshing ? "Refreshing…" : "Refresh RAM"}</button>
+      <button className="tiny-button" disabled={actionsDisabled} onClick={onRelease}>Release worker memory</button>
+    </div>
+  </>;
+}
+
+function formatGib(value: number | null): string {
+  if (value === null) return "Unavailable";
+  return `${(value / 1024 ** 3).toFixed(2)} GiB`;
 }
 
 function ProjectorPanel({ projector, onChange }: { projector: ProjectorSettings; onChange: (value: ProjectorSettings) => void }) {

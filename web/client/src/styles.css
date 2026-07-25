@@ -305,6 +305,14 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .emphasis-row input, .projector-grid input { min-width: 0; height: 27px; padding: 0 5px; color: var(--text); background: #161b23; border: 1px solid #2c333e; border-radius: 5px; font-size: 8px; }
 .region-assignment-list { margin: 8px 0; padding: 2px 8px 8px; background: #0a0d12; border-radius: 7px; }
 .advanced-section-title { margin: 18px 0 6px; padding-top: 12px; color: #aeb6c5; border-top: 1px solid #282e38; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.memory-diagnostics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px; }
+.memory-diagnostics > div { min-width: 0; padding: 9px 10px; background: #0b0e14; border: 1px solid #282e38; border-radius: 8px; }
+.memory-diagnostics span, .memory-diagnostics strong { display: block; }
+.memory-diagnostics span { color: var(--muted); font-size: 8px; line-height: 1.35; }
+.memory-diagnostics strong { margin-top: 3px; color: #dce1eb; font-size: 10px; overflow-wrap: anywhere; }
+.memory-diagnostics .memory-worker-state { grid-column: 1 / -1; }
+.memory-warning { margin: 9px 0; padding: 9px 10px; color: #ffd8a1; background: #ffc56f12; border: 1px solid #ffc56f38; border-radius: 8px; font-size: 9px; line-height: 1.5; }
+.memory-actions { margin-top: 8px; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
 .seed-field { display: grid; align-content: start; gap: 5px; margin-top: 13px; color: var(--muted-bright); font-size: 9px; }
 .seed-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 82px; gap: 5px; }
