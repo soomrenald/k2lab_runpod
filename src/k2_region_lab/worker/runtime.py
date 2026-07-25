@@ -74,6 +74,7 @@ from k2_region_lab.regions import RegionDefinition
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
     DEFAULT_SCHEDULER,
+    register_bong_tangent_scheduler,
     validate_sampler,
     validate_scheduler,
 )
@@ -1624,6 +1625,7 @@ class ComfyBaselineRuntime:
         import comfy.sample
         import comfy.samplers
 
+        register_bong_tangent_scheduler(comfy.samplers, torch)
         if sampler not in comfy.samplers.KSampler.SAMPLERS:
             raise ValueError(
                 f"sampler {sampler!r} is unavailable in the installed ComfyUI runtime"
@@ -1966,6 +1968,7 @@ class ComfyBaselineRuntime:
         import comfy.sample
         import comfy.samplers
 
+        register_bong_tangent_scheduler(comfy.samplers, torch)
         if sampler not in comfy.samplers.KSampler.SAMPLERS:
             raise ValueError(
                 f"sampler {sampler!r} is unavailable in the installed ComfyUI runtime"
