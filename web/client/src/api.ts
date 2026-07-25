@@ -1,3 +1,5 @@
+import { bulkRequestLane, controlRequestLane } from "./requestQueue";
+
 export type WorkspaceState =
   | "provisioning"
   | "starting"
@@ -315,29 +317,62 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  options: { lane?: "control" | "bulk"; priority?: number } = {},
+): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const csrfToken = document.cookie
     .split("; ")
     .find((item) => item.startsWith("k2lab-csrf="))
     ?.slice("k2lab-csrf=".length);
-  const response = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      ...(csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method)
-        ? { "X-CSRF-Token": decodeURIComponent(csrfToken) }
-        : {}),
-      ...init?.headers,
-    },
-  });
-  if (response.status === 204) return undefined as T;
-  const body = (await response.json()) as T | ApiErrorBody;
-  if (!response.ok) {
-    throw new ApiError(response.status, body as ApiErrorBody);
-  }
-  return body as T;
+  const lane = options.lane === "bulk" ? bulkRequestLane : controlRequestLane;
+  return lane.run(async () => {
+    const response = await fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method)
+          ? { "X-CSRF-Token": decodeURIComponent(csrfToken) }
+          : {}),
+        ...init?.headers,
+      },
+    });
+    if (response.status === 204) return undefined as T;
+    const body = (await response.json()) as T | ApiErrorBody;
+    if (!response.ok) {
+      throw new ApiError(response.status, body as ApiErrorBody);
+    }
+    return body as T;
+  }, options.priority);
+}
+
+export async function queuedFileBlob(
+  path: string,
+  options: { priority?: number; signal?: AbortSignal } = {},
+): Promise<Blob> {
+  return bulkRequestLane.run(async () => {
+    if (options.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      let body: ApiErrorBody = {
+        code: "file_download_failed",
+        message: `File request failed with HTTP ${response.status}.`,
+      };
+      try {
+        body = await response.json() as ApiErrorBody;
+      } catch {
+        // Preserve the stable fallback when a proxy returns HTML or no body.
+      }
+      throw new ApiError(response.status, body);
+    }
+    return response.blob();
+  }, options.priority);
 }
 
 export const controlPlane = {
@@ -431,7 +466,7 @@ export const controlPlane = {
       method: "PUT",
       headers: { "Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha256 },
       body: content,
-    }),
+    }, { lane: "bulk" }),
   completeUpload: (workspaceId: string, uploadId: string) =>
     request<{ file: FileRecord; duplicate: boolean }>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}/complete`, { method: "POST" }),
   cancelUpload: (workspaceId: string, uploadId: string) =>
@@ -467,7 +502,7 @@ export const controlPlane = {
   transfers: (workspaceId: string) =>
     request<RemoteTransfer[]>(`/api/v1/workspaces/${workspaceId}/transfers`),
   cancelTransfer: (workspaceId: string, transferId: string) =>
-    request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }),
+    request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }, { priority: 0 }),
   submitJob: (workspaceId: string, payload: {
     command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
     diffusion_model_file_id?: string; text_encoder_file_id?: string; vae_file_id?: string;
@@ -482,13 +517,13 @@ export const controlPlane = {
   jobEvents: (workspaceId: string, jobId: string, cursor?: string) =>
     request<JobEventPage>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
   cancelJob: (workspaceId: string, jobId: string) =>
-    request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, { method: "POST" }),
+    request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, { method: "POST" }, { priority: 0 }),
   detectFaces: (workspaceId: string, payload: { input_file_id: string; face_detector_file_id?: string; threshold: number; provider: "auto" | "cpu" | "cuda" }) =>
     request<FaceDetectionResult>(`/api/v1/workspaces/${workspaceId}/faces/detect`, {
       method: "POST", body: JSON.stringify(payload),
     }),
   releaseWorkerMemory: (workspaceId: string) =>
-    request<WorkerReleaseResult>(`/api/v1/workspaces/${workspaceId}/worker/release`, { method: "POST" }),
+    request<WorkerReleaseResult>(`/api/v1/workspaces/${workspaceId}/worker/release`, { method: "POST" }, { priority: 0 }),
   workerMemory: (workspaceId: string) =>
     request<WorkerMemoryStatus>(`/api/v1/workspaces/${workspaceId}/worker/memory`),
   outputUrl: (workspaceId: string, fileId: string) =>

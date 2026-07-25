@@ -30,18 +30,12 @@ export function App() {
     async function bootstrap() {
       try {
         await controlPlane.openSession();
-        const [capabilities, credential, workspaces] = await Promise.all([
-          controlPlane.capabilities(),
-          controlPlane.credentialStatus(),
-          controlPlane.workspaces(),
-        ]);
-        const [gpus, datacenters, networkVolumes] = credential.configured
-          ? await Promise.all([
-              controlPlane.gpus(),
-              controlPlane.datacenters(),
-              controlPlane.networkVolumes(),
-            ])
-          : [[], [], []];
+        const capabilities = await controlPlane.capabilities();
+        const credential = await controlPlane.credentialStatus();
+        const workspaces = await controlPlane.workspaces();
+        const gpus = credential.configured ? await controlPlane.gpus() : [];
+        const datacenters = credential.configured ? await controlPlane.datacenters() : [];
+        const networkVolumes = credential.configured ? await controlPlane.networkVolumes() : [];
         if (!cancelled) {
           setState({
             capabilities,

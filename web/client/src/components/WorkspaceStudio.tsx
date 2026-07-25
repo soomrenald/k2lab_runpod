@@ -208,10 +208,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     let timer: number | undefined;
     async function refresh() {
       try {
-        const [next, events] = await Promise.all([
-          controlPlane.job(workspace.id, jobId),
-          controlPlane.jobEvents(workspace.id, jobId, eventCursor.current),
-        ]);
+        const next = await controlPlane.job(workspace.id, jobId);
+        const events = await controlPlane.jobEvents(
+          workspace.id,
+          jobId,
+          eventCursor.current,
+        );
         if (cancelled) return;
         eventCursor.current = events.next_cursor;
         if (events.items.length) {
@@ -726,10 +728,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (!job) return;
     setBusy(true);
     try {
-      const [cancelled] = await Promise.all([
-        controlPlane.cancelJob(workspace.id, job.id),
-        ...queuedJobs.map((queued) => controlPlane.cancelJob(workspace.id, queued.id)),
-      ]);
+      const cancelled = await controlPlane.cancelJob(workspace.id, job.id);
+      for (const queued of queuedJobs) {
+        await controlPlane.cancelJob(workspace.id, queued.id);
+      }
       setJob(cancelled);
       setQueuedJobs([]);
       report("Remote job queue cancelled; worker memory was released.", "worker");

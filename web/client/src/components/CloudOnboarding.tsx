@@ -90,11 +90,9 @@ export function CloudOnboarding({
     setError("");
     try {
       const nextCredential = await controlPlane.connectRunPod(apiKey);
-      const [nextGpus, nextDatacenters, nextVolumes] = await Promise.all([
-        controlPlane.gpus(),
-        controlPlane.datacenters(),
-        controlPlane.networkVolumes(),
-      ]);
+      const nextGpus = await controlPlane.gpus();
+      const nextDatacenters = await controlPlane.datacenters();
+      const nextVolumes = await controlPlane.networkVolumes();
       setRequest((current) => ({
         ...current,
         gpu_priority_ids: nextGpus

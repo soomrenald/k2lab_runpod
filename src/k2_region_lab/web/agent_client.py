@@ -142,24 +142,32 @@ class WorkspaceAgentClient:
         *,
         timeout_seconds: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
-        max_concurrency: int = 4,
     ) -> None:
         if not self._POD_ID.fullmatch(pod_id):
             raise ValueError("invalid RunPod Pod ID")
-        if max_concurrency < 1:
-            raise ValueError("agent request concurrency must be positive")
         self._base_url = f"https://{pod_id}-8080.proxy.runpod.net"
         self._session_token = session_token
         self._timeout_seconds = timeout_seconds
-        self._request_slots = asyncio.Semaphore(max_concurrency)
-        self._client = httpx.AsyncClient(
+        # Keep control-plane probes and commands responsive while a large file is
+        # crossing the RunPod proxy. Each lane is strictly serialized, and the
+        # separate clients prevent a bulk response from occupying the control
+        # connection pool.
+        self._control_request_slot = asyncio.Semaphore(1)
+        self._bulk_request_slot = asyncio.Semaphore(1)
+        self._control_client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout_seconds,
+            transport=transport,
+        )
+        self._bulk_client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout_seconds,
             transport=transport,
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._control_client.aclose()
+        await self._bulk_client.aclose()
 
     async def health(self) -> AgentHealth:
         return AgentHealth.model_validate(await self._request("/v1/health"))
@@ -195,6 +203,7 @@ class WorkspaceAgentClient:
             "GET",
             f"/v1/migrations/files/{path}",
             timeout=max(self._timeout_seconds, 60.0),
+            lane="bulk",
             params={"generation": generation},
             headers=headers,
         )
@@ -221,6 +230,7 @@ class WorkspaceAgentClient:
                 f"/v1/migrations/files/{quote(relative_path, safe='/')}",
                 method="PUT",
                 content=content,
+                lane="bulk",
                 extra_headers={
                     "X-Migration-ID": migration_id,
                     "X-File-Offset": str(offset),
@@ -283,6 +293,7 @@ class WorkspaceAgentClient:
                 f"/v1/uploads/{upload_id}/chunks/{index}",
                 method="PUT",
                 content=content,
+                lane="bulk",
                 extra_headers={"X-Chunk-SHA256": sha256},
             )
         )
@@ -411,7 +422,7 @@ class WorkspaceAgentClient:
         headers = {"Authorization": f"Bearer {self._session_token}"}
         if range_header:
             headers["Range"] = range_header
-        response = await self._send("GET", path, headers=headers)
+        response = await self._send("GET", path, headers=headers, lane="bulk")
         if response.status_code not in {200, 206}:
             if response.status_code in {502, 503, 504}:
                 raise WorkspaceError(
@@ -453,12 +464,14 @@ class WorkspaceAgentClient:
         method: str = "GET",
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
+        lane: str = "control",
         **kwargs: Any,
     ) -> Any:
         response = await self._send(
             method,
             path,
             timeout=request_timeout,
+            lane=lane,
             headers={
                 "Authorization": f"Bearer {self._session_token}",
                 **(extra_headers or {}),
@@ -522,14 +535,23 @@ class WorkspaceAgentClient:
         path: str,
         *,
         timeout: float | None = None,
+        lane: str = "control",
         **kwargs: Any,
     ) -> httpx.Response:
+        if lane == "control":
+            request_slot = self._control_request_slot
+            client = self._control_client
+        elif lane == "bulk":
+            request_slot = self._bulk_request_slot
+            client = self._bulk_client
+        else:
+            raise ValueError(f"unknown workspace-agent request lane: {lane}")
         normalized_method = method.upper()
         attempts = 3 if normalized_method in {"GET", "HEAD"} else 1
         for attempt in range(attempts):
             try:
-                async with self._request_slots:
-                    response = await self._client.request(
+                async with request_slot:
+                    response = await client.request(
                         normalized_method,
                         path,
                         timeout=timeout or self._timeout_seconds,
@@ -539,7 +561,7 @@ class WorkspaceAgentClient:
                 if attempt + 1 < attempts:
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
-                code, message = self._timeout_error(error)
+                code, message = self._timeout_error(error, path)
                 logger.warning(
                     "Workspace agent request %s %s failed: %s",
                     normalized_method,
@@ -574,23 +596,23 @@ class WorkspaceAgentClient:
         raise AssertionError("agent request retry loop did not return")
 
     @staticmethod
-    def _timeout_error(error: httpx.TimeoutException) -> tuple[str, str]:
+    def _timeout_error(error: httpx.TimeoutException, path: str) -> tuple[str, str]:
         if isinstance(error, httpx.ConnectTimeout):
             return (
                 "agent_connect_timeout",
-                "The RunPod proxy timed out while connecting to the workspace agent.",
+                f"The RunPod proxy timed out while connecting for {path}.",
             )
         if isinstance(error, httpx.PoolTimeout):
             return (
                 "agent_request_queue_timeout",
-                "The workspace agent request queue remained busy for too long.",
+                f"The workspace agent connection pool remained busy for {path}.",
             )
         if isinstance(error, httpx.WriteTimeout):
             return (
                 "agent_write_timeout",
-                "The controller timed out while sending data to the workspace agent.",
+                f"The controller timed out while sending {path} to the workspace agent.",
             )
         return (
             "agent_read_timeout",
-            "The workspace agent did not finish the requested operation before its timeout.",
+            f"The workspace agent did not finish {path} before its network timeout.",
         )

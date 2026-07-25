@@ -65,6 +65,25 @@ from k2_region_lab.web.runpod_api import RunPodApi, RunPodApiClient, RunPodGpuTy
 from k2_region_lab.web.state_store import RunPodStateStore
 
 
+class _SerializedRunPodApi:
+    """Serialize every provider request made by one controller instance."""
+
+    def __init__(self, wrapped: RunPodApi, lock: asyncio.Lock) -> None:
+        self._wrapped = wrapped
+        self._lock = lock
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._wrapped, name)
+        if not callable(attribute):
+            return attribute
+
+        async def serialized(*args: Any, **kwargs: Any) -> Any:
+            async with self._lock:
+                return await attribute(*args, **kwargs)
+
+        return serialized
+
+
 class RunPodPersistentPodBackend:
     """Durable RunPod backend for persistent Pods and portable network volumes."""
 
@@ -93,6 +112,7 @@ class RunPodPersistentPodBackend:
         self._image_version = image_version
         self._api_factory = api_factory
         self._agent_factory = agent_factory
+        self._provider_request_lock = asyncio.Lock()
         self._agent_clients: dict[str, tuple[str, WorkspaceAgentApi]] = {}
         self._agent_clients_lock = asyncio.Lock()
 
@@ -116,7 +136,7 @@ class RunPodPersistentPodBackend:
                 "Enter a complete RunPod API key.",
                 status_code=401,
             )
-        api = self._api_factory(value)
+        api = _SerializedRunPodApi(self._api_factory(value), self._provider_request_lock)
         await api.validate_credentials()
         await api.list_gpu_types()
         status = CredentialStatus(
@@ -1573,7 +1593,7 @@ class RunPodPersistentPodBackend:
                 "Connect a RunPod account before planning a workspace.",
                 status_code=401,
             )
-        return self._api_factory(key)
+        return _SerializedRunPodApi(self._api_factory(key), self._provider_request_lock)
 
     async def _validate_migrated_pod(
         self,

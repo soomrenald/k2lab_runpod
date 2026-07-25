@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { committedNumber } from "../src/numericDraft.ts";
 import { sortOutputFiles } from "../src/outputSort.ts";
+import { SerialRequestLane } from "../src/requestQueue.ts";
 import { COMFYUI_SCHEDULERS } from "../src/studioProject.ts";
 
 assert.equal(committedNumber("", 1, 100), null, "an empty editing draft must remain transient");
@@ -11,6 +12,32 @@ assert.equal(committedNumber("200", 1, 100), 100);
 assert.ok(
   COMFYUI_SCHEDULERS.includes("bong_tangent"),
   "The scheduler selector must expose the worker's bong_tangent implementation",
+);
+
+const requestLane = new SerialRequestLane();
+let activeRequests = 0;
+let peakRequests = 0;
+const requestOrder = [];
+const queuedRequest = (name, delay, priority) => requestLane.run(async () => {
+  activeRequests += 1;
+  peakRequests = Math.max(peakRequests, activeRequests);
+  requestOrder.push(name);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  activeRequests -= 1;
+  return name;
+}, priority);
+const firstRequest = queuedRequest("first", 5, 10);
+const lowPriorityRequest = queuedRequest("low", 0, 20);
+const urgentRequest = queuedRequest("urgent", 0, 0);
+assert.deepEqual(
+  await Promise.all([firstRequest, lowPriorityRequest, urgentRequest]),
+  ["first", "low", "urgent"],
+);
+assert.equal(peakRequests, 1, "Each browser request lane must remain strictly serialized");
+assert.deepEqual(
+  requestOrder,
+  ["first", "urgent", "low"],
+  "Urgent cancellation/release requests must move ahead of queued background polling",
 );
 
 const inspector = await readFile(new URL("../src/components/Inspector.tsx", import.meta.url), "utf8");
@@ -85,6 +112,14 @@ assert.ok(
   setupPanel.includes("for (const { kind } of modelKinds)")
     && !setupPanel.includes("Promise.all(modelKinds"),
   "Setup must load Pod model inventories sequentially",
+);
+const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+assert.ok(
+  api.includes("controlRequestLane")
+    && api.includes("bulkRequestLane")
+    && api.includes('options.lane === "bulk"')
+    && api.includes("queuedFileBlob"),
+  "Browser requests must use serialized control and bulk lanes",
 );
 const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(
@@ -202,7 +237,8 @@ assert.ok(assetPanel.includes("controlPlane.uploads(workspaceId)"), "Local uploa
 assert.ok(
   assetPanel.includes("asset-thumbnail-grid")
     && assetPanel.includes("asset-image-preview")
-    && assetPanel.includes("Back to thumbnails"),
+    && assetPanel.includes("Back to thumbnails")
+    && assetPanel.includes("queuedFileBlob"),
   "Output assets must render thumbnails with an in-pane enlarged preview",
 );
 const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
