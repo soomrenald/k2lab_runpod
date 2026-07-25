@@ -34,7 +34,9 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
   const [busy, setBusy] = useState(false);
   const [speed, setSpeed] = useState(0);
   const sample = useRef<{ bytes: number; time: number } | null>(null);
-  const lastReportedState = useRef<string | null>(null);
+  const lastReportedStates = useRef(new Map<string, string>());
+  const pollFailures = useRef(0);
+  const pollError = useRef<string | null>(null);
 
   function remember(next: RemoteTransfer) {
     setTransfer(next);
@@ -61,49 +63,61 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
     setCivitaiPreview(null); setHuggingFacePreview(null); setFileId(""); setAllowUnsafe(false);
   }, [provider]);
 
+  const queueHeadId = useMemo(() => history
+    .filter((item) => !terminal(item.state))
+    .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))[0]?.id ?? null,
+  [history]);
+
   useEffect(() => {
-    if (!transfer || terminal(transfer.state)) return undefined;
-    const interval = window.setInterval(async () => {
+    if (!queueHeadId) return undefined;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
       try {
-        const next = await controlPlane.transfer(workspaceId, transfer.id);
-        const now = performance.now();
-        const previous = sample.current;
-        if (previous && now > previous.time) setSpeed(Math.max(0, (next.bytes_complete - previous.bytes) / ((now - previous.time) / 1000)));
-        sample.current = { bytes: next.bytes_complete, time: now };
-        remember(next);
-        if (next.state !== lastReportedState.current && terminal(next.state)) {
-          lastReportedState.current = next.state;
+        const next = await controlPlane.transfer(workspaceId, queueHeadId);
+        if (cancelled) return;
+        pollFailures.current = 0;
+        if (pollError.current) {
+          const resolved = pollError.current;
+          pollError.current = null;
+          setError((current) => current === resolved ? "" : current);
+        }
+        setHistory((current) => current.map((item) => item.id === next.id ? next : item));
+        setTransfer((current) => current?.id === next.id ? next : current);
+        if (transfer?.id === next.id) {
+          const now = performance.now();
+          const previous = sample.current;
+          if (previous && now > previous.time) {
+            setSpeed(Math.max(0, (next.bytes_complete - previous.bytes) / ((now - previous.time) / 1000)));
+          }
+          sample.current = { bytes: next.bytes_complete, time: now };
+        }
+        const reportedState = lastReportedStates.current.get(next.id);
+        if (next.state !== reportedState && terminal(next.state)) {
+          lastReportedStates.current.set(next.id, next.state);
           onEvent?.(next.state === "completed"
             ? `Provider transfer completed with ${next.files.length} verified file(s).`
             : `Provider transfer ${next.state}${next.error_message ? `: ${next.error_message}` : "."}`,
           next.state === "failed" ? "error" : "info");
         }
-      } catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [transfer, workspaceId]);
-
-  const backgroundTransferIds = history
-    .filter((item) => item.id !== transfer?.id && !terminal(item.state))
-    .map((item) => item.id)
-    .join(",");
-
-  useEffect(() => {
-    if (!backgroundTransferIds) return undefined;
-    const ids = backgroundTransferIds.split(",");
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const updates = await Promise.all(ids.map((id) => controlPlane.transfer(workspaceId, id)));
-        if (!cancelled) setHistory((current) => current.map((item) => updates.find((next) => next.id === item.id) ?? item));
       } catch (caught) {
-        if (!cancelled) setError(message(caught));
+        if (cancelled) return;
+        pollFailures.current += 1;
+        if (pollFailures.current >= 3) {
+          const detail = message(caught);
+          pollError.current = detail;
+          setError(detail);
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refresh(), 1000);
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 1000);
-    return () => { cancelled = true; window.clearInterval(interval); };
-  }, [backgroundTransferIds, workspaceId]);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [queueHeadId, transfer?.id, workspaceId]);
 
   const selectedFile = useMemo(() => civitaiPreview?.files.find((file) => file.id === fileId) ?? null, [civitaiPreview, fileId]);
 
@@ -145,7 +159,7 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
         ? await controlPlane.startCivitai(workspaceId, { source_url: sourceUrl, file_id: fileId, destination_kind: destination, allow_unsafe_format: allowUnsafe, resume_transfer_id })
         : await controlPlane.startHuggingFace(workspaceId, { source_url: sourceUrl, destination_kind: destination, allow_patterns: patternList(patterns), allow_unsafe_format: allowUnsafe, resume_transfer_id });
       remember(next);
-      lastReportedState.current = next.state;
+      lastReportedStates.current.set(next.id, next.state);
       onEvent?.(`${resume ? "Resumed" : "Started"} ${provider} transfer into ${destination}.`, "info");
     } catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
     finally { setBusy(false); }
@@ -183,8 +197,8 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
         {civitaiPreview && <div className="download-preview"><strong>{civitaiPreview.model_name} · {civitaiPreview.version_name}</strong><small>{civitaiPreview.model_type ?? "Model"} · {civitaiPreview.base_model ?? "Unknown base"}</small><select className="select-input" value={fileId} onChange={(event) => { setFileId(event.target.value); setAllowUnsafe(false); }}>{civitaiPreview.files.map((file) => <option key={file.id} value={file.id}>{file.filename} · {formatBytes(file.size_bytes ?? 0)}{file.preferred ? " · preferred" : ""}</option>)}</select>{selectedFile?.requires_unsafe_confirmation && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}</div>}
         {huggingFacePreview && <div className="download-preview"><strong>{huggingFacePreview.repo_id}</strong><small>{huggingFacePreview.mirror_repository ? `Repository mirror · ${huggingFacePreview.files.length} files` : huggingFacePreview.filename} · {formatBytes(huggingFacePreview.required_bytes)} required</small>{requiresUnsafe && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}</div>}
         {canStart && !active && transfer?.state !== "completed" && <button className="primary-button" disabled={busy || (requiresUnsafe && !allowUnsafe)} onClick={() => void start(Boolean(transfer))}>{transfer ? "Retry / resume transfer" : "Start provider download"}</button>}
-        {transfer && <div className="remote-transfer"><div className="transfer-progress"><div><i style={{ width: `${progress * 100}%` }} /></div><span>{transfer.state} · {formatBytes(transfer.bytes_complete)}{transfer.bytes_total !== null ? ` / ${formatBytes(transfer.bytes_total)}` : ""}{speed > 0 ? ` · ${formatBytes(speed)}/s${eta !== null ? ` · ${Math.ceil(eta)}s remaining` : ""}` : ""}</span></div>{active && <button className="danger-text-button" disabled={busy} onClick={() => void cancel()}>Cancel and keep resumable data</button>}{transfer.state === "completed" && <p className="success-line">Installed {transfer.files.length} verified file{transfer.files.length === 1 ? "" : "s"}.</p>}{transfer.error_message && <div className="error-banner">{transfer.error_message} <small>{transfer.error_code}</small></div>}</div>}
-        {history.length > 0 && <div className="transfer-history"><strong>Recent provider downloads</strong>{history.map((item) => <button key={item.id} className={item.id === transfer?.id ? "selected" : ""} onClick={() => { setTransfer(item); setProvider(item.provider); setDestination(item.destination_kind); setSourceUrl(item.source_url); }}><span><b>{item.filename ?? sourceLabel(item.source_url)}</b><small>{item.provider} · {item.destination_kind.replaceAll("_", " ")}</small></span><em className={item.state}>{item.state}</em></button>)}</div>}
+        {transfer && <div className="remote-transfer"><div className="transfer-progress"><div><i style={{ width: `${progress * 100}%` }} /></div><span>{transferStateLabel(transfer.state)} · {formatBytes(transfer.bytes_complete)}{transfer.bytes_total !== null ? ` / ${formatBytes(transfer.bytes_total)}` : ""}{speed > 0 ? ` · ${formatBytes(speed)}/s${eta !== null ? ` · ${Math.ceil(eta)}s remaining` : ""}` : ""}</span></div>{active && <button className="danger-text-button" disabled={busy} onClick={() => void cancel()}>Cancel and keep resumable data</button>}{transfer.state === "completed" && <p className="success-line">Installed {transfer.files.length} verified file{transfer.files.length === 1 ? "" : "s"}.</p>}{transfer.error_message && <div className="error-banner">{transfer.error_message} <small>{transfer.error_code}</small></div>}</div>}
+        {history.length > 0 && <div className="transfer-history"><strong>Recent provider downloads</strong>{history.map((item) => <button key={item.id} className={item.id === transfer?.id ? "selected" : ""} onClick={() => { setTransfer(item); setProvider(item.provider); setDestination(item.destination_kind); setSourceUrl(item.source_url); }}><span><b>{item.filename ?? sourceLabel(item.source_url)}</b><small>{item.provider} · {item.destination_kind.replaceAll("_", " ")}</small></span><em className={item.state}>{transferStateLabel(item.state)}</em></button>)}</div>}
         {error && <div className="error-banner">{error}</div>}
         <p className="field-help">Tokens are encrypted by the control plane and sent to the agent only for one operation. URLs with embedded credentials and redirects to unapproved hosts are rejected.</p>
       </section>
@@ -197,5 +211,6 @@ function terminal(state: string) { return ["completed", "failed", "cancelled", "
 function patternList(value: string) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
 function unsafeName(value: string) { return [".bin", ".ckpt", ".pt", ".pth", ".pkl", ".pickle"].some((suffix) => value.toLowerCase().endsWith(suffix)); }
 function message(caught: unknown) { return caught instanceof Error ? caught.message : "Provider transfer failed"; }
+function transferStateLabel(state: string) { return state === "pending" ? "queued" : state; }
 function sourceLabel(value: string) { try { return decodeURIComponent(new URL(value).pathname.split("/").filter(Boolean).at(-1) ?? value); } catch { return value; } }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`; return `${(value / 1024 ** 3).toFixed(1)} GiB`; }
