@@ -30,6 +30,8 @@ class SystemMemorySnapshot:
     available_bytes: int
     anonymous_bytes: int | None = None
     file_cache_bytes: int | None = None
+    current_bytes: int | None = None
+    reclaimable_file_bytes: int | None = None
 
     def to_payload(self) -> dict[str, int | str | None]:
         return {
@@ -39,6 +41,8 @@ class SystemMemorySnapshot:
             "available_bytes": self.available_bytes,
             "anonymous_bytes": self.anonymous_bytes,
             "file_cache_bytes": self.file_cache_bytes,
+            "current_bytes": self.current_bytes,
+            "reclaimable_file_bytes": self.reclaimable_file_bytes,
         }
 
 
@@ -161,13 +165,25 @@ def system_memory_snapshot(
         stat = _read_memory_stat(stat_path)
         anonymous = stat.get("anon", stat.get("total_rss"))
         file_cache = stat.get("file", stat.get("total_cache"))
+        # memory.current includes filesystem pages populated by model downloads and
+        # safetensors reads. The kernel can evict inactive file pages under pressure,
+        # so use the cgroup working-set convention for allocation guards while keeping
+        # the raw current value in telemetry.
+        reclaimable_file = max(
+            0,
+            stat.get("inactive_file", stat.get("total_inactive_file", 0)),
+        )
+        working_set = max(0, used - reclaimable_file)
+        available = min(limit, max(0, limit - working_set))
         return SystemMemorySnapshot(
             source=source,
             total_bytes=limit,
-            used_bytes=max(0, used),
-            available_bytes=max(0, limit - used),
+            used_bytes=working_set,
+            available_bytes=available,
             anonymous_bytes=anonymous,
             file_cache_bytes=file_cache,
+            current_bytes=max(0, used),
+            reclaimable_file_bytes=reclaimable_file,
         )
 
     try:

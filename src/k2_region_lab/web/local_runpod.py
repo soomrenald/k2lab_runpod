@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
+import socket
 import sys
 import threading
 import time
 import urllib.request
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ _IMAGE_DIGEST = re.compile(r"^\S+@sha256:[0-9a-fA-F]{64}$")
 _CONFIG_FILENAME = "config.json"
 _KEY_FILENAME = "credential.key"
 _DATABASE_FILENAME = "state.sqlite3"
+_LOG_FILENAME = "control-plane.log"
 
 
 def default_state_directory(environment: Mapping[str, str] | None = None) -> Path:
@@ -130,7 +134,7 @@ def prepare_local_environment(
         input_function=input_function,
         interactive=interactive,
     )
-    version = image_version or str(stored.get("workspace_image_version") or "0.1.11")
+    version = image_version or str(stored.get("workspace_image_version") or "0.1.12")
     next_config = {
         "workspace_image_digest": digest,
         "workspace_image_version": version,
@@ -165,6 +169,96 @@ def _open_browser_when_ready(url: str) -> None:
             time.sleep(0.1)
 
 
+def _local_control_plane_running(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(  # noqa: S310
+            f"http://127.0.0.1:{port}/api/v1/health",
+            timeout=0.5,
+        ) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "ok"
+        and isinstance(payload.get("backend"), str)
+    )
+
+
+def _port_available(port: int) -> bool:
+    candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        candidate.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        candidate.close()
+    return True
+
+
+def _configure_runtime_logging(log_path: Path) -> None:
+    formatter = logging.Formatter(
+        "%(asctime)s %(process)d %(levelname)s %(name)s: %(message)s"
+    )
+    stream = logging.StreamHandler()
+    stream.setFormatter(formatter)
+    rotating = RotatingFileHandler(
+        log_path,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    rotating.setFormatter(formatter)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "k2_region_lab"):
+        logger = logging.getLogger(name)
+        logger.handlers.clear()
+        logger.addHandler(stream)
+        logger.addHandler(rotating)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+
+def _follow_runtime_log(log_path: Path) -> int:
+    if not log_path.exists():
+        print(
+            "K2 Region Lab is already running, but that process was started before "
+            f"persistent logging was enabled.\nRestart it once to create {log_path}.",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"K2 Region Lab is already running. Following {log_path}")
+    print("Press Ctrl+C to stop following; the app will keep running.")
+    source = log_path.open(encoding="utf-8", errors="replace")
+    try:
+        recent = source.readlines()[-50:]
+        for line in recent:
+            print(line, end="")
+        while True:
+            line = source.readline()
+            if line:
+                print(line, end="", flush=True)
+                continue
+            try:
+                rotated = (
+                    log_path.stat().st_ino != os.fstat(source.fileno()).st_ino
+                    or log_path.stat().st_size < source.tell()
+                )
+            except OSError:
+                rotated = False
+            if rotated:
+                source.close()
+                source = log_path.open(encoding="utf-8", errors="replace")
+                continue
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        source.close()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="k2lab-runpod",
@@ -178,14 +272,37 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", type=Path, default=default_state_directory())
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser.")
+    parser.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="If K2 is already running, report it and exit instead of following its log.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if not 1024 <= args.port <= 65535:
+        print("k2lab-runpod: Port must be between 1024 and 65535.", file=sys.stderr)
+        return 2
+    state_directory = args.state_dir.expanduser().resolve()
+    log_path = state_directory / _LOG_FILENAME
+    if _local_control_plane_running(args.port):
+        if args.no_follow:
+            print(f"K2 Region Lab is already running at http://127.0.0.1:{args.port}")
+            print(f"Runtime log: {log_path}")
+            return 0
+        return _follow_runtime_log(log_path)
+    if not _port_available(args.port):
+        print(
+            f"k2lab-runpod: Port {args.port} is already used by another application. "
+            "Stop that application or select another port with --port.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         runtime_environment, config_changed = prepare_local_environment(
-            state_directory=args.state_dir,
+            state_directory=state_directory,
             image_digest=args.image,
             image_version=args.image_version,
             port=args.port,
@@ -195,9 +312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     os.umask(0o077)
+    _configure_runtime_logging(log_path)
     os.environ.update(runtime_environment)
     url = f"http://127.0.0.1:{args.port}"
-    print(f"K2 Region Lab state: {args.state_dir.expanduser().resolve()}")
+    print(f"K2 Region Lab state: {state_directory}")
+    print(f"Runtime log: {log_path}")
     if config_changed:
         print("Saved the immutable workspace-image selection for future launches.")
     print(f"Open {url} and paste your restricted RunPod API key.")
@@ -210,7 +329,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=args.port, proxy_headers=False)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=args.port,
+        proxy_headers=False,
+        log_config=None,
+    )
     return 0
 
 

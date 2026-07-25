@@ -5,6 +5,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from httpx import ASGITransport, AsyncClient
@@ -12,6 +13,7 @@ try:
     from k2_region_lab.web.app import create_app
     from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
     from k2_region_lab.web.local_runpod import (
+        main,
         prepare_local_environment,
         validate_image_digest,
     )
@@ -99,6 +101,76 @@ class LocalRunPodConfigurationTests(unittest.TestCase):
                     environment={},
                     interactive=False,
                 )
+
+    def test_second_launcher_follows_existing_control_plane_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state"
+            expected_log = state_directory / "control-plane.log"
+            with (
+                patch(
+                    "k2_region_lab.web.local_runpod._local_control_plane_running",
+                    return_value=True,
+                ),
+                patch(
+                    "k2_region_lab.web.local_runpod._follow_runtime_log",
+                    return_value=0,
+                ) as follow,
+                patch(
+                    "k2_region_lab.web.local_runpod.prepare_local_environment"
+                ) as prepare,
+            ):
+                result = main(
+                    [
+                        "--state-dir",
+                        str(state_directory),
+                        "--port",
+                        "8123",
+                        "--no-open",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            follow.assert_called_once_with(expected_log)
+            prepare.assert_not_called()
+
+    def test_second_launcher_can_report_existing_instance_without_following(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state"
+            with (
+                patch(
+                    "k2_region_lab.web.local_runpod._local_control_plane_running",
+                    return_value=True,
+                ),
+                patch(
+                    "k2_region_lab.web.local_runpod._follow_runtime_log"
+                ) as follow,
+            ):
+                result = main(
+                    [
+                        "--state-dir",
+                        str(state_directory),
+                        "--port",
+                        "8123",
+                        "--no-follow",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            follow.assert_not_called()
+
+    def test_launcher_rejects_port_owned_by_another_application(self) -> None:
+        with (
+            patch(
+                "k2_region_lab.web.local_runpod._local_control_plane_running",
+                return_value=False,
+            ),
+            patch("k2_region_lab.web.local_runpod._port_available", return_value=False),
+            patch("k2_region_lab.web.local_runpod.prepare_local_environment") as prepare,
+        ):
+            result = main(["--port", "8123", "--no-open"])
+
+        self.assertEqual(result, 2)
+        prepare.assert_not_called()
 
 
 @unittest.skipUnless(WEB_AVAILABLE, "web dependencies are not installed")

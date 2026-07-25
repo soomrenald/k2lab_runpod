@@ -97,6 +97,12 @@ are just:
 ./scripts/k2lab-runpod
 ```
 
+Runtime and access logs are retained at
+`${XDG_STATE_HOME:-~/.local/state}/k2-region-lab/control-plane.log`. If the app is already
+running, launching the command again follows that log instead of attempting to start a second
+server on port 8000. Pressing `Ctrl+C` in the follower stops only the log view. Pass
+`--no-follow` to report the existing instance and exit.
+
 By default, configuration, encrypted credentials, workspace records, and provider-resource
 mappings are stored under `${XDG_STATE_HOME:-~/.local/state}/k2-region-lab`. Use `--state-dir`
 to select another private directory, `--port` to change the loopback port, or `--no-open` to
@@ -123,7 +129,7 @@ export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
 export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
 export K2LAB_RUNPOD_IMAGE_DIGEST="registry.example/k2lab@sha256:<64-hex-digest>"
-export K2LAB_RUNPOD_IMAGE_VERSION="0.1.11"
+export K2LAB_RUNPOD_IMAGE_VERSION="0.1.12"
 export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
 export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
 export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"
