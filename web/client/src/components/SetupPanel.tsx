@@ -32,7 +32,13 @@ export function SetupPanel({ workspaceId, settings, onSettings, onClose, onManag
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void Promise.all(modelKinds.map(async ({ kind }) => [kind, await allFiles(workspaceId, kind)] as const))
+    void (async () => {
+      const entries: Array<readonly [ModelKind, FileRecord[]]> = [];
+      for (const { kind } of modelKinds) {
+        entries.push([kind, await allFiles(workspaceId, kind)] as const);
+      }
+      return entries;
+    })()
       .then((entries) => {
         if (cancelled) return;
         const next = Object.fromEntries(entries) as Record<ModelKind, FileRecord[]>;

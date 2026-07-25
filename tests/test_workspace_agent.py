@@ -378,6 +378,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.settings.session_token,
             transport=httpx.MockTransport(handler),
         )
+        self.addAsyncCleanup(client.aclose)
         result = await client.detect_faces(
             FaceDetectionRequest(input_file_id="opaque-input", threshold=0.25, provider="cpu")
         )
@@ -539,6 +540,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.settings.session_token,
             transport=httpx.MockTransport(handler),
         )
+        self.addAsyncCleanup(client.aclose)
         health = await client.health()
         self.assertEqual(health.workspace_id, "workspace-123")
         self.assertNotIn(self.settings.session_token, observed["url"])
@@ -546,6 +548,100 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             observed["authorization"],
             f"Bearer {self.settings.session_token}",
         )
+
+    async def test_agent_client_retries_safe_proxy_failures(self) -> None:
+        attempts = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                return httpx.Response(502, json={"detail": "proxy unavailable"})
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ready",
+                    "workspace_id": "workspace-123",
+                    "image_version": "0.1.0-test",
+                    "readiness": {
+                        "container": True,
+                        "agent": True,
+                        "storage": True,
+                        "models": False,
+                        "worker": False,
+                    },
+                    "observed_at": "2026-07-20T12:00:00Z",
+                },
+            )
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        health = await client.health()
+
+        self.assertEqual(health.status, "ready")
+        self.assertEqual(attempts, 3)
+
+    async def test_agent_client_bounds_parallel_proxy_requests(self) -> None:
+        active = 0
+        peak = 0
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ready",
+                    "workspace_id": "workspace-123",
+                    "image_version": "0.1.0-test",
+                    "readiness": {
+                        "container": True,
+                        "agent": True,
+                        "storage": True,
+                        "models": False,
+                        "worker": False,
+                    },
+                    "observed_at": "2026-07-20T12:00:00Z",
+                },
+            )
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(handler),
+            max_concurrency=2,
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        await asyncio.gather(*(client.health() for _index in range(8)))
+
+        self.assertEqual(peak, 2)
+
+    async def test_agent_client_preserves_read_timeout_cause(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("read stalled", request=request)
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            timeout_seconds=0.01,
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaisesRegex(Exception, "did not finish") as caught:
+            await client.health()
+
+        self.assertEqual(caught.exception.code, "agent_read_timeout")
+        self.assertEqual(caught.exception.status_code, 504)
 
     async def test_agent_client_accepts_upload_history_list_response(self) -> None:
         client = WorkspaceAgentClient(
@@ -555,6 +651,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 lambda _request: httpx.Response(200, json=[])
             ),
         )
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(await client.list_uploads(), [])
 
@@ -568,6 +665,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
         )
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(await client.list_uploads(), [])
 
@@ -595,6 +693,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.settings.session_token,
             transport=httpx.MockTransport(handler),
         )
+        self.addAsyncCleanup(client.aclose)
         output = await client.output("opaque-output", range_header="bytes=2-5")
 
         self.assertEqual(output.status_code, 206)

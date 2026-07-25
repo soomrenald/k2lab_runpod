@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from k2_region_lab.agent.domain import GenerationJob, JobEvent, RemoteTransfer
@@ -291,6 +293,7 @@ class SqlRunPodStateStore:
         self._engine = engine or create_async_engine(database_url, pool_pre_ping=True)
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
         self._initialization_lock = asyncio.Lock()
+        self._job_event_lock = asyncio.Lock()
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -668,26 +671,50 @@ class SqlRunPodStateStore:
     async def save_job_events(self, job_id: str, events: list[JobEvent]) -> None:
         if not events:
             return
+        async with self._job_event_lock:
+            await self._save_job_events(job_id, events)
+
+    async def _save_job_events(self, job_id: str, events: list[JobEvent]) -> None:
         await self.initialize()
         async with self._sessions.begin() as session:
             if await session.get(GenerationJobEntity, job_id) is None:
                 raise WorkspaceError(
                     "job_not_found", "The generation job does not exist.", status_code=404
                 )
+            rows = [
+                {
+                    "id": f"{job_id}:{event.sequence}",
+                    "job_id": job_id,
+                    "sequence": event.sequence,
+                    "state": event.state,
+                    "message": event.message,
+                    "payload": event.model_dump(mode="json")["payload"],
+                    "created_at": event.created_at,
+                }
+                for event in events
+            ]
+            dialect = session.bind.dialect.name if session.bind is not None else ""
+            if dialect == "sqlite":
+                statement = sqlite_insert(JobEventEntity).values(rows)
+                await session.execute(statement.on_conflict_do_nothing(index_elements=["id"]))
+                return
+            if dialect == "postgresql":
+                statement = postgresql_insert(JobEventEntity).values(rows)
+                await session.execute(statement.on_conflict_do_nothing(index_elements=["id"]))
+                return
             for event in events:
                 event_id = f"{job_id}:{event.sequence}"
-                if await session.get(JobEventEntity, event_id) is None:
-                    session.add(
-                        JobEventEntity(
-                            id=event_id,
-                            job_id=job_id,
-                            sequence=event.sequence,
-                            state=event.state,
-                            message=event.message,
-                            payload=event.model_dump(mode="json")["payload"],
-                            created_at=event.created_at,
-                        )
+                await session.merge(
+                    JobEventEntity(
+                        id=event_id,
+                        job_id=job_id,
+                        sequence=event.sequence,
+                        state=event.state,
+                        message=event.message,
+                        payload=event.model_dump(mode="json")["payload"],
+                        created_at=event.created_at,
                     )
+                )
 
     async def audit_events(self) -> list[dict[str, Any]]:
         await self.initialize()

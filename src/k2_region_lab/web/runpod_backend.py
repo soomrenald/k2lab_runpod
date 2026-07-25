@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import secrets
 from collections.abc import Callable
@@ -92,6 +93,17 @@ class RunPodPersistentPodBackend:
         self._image_version = image_version
         self._api_factory = api_factory
         self._agent_factory = agent_factory
+        self._agent_clients: dict[str, tuple[str, WorkspaceAgentApi]] = {}
+        self._agent_clients_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        async with self._agent_clients_lock:
+            clients = [client for _secret, client in self._agent_clients.values()]
+            self._agent_clients.clear()
+        for client in clients:
+            close = getattr(client, "aclose", None)
+            if callable(close):
+                await close()
 
     async def credential_status(self) -> CredentialStatus:
         return await self._vault.status(self.PROVIDER_CREDENTIAL_ID)
@@ -930,8 +942,12 @@ class RunPodPersistentPodBackend:
                 "A migration agent credential is missing.",
                 status_code=500,
             )
-        source_agent = self._agent_factory(migration.source_provider_resource_id, source_secret)
-        target_agent = self._agent_factory(migration.target_provider_resource_id, target_secret)
+        source_agent = await self._agent_for(
+            migration.source_provider_resource_id, source_secret
+        )
+        target_agent = await self._agent_for(
+            migration.target_provider_resource_id, target_secret
+        )
         if migration.state == MigrationState.PREPARING:
             health = await target_agent.health()
             if health.workspace_id != workspace_id:
@@ -1473,7 +1489,20 @@ class RunPodPersistentPodBackend:
                 "The workspace agent credential is missing.",
                 status_code=500,
             )
-        return self._agent_factory(self._provider_id(workspace), secret)
+        return await self._agent_for(self._provider_id(workspace), secret)
+
+    async def _agent_for(self, pod_id: str, secret: str) -> WorkspaceAgentApi:
+        async with self._agent_clients_lock:
+            existing = self._agent_clients.get(pod_id)
+            if existing is not None and secrets.compare_digest(existing[0], secret):
+                return existing[1]
+            if existing is not None:
+                close = getattr(existing[1], "aclose", None)
+                if callable(close):
+                    await close()
+            client = self._agent_factory(pod_id, secret)
+            self._agent_clients[pod_id] = (secret, client)
+            return client
 
     async def _workspace_from_provider(
         self, workspace: WorkspaceRecord, provider: dict[str, Any]
@@ -1500,8 +1529,8 @@ class RunPodPersistentPodBackend:
                 error_message = "The workspace agent credential is missing."
             else:
                 try:
-                    health = await self._agent_factory(
-                        self._provider_id(workspace), secret
+                    health = await (
+                        await self._agent_for(self._provider_id(workspace), secret)
                     ).health()
                     if health.workspace_id != workspace.id:
                         raise WorkspaceError(
@@ -1878,8 +1907,10 @@ class RunPodPersistentPodBackend:
                 continue
             source_secret = await self._vault.retrieve(f"agent:{workspace_id}")
             if source_secret:
-                await self._agent_factory(
-                    migration.source_provider_resource_id, source_secret
+                await (
+                    await self._agent_for(
+                        migration.source_provider_resource_id, source_secret
+                    )
                 ).unseal_after_migration()
             if migration.target_provider_resource_id:
                 await (await self._api()).delete_pod(migration.target_provider_resource_id)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import importlib.util
 import unittest
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -518,6 +519,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self) -> None:
+        await self.backend.close()
         await self.state_store.close()
         self.temporary_directory.cleanup()
 
@@ -696,6 +698,64 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(restored_job, (workspace.id, job))
         finally:
             await reopened_store.close()
+
+    async def test_concurrent_duplicate_job_events_are_idempotent(self) -> None:
+        store = SqlRunPodStateStore("sqlite+aiosqlite:///:memory:")
+        observed_at = datetime.now(UTC)
+        job = GenerationJob(
+            id="job-concurrent",
+            command_id="command-concurrent",
+            kind=JobKind.GENERATE,
+            project_id="project-concurrent",
+            state=JobState.RUNNING,
+            progress_current=7,
+            progress_total=8,
+            created_at=observed_at,
+            updated_at=observed_at,
+        )
+        event = JobEvent(
+            sequence=35,
+            state="running",
+            message="Generation run finished",
+            payload={"duration_seconds": 50.55},
+            created_at=observed_at,
+        )
+        try:
+            await store.save_generation_job("workspace-concurrent", job)
+            await asyncio.gather(
+                *(store.save_job_events(job.id, [event]) for _index in range(8))
+            )
+
+            # A later overlapping page must also be harmless.
+            await store.save_job_events(job.id, [event])
+        finally:
+            await store.close()
+
+    async def test_agent_clients_are_reused_and_closed(self) -> None:
+        created: list[FakeAgentApi] = []
+
+        def factory(_pod_id: str, _token: str) -> FakeAgentApi:
+            client = FakeAgentApi("workspace-agent-cache")
+            client.closed = False
+
+            async def close() -> None:
+                client.closed = True
+
+            client.aclose = close
+            created.append(client)
+            return client
+
+        self.backend._agent_factory = factory
+
+        first, second = await asyncio.gather(
+            self.backend._agent_for("pod-cache", "secret"),
+            self.backend._agent_for("pod-cache", "secret"),
+        )
+
+        self.assertIs(first, second)
+        self.assertEqual(len(created), 1)
+        await self.backend.close()
+        self.assertTrue(created[0].closed)
 
     async def test_connects_verified_console_migrated_pod_without_provider_mutation(
         self,
