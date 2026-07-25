@@ -20,7 +20,7 @@ export const COMFYUI_SAMPLERS = [
 
 export const COMFYUI_SCHEDULERS = [
   "simple", "sgm_uniform", "karras", "exponential", "ddim_uniform", "beta", "normal",
-  "linear_quadratic", "kl_optimal",
+  "linear_quadratic", "kl_optimal", "bong_tangent",
 ] as const;
 
 export const PROJECTOR_PRESETS: Record<string, number[]> = {

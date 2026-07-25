@@ -99,7 +99,7 @@ def backend_from_environment() -> WorkspaceBackend:
         credential_vault=DatabaseCredentialVault(state_store, encryption_key),
         state_store=state_store,
         image_digest=image_digest,
-        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.14"),
+        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.15"),
     )
 
 
@@ -167,7 +167,7 @@ def create_app(
 
     application = FastAPI(
         title="K2 Region Lab Control Plane",
-        version="0.1.14",
+        version="0.1.15",
         description=(
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."

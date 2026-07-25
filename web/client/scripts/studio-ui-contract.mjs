@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { committedNumber } from "../src/numericDraft.ts";
 import { sortOutputFiles } from "../src/outputSort.ts";
+import { COMFYUI_SCHEDULERS } from "../src/studioProject.ts";
 
 assert.equal(committedNumber("", 1, 100), null, "an empty editing draft must remain transient");
 assert.equal(committedNumber("-", -10, 10), null, "an incomplete signed draft must remain transient");
 assert.equal(committedNumber("27", 1, 100), 27);
 assert.equal(committedNumber("200", 1, 100), 100);
+assert.ok(
+  COMFYUI_SCHEDULERS.includes("bong_tangent"),
+  "The scheduler selector must expose the worker's bong_tangent implementation",
+);
 
 const inspector = await readFile(new URL("../src/components/Inspector.tsx", import.meta.url), "utf8");
 const promptSection = inspector.split('{tab === "prompt"', 2)[1].split('{tab === "regions"', 1)[0];
