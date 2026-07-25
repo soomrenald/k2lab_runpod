@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import re
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -37,6 +39,8 @@ from k2_region_lab.agent.domain import (
     WorkspaceManifest,
 )
 from k2_region_lab.web.domain import WorkspaceError, WorkspaceOutput
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceAgentApi(Protocol):
@@ -138,13 +142,24 @@ class WorkspaceAgentClient:
         *,
         timeout_seconds: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        max_concurrency: int = 4,
     ) -> None:
         if not self._POD_ID.fullmatch(pod_id):
             raise ValueError("invalid RunPod Pod ID")
+        if max_concurrency < 1:
+            raise ValueError("agent request concurrency must be positive")
         self._base_url = f"https://{pod_id}-8080.proxy.runpod.net"
         self._session_token = session_token
         self._timeout_seconds = timeout_seconds
-        self._transport = transport
+        self._request_slots = asyncio.Semaphore(max_concurrency)
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout_seconds,
+            transport=transport,
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def health(self) -> AgentHealth:
         return AgentHealth.model_validate(await self._request("/v1/health"))
@@ -176,23 +191,13 @@ class WorkspaceAgentClient:
             "Authorization": f"Bearer {self._session_token}",
             "Range": f"bytes={start}-{end}",
         }
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=max(self._timeout_seconds, 60.0),
-                transport=self._transport,
-            ) as client:
-                response = await client.get(
-                    f"/v1/migrations/files/{path}",
-                    params={"generation": generation},
-                    headers=headers,
-                )
-        except httpx.HTTPError as error:
-            raise WorkspaceError(
-                "agent_unavailable",
-                "The source workspace file could not be retrieved.",
-                status_code=502,
-            ) from error
+        response = await self._send(
+            "GET",
+            f"/v1/migrations/files/{path}",
+            timeout=max(self._timeout_seconds, 60.0),
+            params={"generation": generation},
+            headers=headers,
+        )
         if response.status_code not in {200, 206}:
             raise WorkspaceError(
                 "migration_read_failed",
@@ -230,7 +235,13 @@ class WorkspaceAgentClient:
         params = {"kind": kind.value}
         if cursor:
             params["cursor"] = cursor
-        return FilePage.model_validate(await self._request("/v1/files", params=params))
+        return FilePage.model_validate(
+            await self._request(
+                "/v1/files",
+                params=params,
+                request_timeout=max(self._timeout_seconds, 120.0),
+            )
+        )
 
     async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord:
         return FileRecord.model_validate(
@@ -400,20 +411,14 @@ class WorkspaceAgentClient:
         headers = {"Authorization": f"Bearer {self._session_token}"}
         if range_header:
             headers["Range"] = range_header
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-            ) as client:
-                response = await client.get(path, headers=headers)
-        except httpx.HTTPError as error:
-            raise WorkspaceError(
-                "agent_unavailable",
-                "The workspace output could not be retrieved.",
-                status_code=502,
-            ) from error
+        response = await self._send("GET", path, headers=headers)
         if response.status_code not in {200, 206}:
+            if response.status_code in {502, 503, 504}:
+                raise WorkspaceError(
+                    "agent_proxy_error",
+                    "The RunPod proxy could not reach the workspace agent.",
+                    status_code=502,
+                )
             raise WorkspaceError(
                 "output_unavailable",
                 "The workspace output could not be retrieved.",
@@ -447,35 +452,19 @@ class WorkspaceAgentClient:
         *,
         method: str = "GET",
         extra_headers: dict[str, str] | None = None,
+        request_timeout: float | None = None,
         **kwargs: Any,
     ) -> Any:
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-            ) as client:
-                response = await client.request(
-                    method,
-                    path,
-                    headers={
-                        "Authorization": f"Bearer {self._session_token}",
-                        **(extra_headers or {}),
-                    },
-                    **kwargs,
-                )
-        except httpx.TimeoutException as error:
-            raise WorkspaceError(
-                "agent_timeout",
-                "The workspace agent is not responding yet.",
-                status_code=504,
-            ) from error
-        except httpx.HTTPError as error:
-            raise WorkspaceError(
-                "agent_unavailable",
-                "The workspace agent is currently unreachable.",
-                status_code=502,
-            ) from error
+        response = await self._send(
+            method,
+            path,
+            timeout=request_timeout,
+            headers={
+                "Authorization": f"Bearer {self._session_token}",
+                **(extra_headers or {}),
+            },
+            **kwargs,
+        )
         if response.status_code == 401:
             raise WorkspaceError(
                 "agent_authentication_failed",
@@ -500,6 +489,12 @@ class WorkspaceAgentClient:
                     "This workspace agent image does not support the requested operation.",
                     status_code=409,
                 )
+            if response.status_code in {502, 503, 504}:
+                raise WorkspaceError(
+                    "agent_proxy_error",
+                    "The RunPod proxy could not reach the workspace agent.",
+                    status_code=502,
+                )
             raise WorkspaceError(
                 "agent_unavailable",
                 "The workspace agent could not complete the requested operation.",
@@ -520,3 +515,82 @@ class WorkspaceAgentClient:
                 status_code=502,
             )
         return payload
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        normalized_method = method.upper()
+        attempts = 3 if normalized_method in {"GET", "HEAD"} else 1
+        for attempt in range(attempts):
+            try:
+                async with self._request_slots:
+                    response = await self._client.request(
+                        normalized_method,
+                        path,
+                        timeout=timeout or self._timeout_seconds,
+                        **kwargs,
+                    )
+            except httpx.TimeoutException as error:
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                code, message = self._timeout_error(error)
+                logger.warning(
+                    "Workspace agent request %s %s failed: %s",
+                    normalized_method,
+                    path,
+                    type(error).__name__,
+                )
+                raise WorkspaceError(code, message, status_code=504) from error
+            except httpx.HTTPError as error:
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                logger.warning(
+                    "Workspace agent request %s %s failed: %s",
+                    normalized_method,
+                    path,
+                    type(error).__name__,
+                )
+                raise WorkspaceError(
+                    "agent_connection_failed",
+                    "The controller could not establish a connection to the workspace agent.",
+                    status_code=502,
+                ) from error
+            if (
+                normalized_method in {"GET", "HEAD"}
+                and response.status_code in {502, 503, 504}
+                and attempt + 1 < attempts
+            ):
+                await response.aclose()
+                await asyncio.sleep(0.25 * (attempt + 1))
+                continue
+            return response
+        raise AssertionError("agent request retry loop did not return")
+
+    @staticmethod
+    def _timeout_error(error: httpx.TimeoutException) -> tuple[str, str]:
+        if isinstance(error, httpx.ConnectTimeout):
+            return (
+                "agent_connect_timeout",
+                "The RunPod proxy timed out while connecting to the workspace agent.",
+            )
+        if isinstance(error, httpx.PoolTimeout):
+            return (
+                "agent_request_queue_timeout",
+                "The workspace agent request queue remained busy for too long.",
+            )
+        if isinstance(error, httpx.WriteTimeout):
+            return (
+                "agent_write_timeout",
+                "The controller timed out while sending data to the workspace agent.",
+            )
+        return (
+            "agent_read_timeout",
+            "The workspace agent did not finish the requested operation before its timeout.",
+        )

@@ -153,7 +153,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   useEffect(() => {
     if (developmentBackend || workspace.state === "deleted") return undefined;
     let cancelled = false;
-    const interval = window.setInterval(async () => {
+    let timer: number | undefined;
+    async function refresh() {
       try {
         const refreshed = await controlPlane.workspace(workspace.id);
         if (!cancelled) onWorkspace(refreshed);
@@ -161,11 +162,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (!cancelled) {
           report(caught instanceof Error ? caught.message : "Could not refresh workspace status", "error");
         }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refresh(), 5_000);
       }
-    }, 5_000);
+    }
+    timer = window.setTimeout(() => void refresh(), 5_000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [developmentBackend, onWorkspace, workspace.id, workspace.state]);
 
@@ -175,35 +179,45 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       return undefined;
     }
     let cancelled = false;
+    let timer: number | undefined;
     async function refresh() {
       try {
         const status = await controlPlane.workerMemory(workspace.id);
         if (!cancelled) setWorkerMemory(status);
       } catch {
         if (!cancelled) setWorkerMemory(null);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refresh(), 10_000);
       }
     }
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 10_000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [developmentBackend, workspace.id, workspace.state]);
 
+  const activeJobId = job && !["completed", "failed", "cancelled"].includes(job.state)
+    ? job.id
+    : null;
+
   useEffect(() => {
-    if (!job || ["completed", "failed", "cancelled"].includes(job.state)) return undefined;
-    const interval = window.setInterval(async () => {
+    if (!activeJobId) return undefined;
+    const jobId = activeJobId;
+    let cancelled = false;
+    let timer: number | undefined;
+    async function refresh() {
       try {
         const [next, events] = await Promise.all([
-          controlPlane.job(workspace.id, job.id),
-          controlPlane.jobEvents(workspace.id, job.id, eventCursor.current),
+          controlPlane.job(workspace.id, jobId),
+          controlPlane.jobEvents(workspace.id, jobId, eventCursor.current),
         ]);
+        if (cancelled) return;
         eventCursor.current = events.next_cursor;
         if (events.items.length) {
           setMessage(events.items[events.items.length - 1].message);
           setEventLog((current) => appendBoundedEvents(current, events.items.map((event) => ({
-            id: `${job.id}-${event.sequence}`,
+            id: `${jobId}-${event.sequence}`,
             createdAt: event.created_at,
             kind: "worker" as const,
             message: event.message,
@@ -225,11 +239,19 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           setJob(following);
         }
       } catch (caught) {
-        report(caught instanceof Error ? caught.message : "Could not refresh remote job", "error");
+        if (!cancelled) {
+          report(caught instanceof Error ? caught.message : "Could not refresh remote job", "error");
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refresh(), 1_000);
       }
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [job, queuedJobs, workspace.id]);
+    }
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeJobId, queuedJobs, workspace.id]);
 
   useEffect(() => {
     if (!showCloud && !showMigration) return undefined;
@@ -351,10 +373,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     let inputFiles: FileRecord[] = [];
     let outputFiles: FileRecord[] = [];
     try {
-      [loraFiles, upscalerFiles, diffusionFiles, textEncoderFiles, vaeFiles, faceDetectorFiles, inputFiles, outputFiles] = await Promise.all([
-        allFiles("loras"), allFiles("upscale_models"), allFiles("diffusion_models"),
-        allFiles("text_encoders"), allFiles("vae"), allFiles("face_detection"), allFiles("inputs"), allFiles("outputs"),
-      ]);
+      // The Pod inventory is one persistent index. Load its sections sequentially so a
+      // project restore cannot create an eight-connection burst through RunPod's proxy.
+      loraFiles = await allFiles("loras");
+      upscalerFiles = await allFiles("upscale_models");
+      diffusionFiles = await allFiles("diffusion_models");
+      textEncoderFiles = await allFiles("text_encoders");
+      vaeFiles = await allFiles("vae");
+      faceDetectorFiles = await allFiles("face_detection");
+      inputFiles = await allFiles("inputs");
+      outputFiles = await allFiles("outputs");
     } catch {
       // Project restoration remains usable while a stopped workspace inventory is unavailable.
     }

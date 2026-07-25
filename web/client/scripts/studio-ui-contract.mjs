@@ -62,6 +62,25 @@ for (const relativePath of [
 }
 
 const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
+const setupPanel = await readFile(new URL("../src/components/SetupPanel.tsx", import.meta.url), "utf8");
+assert.ok(
+  workspaceStudio.includes("const activeJobId")
+    && workspaceStudio.includes("window.setTimeout(() => void refresh(), 1_000)")
+    && workspaceStudio.includes("if (cancelled) return;")
+    && !workspaceStudio.includes("setInterval(async"),
+  "Workspace, memory, and generation polling must remain single-flight",
+);
+assert.ok(
+  workspaceStudio.includes('loraFiles = await allFiles("loras")')
+    && workspaceStudio.includes('outputFiles = await allFiles("outputs")')
+    && !workspaceStudio.includes('allFiles("loras"), allFiles("upscale_models")'),
+  "Project restoration must not burst all Pod inventory requests concurrently",
+);
+assert.ok(
+  setupPanel.includes("for (const { kind } of modelKinds)")
+    && !setupPanel.includes("Promise.all(modelKinds"),
+  "Setup must load Pod model inventories sequentially",
+);
 const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(
   assetPanel.includes('useState<OutputSort>("newest")')

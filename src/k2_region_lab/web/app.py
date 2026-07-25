@@ -99,7 +99,7 @@ def backend_from_environment() -> WorkspaceBackend:
         credential_vault=DatabaseCredentialVault(state_store, encryption_key),
         state_store=state_store,
         image_digest=image_digest,
-        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.13"),
+        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.14"),
     )
 
 
@@ -159,12 +159,15 @@ def create_app(
         finally:
             if reaper_task is not None:
                 await WorkspaceLeaseReaper.cancel(reaper_task)
+            close_backend = getattr(workspace_backend, "close", None)
+            if callable(close_backend):
+                await close_backend()
             if state_store is not None:
                 await state_store.close()
 
     application = FastAPI(
         title="K2 Region Lab Control Plane",
-        version="0.1.13",
+        version="0.1.14",
         description=(
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."
