@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -98,6 +98,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [faceDetectorInstalling, setFaceDetectorInstalling] = useState(false);
   const [faceDetectorTransfer, setFaceDetectorTransfer] = useState<RemoteTransfer | null>(null);
   const [faceDetectorInstallError, setFaceDetectorInstallError] = useState("");
+  const [workerMemory, setWorkerMemory] = useState<WorkerMemoryStatus | null>(null);
+  const [memoryRefreshing, setMemoryRefreshing] = useState(false);
   const eventCursor = useRef<string | undefined>(undefined);
   const eventListRef = useRef<HTMLDivElement>(null);
   const eventResize = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
@@ -166,6 +168,28 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       window.clearInterval(interval);
     };
   }, [developmentBackend, onWorkspace, workspace.id, workspace.state]);
+
+  useEffect(() => {
+    if (developmentBackend || workspace.state !== "ready") {
+      setWorkerMemory(null);
+      return undefined;
+    }
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const status = await controlPlane.workerMemory(workspace.id);
+        if (!cancelled) setWorkerMemory(status);
+      } catch {
+        if (!cancelled) setWorkerMemory(null);
+      }
+    }
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [developmentBackend, workspace.id, workspace.state]);
 
   useEffect(() => {
     if (!job || ["completed", "failed", "cancelled"].includes(job.state)) return undefined;
@@ -698,10 +722,26 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report(released.cancelled_job_ids.length
         ? `Worker memory released; ${released.cancelled_job_ids.length} active job(s) cancelled.`
         : "Worker memory released. No active jobs were cancelled.", "worker");
+      try {
+        setWorkerMemory(await controlPlane.workerMemory(workspace.id));
+      } catch {
+        setWorkerMemory(null);
+      }
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Could not release worker memory", "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshWorkerMemory() {
+    setMemoryRefreshing(true);
+    try {
+      setWorkerMemory(await controlPlane.workerMemory(workspace.id));
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not refresh Pod RAM status", "error");
+    } finally {
+      setMemoryRefreshing(false);
     }
   }
 
@@ -1067,6 +1107,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onUseLatestFaceSource={useLatestFaceSource}
             onRegions={setRegions}
             onSelect={setSelectedId}
+            workerMemory={workerMemory}
+            memoryRefreshing={memoryRefreshing}
+            memoryActionsDisabled={busy || !running || developmentBackend}
+            onRefreshMemory={() => void refreshWorkerMemory()}
+            onReleaseMemory={() => void releaseWorkerMemory()}
           />
         </div>
       </main>

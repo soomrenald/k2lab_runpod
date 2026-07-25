@@ -470,6 +470,7 @@ class ComfyBaselineRuntime:
         self.warning_free_gb = 4.0
         self.critical_free_gb = 2.0
         self.minimum_system_ram_gb = 14.0
+        self.system_ram_guard_enabled = True
         self.cpu_vae = False
         self.oom_recovery = True
 
@@ -482,6 +483,7 @@ class ComfyBaselineRuntime:
         reserve_vram_gb: float = 4.0,
         keep_model_loaded: bool = False,
         minimum_system_ram_gb: float = 14.0,
+        system_ram_guard_enabled: bool = True,
         cpu_vae: bool = False,
         oom_recovery: bool = True,
     ) -> dict[str, Any]:
@@ -520,10 +522,14 @@ class ComfyBaselineRuntime:
         self.minimum_system_ram_gb = effective_minimum_system_ram_gb(
             policy.key, minimum_system_ram_gb
         )
+        self.system_ram_guard_enabled = bool(system_ram_guard_enabled)
         self.cpu_vae = bool(cpu_vae)
         self.oom_recovery = bool(oom_recovery)
         system_memory = system_memory_snapshot()
-        if system_memory.available_bytes < self.minimum_system_ram_gb * GIB:
+        if (
+            self.system_ram_guard_enabled
+            and system_memory.available_bytes < self.minimum_system_ram_gb * GIB
+        ):
             raise MemoryError(
                 "insufficient available Pod RAM for the selected offload policy: "
                 f"requires at least {self.minimum_system_ram_gb:.1f} GiB"
@@ -559,6 +565,7 @@ class ComfyBaselineRuntime:
             "reserve_vram_gb": self.reserve_vram_gb,
             "keep_model_loaded": self.keep_model_loaded,
             "minimum_system_ram_gb": self.minimum_system_ram_gb,
+            "system_ram_guard_enabled": self.system_ram_guard_enabled,
             "cpu_vae": self.cpu_vae,
             "oom_recovery": self.oom_recovery,
             "native_scaled_fp8": capabilities.get("native_scaled_fp8", False),
@@ -1119,7 +1126,10 @@ class ComfyBaselineRuntime:
                 "reason": "requires_high_vram",
                 "memory": before,
             }
-        if before["ram_available_bytes"] < before["minimum_ram_bytes"]:
+        if (
+            self.system_ram_guard_enabled
+            and before["ram_available_bytes"] < before["minimum_ram_bytes"]
+        ):
             return {
                 "resident": False,
                 "reason": "pod_ram_reserve_not_met",
@@ -1155,7 +1165,10 @@ class ComfyBaselineRuntime:
                 "reason": "reserve_not_met",
                 "memory": self.memory_snapshot("resident-model cache released"),
             }
-        if after["ram_available_bytes"] < after["minimum_ram_bytes"]:
+        if (
+            self.system_ram_guard_enabled
+            and after["ram_available_bytes"] < after["minimum_ram_bytes"]
+        ):
             comfy.model_management.unload_all_models()
             gc.collect()
             comfy.model_management.soft_empty_cache(force=True)
@@ -1166,7 +1179,11 @@ class ComfyBaselineRuntime:
             }
         return {
             "resident": True,
-            "reason": "gpu_and_pod_ram_reserves_met",
+            "reason": (
+                "gpu_and_pod_ram_reserves_met"
+                if self.system_ram_guard_enabled
+                else "gpu_reserve_met_ram_guard_disabled"
+            ),
             "retained_components": ["baseline_transformer"],
             "regional_loras_retained": False,
             "memory": after,
@@ -1288,6 +1305,9 @@ class ComfyBaselineRuntime:
             "ram_file_cache_bytes": ram.file_cache_bytes,
             "ram_current_bytes": ram.current_bytes,
             "ram_reclaimable_file_bytes": ram.reclaimable_file_bytes,
+            "ram_shared_memory_bytes": ram.shared_memory_bytes,
+            "ram_dirty_file_bytes": ram.dirty_file_bytes,
+            "ram_writeback_file_bytes": ram.writeback_file_bytes,
             "pod_ram_available_bytes": ram.available_bytes,
             "pod_ram_used_bytes": ram.used_bytes,
             "pod_ram_total_bytes": ram.total_bytes,
@@ -1295,6 +1315,7 @@ class ComfyBaselineRuntime:
             "warning_free_bytes": int(self.warning_free_gb * GIB),
             "critical_free_bytes": int(self.critical_free_gb * GIB),
             "minimum_ram_bytes": int(self.minimum_system_ram_gb * GIB),
+            "system_ram_guard_enabled": self.system_ram_guard_enabled,
             "memory_policy": self.memory_policy_key,
             "requested_vram_mode": self.requested_vram_mode,
             "vram_mode": self.vram_mode,
@@ -1310,7 +1331,10 @@ class ComfyBaselineRuntime:
         import comfy.model_management
 
         snapshot = self.memory_snapshot(stage)
-        if snapshot["ram_available_bytes"] < snapshot["minimum_ram_bytes"]:
+        if (
+            self.system_ram_guard_enabled
+            and snapshot["ram_available_bytes"] < snapshot["minimum_ram_bytes"]
+        ):
             raise MemoryError(
                 f"available system RAM is below the {self.minimum_system_ram_gb:.1f} GiB guard"
             )
@@ -1380,7 +1404,10 @@ class ComfyBaselineRuntime:
         import comfy.model_management
 
         before = self.memory_snapshot("before OOM cleanup")
-        if before["ram_available_bytes"] < before["minimum_ram_bytes"]:
+        if (
+            self.system_ram_guard_enabled
+            and before["ram_available_bytes"] < before["minimum_ram_bytes"]
+        ):
             raise MemoryError(
                 "GPU OOM recovery could not start because available system RAM is below "
                 f"the {self.minimum_system_ram_gb:.1f} GiB guard"
@@ -1843,6 +1870,10 @@ class ComfyBaselineRuntime:
         metadata.add_text("requested_vram_mode", self.requested_vram_mode)
         metadata.add_text("vram_mode", self.vram_mode)
         metadata.add_text("reserve_vram_gb", str(self.reserve_vram_gb))
+        metadata.add_text(
+            "system_ram_guard_enabled",
+            str(self.system_ram_guard_enabled).lower(),
+        )
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
         output_image.save(output_path, pnginfo=metadata)
@@ -1863,6 +1894,7 @@ class ComfyBaselineRuntime:
             "scheduler": scheduler,
             "cfg": 1.0,
             "memory_policy": self.memory_policy_key,
+            "system_ram_guard_enabled": self.system_ram_guard_enabled,
             "requested_vram_mode": self.requested_vram_mode,
             "vram_mode": self.vram_mode,
             "reserve_vram_gb": self.reserve_vram_gb,

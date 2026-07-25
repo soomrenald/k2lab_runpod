@@ -67,7 +67,12 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         return {"Authorization": f"Bearer {self.settings.session_token}"}
 
     async def test_every_agent_endpoint_requires_bearer_authentication(self) -> None:
-        for path in ("/v1/health", "/v1/capabilities", "/v1/storage"):
+        for path in (
+            "/v1/health",
+            "/v1/capabilities",
+            "/v1/storage",
+            "/v1/worker/memory",
+        ):
             response = await self.client.get(path)
             self.assertEqual(response.status_code, 401)
             self.assertNotIn(self.settings.session_token, response.text)
@@ -120,6 +125,19 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["cuda_version"], "12.8")
         self.assertEqual(body["pytorch_version"], "2.9.1")
 
+    async def test_worker_memory_separates_raw_charge_from_reclaimable_cache(self) -> None:
+        response = await self.client.get("/v1/worker/memory", headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertGreater(body["total_bytes"], 0)
+        self.assertGreaterEqual(body["current_bytes"], body["non_reclaimable_bytes"])
+        self.assertEqual(
+            body["allocatable_bytes"],
+            body["total_bytes"] - body["non_reclaimable_bytes"],
+        )
+        self.assertFalse(body["worker_active"])
+        self.assertFalse(body["worker_resident"])
+
     async def test_layout_is_idempotent_and_marks_its_version(self) -> None:
         layout = WorkspaceLayout(self.root)
         layout.initialize()
@@ -159,6 +177,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "vram_mode": "high_vram",
                 "reserve_vram_gb": 1.5,
                 "keep_model_loaded": True,
+                "system_ram_guard_enabled": False,
             }
         )
         request = JobSubmitRequest.model_validate(
@@ -176,6 +195,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["vram_mode"], "high_vram")
         self.assertEqual(payload["reserve_vram_gb"], 1.5)
         self.assertTrue(payload["keep_model_loaded"])
+        self.assertFalse(payload["system_ram_guard_enabled"])
 
     async def test_generation_payload_resolves_selected_models_and_output_prefix(self) -> None:
         selections: dict[FileKind, str] = {}

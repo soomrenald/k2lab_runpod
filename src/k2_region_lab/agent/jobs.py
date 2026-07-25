@@ -295,6 +295,14 @@ class JobManager:
         self._readiness_callback(False)
         return job_ids
 
+    @property
+    def worker_active(self) -> bool:
+        return bool(self._executors) or self._resident_executor is not None
+
+    @property
+    def worker_resident(self) -> bool:
+        return self._resident_executor is not None
+
     async def _run_job(
         self,
         job_id: str,
@@ -415,6 +423,7 @@ class JobManager:
             "vram_mode",
             "reserve_vram_gb",
             "minimum_system_ram_gb",
+            "system_ram_guard_enabled",
             "cpu_vae",
         )
         return tuple(
@@ -639,6 +648,7 @@ class JobManager:
             "reserve_vram_gb": state.reserve_vram_gb,
             "keep_model_loaded": state.keep_model_loaded,
             "minimum_system_ram_gb": 12.0,
+            "system_ram_guard_enabled": state.system_ram_guard_enabled,
             "cpu_vae": False,
             "oom_recovery": True,
         }

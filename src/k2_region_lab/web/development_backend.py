@@ -28,6 +28,7 @@ from k2_region_lab.agent.domain import (
     UploadCreateRequest,
     UploadSession,
     WorkerReleaseResult,
+    WorkerMemoryStatus,
     WorkspaceManifest,
 )
 from k2_region_lab.web.domain import (
@@ -854,6 +855,9 @@ class DevelopmentWorkspaceBackend:
         self._transfer_unavailable(workspace_id)
 
     async def release_worker_memory(self, workspace_id: str) -> WorkerReleaseResult:
+        self._transfer_unavailable(workspace_id)
+
+    async def worker_memory(self, workspace_id: str) -> WorkerMemoryStatus:
         self._transfer_unavailable(workspace_id)
 
     async def get_output(

@@ -32,6 +32,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerMemoryStatus,
     WorkerReleaseResult,
     WorkspaceManifest,
 )
@@ -115,6 +116,8 @@ class WorkspaceAgentApi(Protocol):
     async def detect_faces(self, request: FaceDetectionRequest) -> FaceDetectionResult: ...
 
     async def release_worker_memory(self) -> WorkerReleaseResult: ...
+
+    async def worker_memory(self) -> WorkerMemoryStatus: ...
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput: ...
 
@@ -372,6 +375,11 @@ class WorkspaceAgentClient:
     async def release_worker_memory(self) -> WorkerReleaseResult:
         return WorkerReleaseResult.model_validate(
             await self._request("/v1/worker/release", method="POST")
+        )
+
+    async def worker_memory(self) -> WorkerMemoryStatus:
+        return WorkerMemoryStatus.model_validate(
+            await self._request("/v1/worker/memory")
         )
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput:

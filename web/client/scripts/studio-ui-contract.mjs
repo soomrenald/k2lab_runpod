@@ -21,8 +21,12 @@ assert.ok(
     && inspector.includes('updateRuntime({ vramMode')
     && inspector.includes('updateRuntime({ reserveVramGb')
     && inspector.includes('label="Keep baseline model loaded between runs"')
-    && inspector.includes('updateRuntime({ keepModelLoaded'),
-  "Generation Advanced settings must expose working GPU execution-mode, reserve, and residency controls",
+    && inspector.includes('updateRuntime({ keepModelLoaded')
+    && inspector.includes('label="Enable system RAM safeguard"')
+    && inspector.includes("Actual non-cache use")
+    && inspector.includes("Clean reclaimable cache")
+    && inspector.includes("Release worker memory"),
+  "Advanced settings must expose GPU controls, RAM safeguards, live cache diagnostics, and recovery",
 );
 assert.ok(
   inspector.includes("<SeedField")

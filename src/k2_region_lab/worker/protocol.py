@@ -42,6 +42,10 @@ WORKER_ERROR_MESSAGES = {
         "The GPU ran out of memory. Reduce canvas size, disable post-upscale, "
         "or use a GPU with more VRAM."
     ),
+    "worker_ram_low": (
+        "The Pod does not have enough allocatable system RAM for this operation. "
+        "Release memory or use a Pod with more RAM."
+    ),
     "worker_probe_failed": (
         "The GPU runtime probe failed. Check the Pod GPU assignment and worker environment."
     ),
@@ -73,6 +77,8 @@ def classify_worker_error(
     combined = f"{type(error).__name__} {error}".casefold()
     if "outofmemory" in combined or "out_of_memory" in combined or "out of memory" in combined:
         code = "worker_oom"
+    elif isinstance(error, MemoryError):
+        code = "worker_ram_low"
     elif command_kind == CommandKind.PROBE:
         code = "worker_probe_failed"
     elif command_kind == CommandKind.LOAD_MODEL:

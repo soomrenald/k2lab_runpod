@@ -32,6 +32,9 @@ class SystemMemorySnapshot:
     file_cache_bytes: int | None = None
     current_bytes: int | None = None
     reclaimable_file_bytes: int | None = None
+    shared_memory_bytes: int | None = None
+    dirty_file_bytes: int | None = None
+    writeback_file_bytes: int | None = None
 
     def to_payload(self) -> dict[str, int | str | None]:
         return {
@@ -43,6 +46,9 @@ class SystemMemorySnapshot:
             "file_cache_bytes": self.file_cache_bytes,
             "current_bytes": self.current_bytes,
             "reclaimable_file_bytes": self.reclaimable_file_bytes,
+            "shared_memory_bytes": self.shared_memory_bytes,
+            "dirty_file_bytes": self.dirty_file_bytes,
+            "writeback_file_bytes": self.writeback_file_bytes,
         }
 
 
@@ -165,14 +171,26 @@ def system_memory_snapshot(
         stat = _read_memory_stat(stat_path)
         anonymous = stat.get("anon", stat.get("total_rss"))
         file_cache = stat.get("file", stat.get("total_cache"))
+        shared_memory = stat.get("shmem", stat.get("total_shmem", 0))
+        dirty_file = stat.get("file_dirty", stat.get("total_dirty", 0))
+        writeback_file = stat.get("file_writeback", stat.get("total_writeback", 0))
         # memory.current includes filesystem pages populated by model downloads and
-        # safetensors reads. The kernel can evict inactive file pages under pressure,
-        # so use the cgroup working-set convention for allocation guards while keeping
-        # the raw current value in telemetry.
-        reclaimable_file = max(
-            0,
-            stat.get("inactive_file", stat.get("total_inactive_file", 0)),
-        )
+        # safetensors reads. Recently read model pages can remain on active_file even
+        # though clean file-backed pages are still evictable under memory pressure.
+        # Treat clean filesystem cache as allocatable, but keep tmpfs/shared memory
+        # and dirty/writeback pages charged because they cannot be reclaimed safely
+        # for an immediate allocation.
+        if file_cache is None:
+            reclaimable_file = max(
+                0,
+                stat.get("inactive_file", stat.get("total_inactive_file", 0)),
+            )
+        else:
+            reclaimable_file = max(
+                0,
+                file_cache - shared_memory - dirty_file - writeback_file,
+            )
+        reclaimable_file = min(max(0, used), reclaimable_file)
         working_set = max(0, used - reclaimable_file)
         available = min(limit, max(0, limit - working_set))
         return SystemMemorySnapshot(
@@ -184,6 +202,9 @@ def system_memory_snapshot(
             file_cache_bytes=file_cache,
             current_bytes=max(0, used),
             reclaimable_file_bytes=reclaimable_file,
+            shared_memory_bytes=shared_memory,
+            dirty_file_bytes=dirty_file,
+            writeback_file_bytes=writeback_file,
         )
 
     try:

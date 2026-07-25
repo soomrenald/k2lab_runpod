@@ -63,6 +63,7 @@ settings.edit.referencePromptEmphases = [{
 settings.face.cropSize = 768;
 settings.runtime.vramMode = "high_vram";
 settings.runtime.reserveVramGb = 1.5;
+settings.runtime.systemRamGuardEnabled = false;
 settings.runtime.filenamePrefix = "portrait study";
 settings.runtime.diffusionModelName = "chosen-transformer.safetensors";
 settings.runtime.textEncoderName = "chosen-text.safetensors";
@@ -98,6 +99,7 @@ assert.deepEqual(second, first);
 assert.equal(second.image_edit.width, 768);
 assert.equal(second.runtime.vram_mode, "high_vram");
 assert.equal(second.runtime.reserve_vram_gb, 1.5);
+assert.equal(second.runtime.system_ram_guard_enabled, false);
 assert.deepEqual(second.regions.map((region) => [region.id, region.priority, region.spatial_role]), [
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);

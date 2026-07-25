@@ -287,6 +287,22 @@ export interface WorkerReleaseResult {
   cancelled_job_ids: string[];
 }
 
+export interface WorkerMemoryStatus {
+  source: string;
+  total_bytes: number;
+  current_bytes: number;
+  non_reclaimable_bytes: number;
+  allocatable_bytes: number;
+  anonymous_bytes: number | null;
+  file_cache_bytes: number | null;
+  reclaimable_file_bytes: number | null;
+  shared_memory_bytes: number | null;
+  dirty_file_bytes: number | null;
+  writeback_file_bytes: number | null;
+  worker_active: boolean;
+  worker_resident: boolean;
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -473,6 +489,8 @@ export const controlPlane = {
     }),
   releaseWorkerMemory: (workspaceId: string) =>
     request<WorkerReleaseResult>(`/api/v1/workspaces/${workspaceId}/worker/release`, { method: "POST" }),
+  workerMemory: (workspaceId: string) =>
+    request<WorkerMemoryStatus>(`/api/v1/workspaces/${workspaceId}/worker/memory`),
   outputUrl: (workspaceId: string, fileId: string) =>
     `/api/v1/workspaces/${workspaceId}/outputs/${fileId}`,
   fileUrl: (workspaceId: string, fileId: string) =>
