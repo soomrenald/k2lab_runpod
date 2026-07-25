@@ -12,6 +12,7 @@ export type IconName =
   | "play"
   | "plus"
   | "upload"
+  | "download"
   | "trash"
   | "chevronUp"
   | "chevronDown"
@@ -35,6 +36,7 @@ const paths: Record<IconName, React.ReactNode> = {
   play: <path d="m8 5 11 7-11 7V5Z" />,
   plus: <path d="M12 5v14M5 12h14" />,
   upload: <path d="M12 16V4m0 0L7 9m5-5 5 5M5 14v6h14v-6" />,
+  download: <path d="M12 4v12m0 0 5-5m-5 5-5-5M5 14v6h14v-6" />,
   trash: <path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m4 4v5m3-5v5" />,
   chevronUp: <path d="m7 14 5-5 5 5" />,
   chevronDown: <path d="m7 10 5 5 5-5" />,

@@ -733,6 +733,10 @@ class DevelopmentWorkspaceBackend:
         self._workspace(workspace_id)
         return FilePage(items=[])
 
+    async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord:
+        del file_id
+        self._transfer_unavailable(workspace_id)
+
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest
     ) -> FileRecord:

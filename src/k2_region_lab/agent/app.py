@@ -429,6 +429,12 @@ def create_agent_app(
     ) -> FilePage:
         return await transfer_manager.inventory(kind, cursor=cursor, limit=limit)
 
+    @application.delete(
+        "/v1/files/{file_id}", response_model=FileRecord, dependencies=authentication
+    )
+    async def delete_file(file_id: str) -> FileRecord:
+        return await transfer_manager.delete_file(file_id)
+
     @application.put(
         "/v1/projects/{filename}", response_model=FileRecord, dependencies=authentication
     )

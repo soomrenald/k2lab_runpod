@@ -73,6 +73,8 @@ class WorkspaceAgentApi(Protocol):
 
     async def inventory(self, kind: FileKind, *, cursor: str | None = None) -> FilePage: ...
 
+    async def delete_file(self, file_id: str) -> FileRecord: ...
+
     async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord: ...
 
     async def create_upload(self, request: UploadCreateRequest) -> UploadSession: ...
@@ -251,6 +253,11 @@ class WorkspaceAgentClient:
                 params=params,
                 request_timeout=max(self._timeout_seconds, 120.0),
             )
+        )
+
+    async def delete_file(self, file_id: str) -> FileRecord:
+        return FileRecord.model_validate(
+            await self._request(f"/v1/files/{file_id}", method="DELETE")
         )
 
     async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord:

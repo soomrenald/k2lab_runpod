@@ -405,6 +405,13 @@ def create_app(
     ) -> FilePage:
         return await workspace_backend.get_file_inventory(workspace_id, kind, cursor)
 
+    @application.delete(
+        "/api/v1/workspaces/{workspace_id}/files/{file_id}",
+        response_model=FileRecord,
+    )
+    async def delete_file(workspace_id: str, file_id: str) -> FileRecord:
+        return await workspace_backend.delete_file(workspace_id, file_id)
+
     @application.put(
         "/api/v1/workspaces/{workspace_id}/projects/{filename}", response_model=FileRecord
     )
