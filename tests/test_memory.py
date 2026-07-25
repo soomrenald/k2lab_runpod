@@ -27,7 +27,7 @@ class MemoryPolicyTests(unittest.TestCase):
             (root / "memory.current").write_text("42500000000\n", encoding="utf-8")
             (root / "memory.max").write_text("50000000000\n", encoding="utf-8")
             (root / "memory.stat").write_text(
-                "anon 32000000000\nfile 9000000000\n",
+                "anon 32000000000\nfile 9000000000\ninactive_file 8000000000\n",
                 encoding="utf-8",
             )
 
@@ -38,10 +38,12 @@ class MemoryPolicyTests(unittest.TestCase):
             SystemMemorySnapshot(
                 source="cgroup_v2",
                 total_bytes=50_000_000_000,
-                used_bytes=42_500_000_000,
-                available_bytes=7_500_000_000,
+                used_bytes=34_500_000_000,
+                available_bytes=15_500_000_000,
                 anonymous_bytes=32_000_000_000,
                 file_cache_bytes=9_000_000_000,
+                current_bytes=42_500_000_000,
+                reclaimable_file_bytes=8_000_000_000,
             ),
         )
 
@@ -53,16 +55,36 @@ class MemoryPolicyTests(unittest.TestCase):
             (memory / "memory.usage_in_bytes").write_text("30\n", encoding="utf-8")
             (memory / "memory.limit_in_bytes").write_text("100\n", encoding="utf-8")
             (memory / "memory.stat").write_text(
-                "total_rss 20\ntotal_cache 8\n",
+                "total_rss 20\ntotal_cache 8\ntotal_inactive_file 6\n",
                 encoding="utf-8",
             )
 
             snapshot = system_memory_snapshot(root)
 
         self.assertEqual(snapshot.source, "cgroup_v1")
-        self.assertEqual(snapshot.available_bytes, 70)
+        self.assertEqual(snapshot.used_bytes, 24)
+        self.assertEqual(snapshot.available_bytes, 76)
         self.assertEqual(snapshot.anonymous_bytes, 20)
         self.assertEqual(snapshot.file_cache_bytes, 8)
+        self.assertEqual(snapshot.current_bytes, 30)
+        self.assertEqual(snapshot.reclaimable_file_bytes, 6)
+
+    def test_active_file_cache_is_not_counted_as_reclaimable_ram(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "memory.current").write_text("90\n", encoding="utf-8")
+            (root / "memory.max").write_text("100\n", encoding="utf-8")
+            (root / "memory.stat").write_text(
+                "anon 20\nfile 65\ninactive_file 5\nactive_file 60\n",
+                encoding="utf-8",
+            )
+
+            snapshot = system_memory_snapshot(root)
+
+        self.assertEqual(snapshot.current_bytes, 90)
+        self.assertEqual(snapshot.reclaimable_file_bytes, 5)
+        self.assertEqual(snapshot.used_bytes, 85)
+        self.assertEqual(snapshot.available_bytes, 15)
 
     def test_safe_16gb_policy_keeps_four_gib_free(self) -> None:
         policy = memory_policy("safe_16gb")
