@@ -586,16 +586,8 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health.status, "ready")
         self.assertEqual(attempts, 3)
 
-    async def test_agent_client_bounds_parallel_proxy_requests(self) -> None:
-        active = 0
-        peak = 0
-
+    async def test_agent_client_configures_single_control_and_bulk_slots(self) -> None:
         async def handler(_request: httpx.Request) -> httpx.Response:
-            nonlocal active, peak
-            active += 1
-            peak = max(peak, active)
-            await asyncio.sleep(0.01)
-            active -= 1
             return httpx.Response(
                 200,
                 json={
@@ -617,13 +609,15 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             "pod-123",
             self.settings.session_token,
             transport=httpx.MockTransport(handler),
-            max_concurrency=2,
         )
         self.addAsyncCleanup(client.aclose)
 
-        await asyncio.gather(*(client.health() for _index in range(8)))
+        health = await client.health()
 
-        self.assertEqual(peak, 2)
+        self.assertEqual(health.status, "ready")
+        self.assertEqual(client._control_request_slot._value, 1)
+        self.assertIsNot(client._control_request_slot, client._bulk_request_slot)
+        self.assertEqual(client._bulk_request_slot._value, 1)
 
     async def test_agent_client_preserves_read_timeout_cause(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

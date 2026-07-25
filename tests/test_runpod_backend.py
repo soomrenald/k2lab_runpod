@@ -532,6 +532,40 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             "secret-runpod-key",
         )
 
+    async def test_serializes_provider_requests_across_api_instances(self) -> None:
+        await self.vault.store(self.backend.PROVIDER_CREDENTIAL_ID, "secret-runpod-key")
+        active = 0
+        peak = 0
+
+        async def tracked(value: Any) -> Any:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return value
+
+        async def gpu_types() -> list[RunPodGpuType]:
+            return await tracked([GPU_FIXTURE])
+
+        async def datacenters() -> list[RunPodDatacenter]:
+            return await tracked([])
+
+        async def volumes() -> list[RunPodNetworkVolume]:
+            return await tracked([])
+
+        self.api.list_gpu_types = gpu_types  # type: ignore[method-assign]
+        self.api.list_datacenters = datacenters  # type: ignore[method-assign]
+        self.api.list_network_volumes = volumes  # type: ignore[method-assign]
+
+        await asyncio.gather(
+            self.backend.list_gpu_options(),
+            self.backend.list_datacenters(),
+            self.backend.list_network_volumes(),
+        )
+
+        self.assertEqual(peak, 1)
+
     async def test_download_provider_token_is_encrypted_and_audited_without_secret(self) -> None:
         status = await self.backend.store_download_credential(
             RemoteProvider.HUGGINGFACE, "hf_read_secret_token"

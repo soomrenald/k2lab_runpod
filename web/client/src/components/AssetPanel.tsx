@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FileKind, FileRecord, UploadSession } from "../api";
-import { controlPlane } from "../api";
+import { controlPlane, queuedFileBlob } from "../api";
 import { sortOutputFiles, type OutputSort } from "../outputSort";
 import type { LocalUploadItem, UploadQueueController } from "../useUploadQueue";
 import { Icon } from "./Icon";
@@ -142,7 +142,11 @@ export function AssetPanel({
             {displayedFiles.map((file) => (
               <article className="asset-thumbnail-card" key={file.id}>
                 <button className="asset-thumbnail" onClick={() => setPreviewed(file)} aria-label={`Preview ${file.display_name}`}>
-                  <img src={controlPlane.fileUrl(workspaceId, file.id)} alt={file.display_name} loading="lazy" />
+                  <QueuedFileImage
+                    src={controlPlane.fileUrl(workspaceId, file.id)}
+                    alt={file.display_name}
+                    priority={20}
+                  />
                 </button>
                 <div className="asset-thumbnail-copy">
                   <strong title={file.display_name}>{file.display_name}</strong>
@@ -168,13 +172,56 @@ export function AssetPanel({
               <button className="quiet-button" onClick={() => setPreviewed(null)}>Back to thumbnails</button>
             </div>
             <div className="asset-image-preview-stage" onClick={() => setPreviewed(null)}>
-              <img src={controlPlane.fileUrl(workspaceId, previewed.id)} alt={previewed.display_name} onClick={(event) => event.stopPropagation()} />
+              <QueuedFileImage
+                src={controlPlane.fileUrl(workspaceId, previewed.id)}
+                alt={previewed.display_name}
+                priority={0}
+                onClick={(event) => event.stopPropagation()}
+              />
             </div>
           </div>
         )}
       </section>
     </div>
   );
+}
+
+function QueuedFileImage({
+  src,
+  alt,
+  priority,
+  onClick,
+}: {
+  src: string;
+  alt: string;
+  priority: number;
+  onClick?: React.MouseEventHandler<HTMLImageElement>;
+}) {
+  const [objectUrl, setObjectUrl] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let loadedUrl = "";
+    void queuedFileBlob(src, { priority, signal: controller.signal })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        loadedUrl = URL.createObjectURL(blob);
+        setObjectUrl(loadedUrl);
+      })
+      .catch((caught) => {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+          setObjectUrl("");
+        }
+      });
+    return () => {
+      controller.abort();
+      if (loadedUrl) URL.revokeObjectURL(loadedUrl);
+    };
+  }, [priority, src]);
+
+  return objectUrl
+    ? <img src={objectUrl} alt={alt} onClick={onClick} />
+    : <span className="asset-thumbnail-loading" role="status" aria-label={`Loading ${alt}`} />;
 }
 
 function UploadQueueRow({
