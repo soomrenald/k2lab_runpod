@@ -148,6 +148,11 @@ export interface StudioLora {
   targets: LoraLayerBinding;
 }
 
+export interface StudioLoraFile {
+  id: string;
+  display_name: string;
+}
+
 export interface StudioSettings {
   generation: GenerationSettings;
   edit: EditSettings;
@@ -274,6 +279,28 @@ export function createStudioLora(fileId: string, name: string): StudioLora {
 
 export function defaultLoraTrigger(name: string): string {
   return basename(name).replace(/\.safetensors$/i, "");
+}
+
+export function bindStudioLoraFiles(
+  loras: StudioLora[],
+  files: StudioLoraFile[],
+): StudioLora[] {
+  const normalizedName = (value: string) => value.replaceAll("\\", "/").toLocaleLowerCase();
+  const normalizedBasename = (value: string) => basename(value).toLocaleLowerCase();
+  return loras.map((lora) => {
+    const file = (lora.fileId
+      ? files.find((candidate) => candidate.id === lora.fileId)
+      : undefined)
+      ?? files.find((candidate) => (
+        normalizedName(candidate.display_name) === normalizedName(lora.name)
+        || normalizedBasename(candidate.display_name) === normalizedBasename(lora.name)
+      ));
+    return {
+      ...lora,
+      fileId: file?.id ?? "",
+      name: file?.display_name ?? lora.name,
+    };
+  });
 }
 
 export function buildProjectDocument(
@@ -593,6 +620,8 @@ export async function projectDocumentFromPng(file: Blob): Promise<unknown> {
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (signature.some((value, index) => bytes[index] !== value)) throw new Error("Project image must be a PNG file");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let projectMetadata: unknown | undefined;
+  let loraMetadata: unknown | undefined;
   for (let offset = 8; offset + 12 <= bytes.length;) {
     const length = view.getUint32(offset);
     const type = new TextDecoder("ascii").decode(bytes.subarray(offset + 4, offset + 8));
@@ -604,15 +633,26 @@ export async function projectDocumentFromPng(file: Blob): Promise<unknown> {
       const separator = data.indexOf(0);
       if (separator >= 0) {
         const key = new TextDecoder("latin1").decode(data.subarray(0, separator));
-        if (key === "k2lab_project") {
-          return JSON.parse(new TextDecoder("latin1").decode(data.subarray(separator + 1)));
+        if (key === "k2lab_project" || key === "loras") {
+          const value = new TextDecoder("latin1").decode(data.subarray(separator + 1));
+          if (key === "k2lab_project") projectMetadata = JSON.parse(value);
+          else {
+            try {
+              loraMetadata = JSON.parse(value);
+            } catch {
+              // The project remains importable when optional diagnostic metadata is malformed.
+            }
+          }
         }
       }
     }
     if (type === "iTXt") {
       const data = bytes.subarray(dataStart, dataEnd);
       const keywordEnd = data.indexOf(0);
-      if (keywordEnd >= 0 && new TextDecoder("latin1").decode(data.subarray(0, keywordEnd)) === "k2lab_project") {
+      const key = keywordEnd >= 0
+        ? new TextDecoder("latin1").decode(data.subarray(0, keywordEnd))
+        : "";
+      if (key === "k2lab_project" || key === "loras") {
         const compressionFlag = data[keywordEnd + 1];
         let cursor = keywordEnd + 3;
         for (let field = 0; field < 2; field += 1) {
@@ -621,12 +661,45 @@ export async function projectDocumentFromPng(file: Blob): Promise<unknown> {
           cursor = end + 1;
         }
         if (compressionFlag !== 0) throw new Error("Compressed PNG project metadata is not supported");
-        return JSON.parse(new TextDecoder("utf-8").decode(data.subarray(cursor)));
+        const value = new TextDecoder("utf-8").decode(data.subarray(cursor));
+        if (key === "k2lab_project") projectMetadata = JSON.parse(value);
+        else {
+          try {
+            loraMetadata = JSON.parse(value);
+          } catch {
+            // The project remains importable when optional diagnostic metadata is malformed.
+          }
+        }
       }
     }
     offset = dataEnd + 4;
   }
+  if (projectMetadata !== undefined) {
+    return mergePngLoraDisplayNames(projectMetadata, loraMetadata);
+  }
   throw new Error("PNG does not contain K2 Region Lab project metadata");
+}
+
+function mergePngLoraDisplayNames(projectValue: unknown, reportValue: unknown): unknown {
+  if (!projectValue || typeof projectValue !== "object" || Array.isArray(projectValue)) {
+    return projectValue;
+  }
+  const project = projectValue as JsonObject;
+  const projectLoras = arrayValue(project.loras);
+  const reports = arrayValue(reportValue).map((item) => objectValue(item));
+  projectLoras.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const lora = entry as JsonObject;
+    if (stringValue(lora.display_name, "")) return;
+    const path = stringValue(lora.path, "");
+    const opaqueId = path.startsWith("opaque:") ? path.slice("opaque:".length) : "";
+    const report = reports.find((candidate) => (
+      opaqueId && stringValue(candidate.id, "") === opaqueId
+    )) ?? reports[index];
+    const displayName = stringValue(report?.display_name, "");
+    if (displayName) lora.display_name = basename(displayName);
+  });
+  return projectValue;
 }
 
 function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
@@ -656,6 +729,8 @@ function loraState(item: JsonObject): StudioLora {
   const edit = objectValue(item.image_edit);
   const reference = objectValue(item.image_edit_reference);
   const path = stringValue(item.path, "LoRA.safetensors");
+  const opaqueId = path.startsWith("opaque:") ? path.slice("opaque:".length) : "";
+  const displayName = stringValue(item.display_name, "");
   const binding = (value: JsonObject, enabled: boolean): LoraLayerBinding => ({
     enabled,
     global: booleanValue(value.global, false),
@@ -666,8 +741,8 @@ function loraState(item: JsonObject): StudioLora {
   const strength = numberValue(item.strength, 1);
   return {
     id: crypto.randomUUID(),
-    fileId: "",
-    name: basename(path),
+    fileId: opaqueId && opaqueId !== "unbound" ? opaqueId : "",
+    name: displayName ? basename(displayName) : opaqueId ? "Unresolved LoRA" : basename(path),
     active: strength !== 0,
     strength: strength === 0 ? 1 : strength,
     generation: binding(item, true),
