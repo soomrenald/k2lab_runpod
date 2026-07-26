@@ -380,6 +380,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const loaded = loadStudioProjectDocument(document);
     let loraFiles: FileRecord[] = [];
     let upscalerFiles: FileRecord[] = [];
+    let controlnetFiles: FileRecord[] = [];
     let diffusionFiles: FileRecord[] = [];
     let textEncoderFiles: FileRecord[] = [];
     let vaeFiles: FileRecord[] = [];
@@ -391,6 +392,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       // project restore cannot create an eight-connection burst through RunPod's proxy.
       loraFiles = await allFiles("loras");
       upscalerFiles = await allFiles("upscale_models");
+      controlnetFiles = await allFiles("controlnet_models");
       diffusionFiles = await allFiles("diffusion_models");
       textEncoderFiles = await allFiles("text_encoders");
       vaeFiles = await allFiles("vae");
@@ -406,6 +408,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
+    const poseControlnet = byName(
+      controlnetFiles,
+      loaded.settings.generation.poseControlnetName,
+    );
+    if (poseControlnet) loaded.settings.generation.poseControlnetFileId = poseControlnet.id;
     const runtime = loaded.settings.runtime;
     const diffusion = byName(diffusionFiles, runtime.diffusionModelName);
     const textEncoder = byName(textEncoderFiles, runtime.textEncoderName);
