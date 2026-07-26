@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from k2_region_lab.pose import subject_pose_document
 from k2_region_lab.agent.domain import (
     FileKind,
     GenerationJob,
@@ -81,9 +82,7 @@ class SubprocessWorkerExecutor:
                 env=environment,
             )
             assert self._process.stderr is not None
-            self._stderr_task = asyncio.create_task(
-                self._discard_stderr(self._process.stderr)
-            )
+            self._stderr_task = asyncio.create_task(self._discard_stderr(self._process.stderr))
         assert self._process.stdin is not None
         assert self._process.stdout is not None
         keep_requested = bool(commands[-1].get("payload", {}).get("keep_model_loaded"))
@@ -427,8 +426,7 @@ class JobManager:
             "cpu_vae",
         )
         return tuple(
-            json.dumps(payload.get(key), sort_keys=True, separators=(",", ":"))
-            for key in keys
+            json.dumps(payload.get(key), sort_keys=True, separators=(",", ":")) for key in keys
         )
 
     async def _handle_worker_event(self, job_id: str, raw: dict[str, Any]) -> str | None:
@@ -829,6 +827,8 @@ class JobManager:
             "enabled": region.enabled,
             "priority": region.priority,
             "spatial_role": region.spatial_role,
+            "region_type": region.region_type,
+            "pose": (subject_pose_document(region.pose) if region.pose is not None else None),
         }
 
     @staticmethod
