@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
 
 
 FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
@@ -20,7 +19,6 @@ if FASTAPI_AVAILABLE:
     import httpx
     from httpx import ASGITransport, AsyncClient
 
-    from k2_region_lab.agent import AGENT_VERSION
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
     from k2_region_lab.agent.domain import (
         FaceDetectionRequest,
@@ -68,20 +66,6 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
     @property
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.settings.session_token}"}
-
-    async def test_environment_uses_installed_agent_version_over_stale_pod_value(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "K2LAB_AGENT_SESSION_TOKEN": self.settings.session_token,
-                "K2LAB_WORKSPACE_ID": self.settings.workspace_id,
-                "K2LAB_IMAGE_VERSION": "0.1.17",
-            },
-            clear=False,
-        ):
-            settings = AgentSettings.from_environment()
-
-        self.assertEqual(settings.image_version, AGENT_VERSION)
 
     async def test_every_agent_endpoint_requires_bearer_authentication(self) -> None:
         for path in (

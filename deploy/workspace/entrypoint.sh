@@ -11,6 +11,10 @@ if [[ -z "${K2LAB_WORKSPACE_ID:-}" ]]; then
     printf '%s\n' "K2LAB_WORKSPACE_ID is required."
     exit 64
 fi
+if [[ -z "${K2LAB_IMAGE_VERSION:-}" ]]; then
+    printf '%s\n' "K2LAB_IMAGE_VERSION is required."
+    exit 64
+fi
 if [[ ! -d /workspace ]]; then
     printf '%s\n' "/workspace is not mounted."
     exit 72
