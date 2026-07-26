@@ -34,7 +34,7 @@ Implemented:
   prompt preview compiled by the same Python implementation as the legacy desktop;
 - prompt editors with overflow scrollbars and live state synchronization;
 - responsive desktop/mobile styling with locally bundled fonts;
-- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-19
+- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-20
   browser round trips, persistent cloud project copies, and cloud source restoration;
 - deterministic diffusion-model, text-encoder, VAE, face-detector, LoRA, and upscaler
   selection from persistent workspace inventory, plus a safe configurable output prefix;
@@ -132,7 +132,7 @@ export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
 export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
 export K2LAB_RUNPOD_IMAGE_DIGEST="registry.example/k2lab@sha256:<64-hex-digest>"
-export K2LAB_RUNPOD_IMAGE_VERSION="0.1.17"
+export K2LAB_RUNPOD_IMAGE_VERSION="0.2.0"
 export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
 export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
 export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"

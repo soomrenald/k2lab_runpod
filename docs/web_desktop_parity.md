@@ -24,7 +24,7 @@ These are the only approved desktop omissions. Explicit worker-memory release re
 
 | Workflow | Required browser behavior | Acceptance evidence |
 | --- | --- | --- |
-| Project lifecycle | New, Open project JSON, Import application PNG metadata, Save, and Save As | Round-trip a version-19 project without losing any field; import `k2lab_project` from a generated PNG |
+| Project lifecycle | New, Open project JSON, Import application PNG metadata, Save, and Save As | Round-trip a version-20 project without losing any field; import `k2lab_project` from a generated PNG |
 | Project recovery | Restore prompts, regions, roles/order, emphasis, LoRAs and routing, sampling, edit, face, projector, and upscale settings | Golden complex-project hydration/serialization test |
 | Canvas source | Load/upload, replace, and clear a generation reference; choose a cloud input or output for edit/face work | UI test plus submitted opaque input file ID |
 | Comparison | Source, Result, and adjustable comparison view | Component behavior test |
