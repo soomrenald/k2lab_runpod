@@ -15,6 +15,7 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from k2_region_lab.agent import AGENT_VERSION
 from k2_region_lab.agent.domain import (
     AgentCapabilities,
     AgentHealth,
@@ -98,11 +99,13 @@ class AgentSettings:
     def from_environment(cls) -> AgentSettings:
         token = os.environ.get("K2LAB_AGENT_SESSION_TOKEN", "")
         workspace_id = os.environ.get("K2LAB_WORKSPACE_ID", "")
-        image_version = os.environ.get("K2LAB_IMAGE_VERSION", "")
         return cls(
             session_token=token,
             workspace_id=workspace_id,
-            image_version=image_version,
+            # The installed package is authoritative. RunPod preserves Pod
+            # environment variables across image updates, so an externally
+            # supplied K2LAB_IMAGE_VERSION can legitimately be stale.
+            image_version=AGENT_VERSION,
             workspace_root=Path(os.environ.get("K2LAB_WORKSPACE_ROOT", "/workspace/k2lab")),
             worker_python=Path(
                 os.environ.get("K2LAB_WORKER_PYTHON", "/opt/comfyui-venv/bin/python")
