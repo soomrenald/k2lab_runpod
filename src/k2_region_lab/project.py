@@ -11,6 +11,7 @@ from k2_region_lab.lora import (
     LORA_ROUTING_MODES,
     STANDARD_LORA_ROUTING,
 )
+from k2_region_lab.pose import subject_pose_document, subject_pose_from_document
 from k2_region_lab.projector import (
     CUSTOM_PROJECTOR_PRESET,
     DEFAULT_PROJECTOR_PRESET,
@@ -33,7 +34,7 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 19
+PROJECT_VERSION = 20
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -51,6 +52,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     15,
     16,
     17,
+    19,
     PROJECT_VERSION,
 }
 
@@ -105,17 +107,10 @@ class SavedLora:
             raise ValueError("character identity edit routing requires regional scope")
         if self.reference_routing_mode not in LORA_ROUTING_MODES:
             raise ValueError(
-                "unsupported saved reference LoRA routing mode: "
-                f"{self.reference_routing_mode!r}"
+                f"unsupported saved reference LoRA routing mode: {self.reference_routing_mode!r}"
             )
-        if (
-            self.reference_enabled
-            and self.reference_global_scope
-            and self.reference_region_ids
-        ):
-            raise ValueError(
-                "a reference LoRA cannot be global and region-scoped at the same time"
-            )
+        if self.reference_enabled and self.reference_global_scope and self.reference_region_ids:
+            raise ValueError("a reference LoRA cannot be global and region-scoped at the same time")
         if (
             self.reference_enabled
             and not self.reference_global_scope
@@ -146,6 +141,11 @@ class ProjectState:
     regional_late_step_scale: float = 0.35
     regional_lora_delta_adaptation: bool = False
     regional_lora_delta_adaptation_gain: float = 0.35
+    pose_conditioning_enabled: bool = False
+    pose_controlnet_model: Path | None = None
+    pose_conditioning_strength: float = 0.75
+    pose_conditioning_start: float = 0.0
+    pose_conditioning_end: float = 0.75
     prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
@@ -201,6 +201,14 @@ class ProjectState:
             raise ValueError("late-step spatial scale must be between 0 and 1")
         if not 0.0 <= self.regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
+        if not 0.0 <= self.pose_conditioning_strength <= 2.0:
+            raise ValueError("pose conditioning strength must be between zero and two")
+        if not 0.0 <= self.pose_conditioning_start <= 1.0:
+            raise ValueError("pose conditioning start must be between zero and one")
+        if not 0.0 <= self.pose_conditioning_end <= 1.0:
+            raise ValueError("pose conditioning end must be between zero and one")
+        if self.pose_conditioning_end <= self.pose_conditioning_start:
+            raise ValueError("pose conditioning end must be after its start")
         if self.projector_preset not in {
             *PROJECTOR_PRESETS,
             CUSTOM_PROJECTOR_PRESET,
@@ -272,9 +280,7 @@ class ProjectState:
             edit_ids = {region.region_id for region in self.image_edit.regions}
             if not set(lora.edit_region_ids).issubset(edit_ids):
                 raise ValueError("an edit LoRA references a region missing from the edit setup")
-            reference_ids = {
-                region.region_id for region in self.image_edit.reference_regions
-            }
+            reference_ids = {region.region_id for region in self.image_edit.reference_regions}
             if not set(lora.reference_region_ids).issubset(reference_ids):
                 raise ValueError(
                     "a reference LoRA references a region missing from the reference setup"
@@ -304,9 +310,16 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_relaxation": state.regional_relaxation,
             "regional_late_step_scale": state.regional_late_step_scale,
             "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
-            "regional_lora_delta_adaptation_gain": (
-                state.regional_lora_delta_adaptation_gain
+            "regional_lora_delta_adaptation_gain": (state.regional_lora_delta_adaptation_gain),
+            "pose_conditioning_enabled": state.pose_conditioning_enabled,
+            "pose_controlnet_model": (
+                str(state.pose_controlnet_model)
+                if state.pose_controlnet_model is not None
+                else None
             ),
+            "pose_conditioning_strength": state.pose_conditioning_strength,
+            "pose_conditioning_start": state.pose_conditioning_start,
+            "pose_conditioning_end": state.pose_conditioning_end,
             "prompt_emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -353,6 +366,8 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "enabled": region.enabled,
                 "priority": region.priority,
                 "spatial_role": region.spatial_role,
+                "region_type": region.region_type,
+                "pose": (subject_pose_document(region.pose) if region.pose is not None else None),
             }
             for region in state.regions
         ],
@@ -404,16 +419,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 }
                 for emphasis in state.image_edit.reference_prompt_emphases
             ],
-            "reference_projector_enabled": (
-                state.image_edit.reference_projector_enabled
-            ),
+            "reference_projector_enabled": (state.image_edit.reference_projector_enabled),
             "reference_projector_preset": state.image_edit.reference_projector_preset,
-            "reference_projector_values": list(
-                state.image_edit.reference_projector_values
-            ),
-            "reference_projector_multiplier": (
-                state.image_edit.reference_projector_multiplier
-            ),
+            "reference_projector_values": list(state.image_edit.reference_projector_values),
+            "reference_projector_multiplier": (state.image_edit.reference_projector_multiplier),
             "reference_projector_identity_protection": (
                 state.image_edit.reference_projector_identity_protection
             ),
@@ -427,20 +436,14 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "composite_feather_pixels": state.image_edit.composite_feather_pixels,
             "edit_entire_image": state.image_edit.edit_entire_image,
             "preserve_identity": state.image_edit.preserve_identity,
-            "reference_description_retention": (
-                state.image_edit.reference_description_retention
-            ),
+            "reference_description_retention": (state.image_edit.reference_description_retention),
             "regional_prompt_strength": state.image_edit.regional_prompt_strength,
             "regional_outside_penalty": state.image_edit.regional_outside_penalty,
             "regional_feather_pixels": state.image_edit.regional_feather_pixels,
-            "regional_subject_competition": (
-                state.image_edit.regional_subject_competition
-            ),
+            "regional_subject_competition": (state.image_edit.regional_subject_competition),
             "regional_subject_fill": state.image_edit.regional_subject_fill,
             "regional_late_step_scale": state.image_edit.regional_late_step_scale,
-            "regional_lora_delta_adaptation": (
-                state.image_edit.regional_lora_delta_adaptation
-            ),
+            "regional_lora_delta_adaptation": (state.image_edit.regional_lora_delta_adaptation),
             "regional_lora_delta_adaptation_gain": (
                 state.image_edit.regional_lora_delta_adaptation_gain
             ),
@@ -459,6 +462,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "enabled": region.enabled,
                     "priority": region.priority,
                     "spatial_role": region.spatial_role,
+                    "region_type": region.region_type,
+                    "pose": (
+                        subject_pose_document(region.pose) if region.pose is not None else None
+                    ),
                 }
                 for region in state.image_edit.regions
             ],
@@ -477,6 +484,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "enabled": region.enabled,
                     "priority": region.priority,
                     "spatial_role": region.spatial_role,
+                    "region_type": region.region_type,
+                    "pose": (
+                        subject_pose_document(region.pose) if region.pose is not None else None
+                    ),
                 }
                 for region in state.image_edit.reference_regions
             ],
@@ -492,6 +503,30 @@ def project_document(state: ProjectState) -> dict[str, Any]:
     }
 
 
+def _region_from_document(item: dict[str, Any]) -> RegionDefinition:
+    region_type = str(item.get("region_type", "region"))
+    spatial_role = str(item.get("spatial_role", "auto"))
+    if region_type == "subject":
+        spatial_role = "subject"
+    return RegionDefinition(
+        region_id=str(item["id"]),
+        name=str(item["name"]),
+        box=PixelBox(
+            float(item["box"]["x0"]),
+            float(item["box"]["y0"]),
+            float(item["box"]["x1"]),
+            float(item["box"]["y1"]),
+        ),
+        prompt=str(item.get("prompt", "")),
+        face_identity_prompt=str(item.get("face_identity_prompt", "")),
+        enabled=bool(item.get("enabled", True)),
+        priority=int(item.get("priority", 0)),
+        spatial_role=spatial_role,
+        region_type=region_type,
+        pose=(subject_pose_from_document(item.get("pose")) if region_type == "subject" else None),
+    )
+
+
 def project_state(document: dict[str, Any]) -> ProjectState:
     if document.get("schema") != PROJECT_SCHEMA:
         raise ValueError("not a K2 Region Lab project file")
@@ -499,60 +534,11 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         raise ValueError(f"unsupported project version: {document.get('version')!r}")
     canvas = document["canvas"]
     generation = document.get("generation", {})
-    regions = tuple(
-        RegionDefinition(
-            region_id=str(item["id"]),
-            name=str(item["name"]),
-            box=PixelBox(
-                float(item["box"]["x0"]),
-                float(item["box"]["y0"]),
-                float(item["box"]["x1"]),
-                float(item["box"]["y1"]),
-            ),
-            prompt=str(item.get("prompt", "")),
-            face_identity_prompt=str(item.get("face_identity_prompt", "")),
-            enabled=bool(item.get("enabled", True)),
-            priority=int(item.get("priority", 0)),
-            spatial_role=str(item.get("spatial_role", "auto")),
-        )
-        for item in document.get("regions", [])
-    )
+    regions = tuple(_region_from_document(item) for item in document.get("regions", []))
     edit_document = document.get("image_edit", {})
-    edit_regions = tuple(
-        RegionDefinition(
-            region_id=str(item["id"]),
-            name=str(item["name"]),
-            box=PixelBox(
-                float(item["box"]["x0"]),
-                float(item["box"]["y0"]),
-                float(item["box"]["x1"]),
-                float(item["box"]["y1"]),
-            ),
-            prompt=str(item.get("prompt", "")),
-            face_identity_prompt=str(item.get("face_identity_prompt", "")),
-            enabled=bool(item.get("enabled", True)),
-            priority=int(item.get("priority", 0)),
-            spatial_role=str(item.get("spatial_role", "auto")),
-        )
-        for item in edit_document.get("regions", [])
-    )
+    edit_regions = tuple(_region_from_document(item) for item in edit_document.get("regions", []))
     edit_reference_regions = tuple(
-        RegionDefinition(
-            region_id=str(item["id"]),
-            name=str(item["name"]),
-            box=PixelBox(
-                float(item["box"]["x0"]),
-                float(item["box"]["y0"]),
-                float(item["box"]["x1"]),
-                float(item["box"]["y1"]),
-            ),
-            prompt=str(item.get("prompt", "")),
-            face_identity_prompt=str(item.get("face_identity_prompt", "")),
-            enabled=bool(item.get("enabled", True)),
-            priority=int(item.get("priority", 0)),
-            spatial_role=str(item.get("spatial_role", "auto")),
-        )
-        for item in edit_document.get("reference_regions", [])
+        _region_from_document(item) for item in edit_document.get("reference_regions", [])
     )
     loras = tuple(
         SavedLora(
@@ -565,31 +551,20 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             edit_enabled=bool(item.get("image_edit", {}).get("enabled", False)),
             edit_global_scope=bool(item.get("image_edit", {}).get("global", False)),
             edit_region_ids=tuple(
-                str(region_id)
-                for region_id in item.get("image_edit", {}).get("region_ids", [])
+                str(region_id) for region_id in item.get("image_edit", {}).get("region_ids", [])
             ),
             edit_routing_mode=str(
                 item.get("image_edit", {}).get("routing_mode", STANDARD_LORA_ROUTING)
             ),
-            edit_trigger_phrase=str(
-                item.get("image_edit", {}).get("trigger_phrase", "")
-            ),
-            reference_enabled=bool(
-                item.get("image_edit_reference", {}).get("enabled", False)
-            ),
-            reference_global_scope=bool(
-                item.get("image_edit_reference", {}).get("global", False)
-            ),
+            edit_trigger_phrase=str(item.get("image_edit", {}).get("trigger_phrase", "")),
+            reference_enabled=bool(item.get("image_edit_reference", {}).get("enabled", False)),
+            reference_global_scope=bool(item.get("image_edit_reference", {}).get("global", False)),
             reference_region_ids=tuple(
                 str(region_id)
-                for region_id in item.get("image_edit_reference", {}).get(
-                    "region_ids", []
-                )
+                for region_id in item.get("image_edit_reference", {}).get("region_ids", [])
             ),
             reference_routing_mode=str(
-                item.get("image_edit_reference", {}).get(
-                    "routing_mode", STANDARD_LORA_ROUTING
-                )
+                item.get("image_edit_reference", {}).get("routing_mode", STANDARD_LORA_ROUTING)
             ),
             reference_trigger_phrase=str(
                 item.get("image_edit_reference", {}).get("trigger_phrase", "")
@@ -610,34 +585,31 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         batch_mode=bool(generation.get("batch_mode", False)),
         batch_count=int(generation.get("batch_count", 2)),
         regional_prompting=bool(generation.get("regional_prompting", True)),
-        regional_prompt_strength=float(
-            generation.get("regional_prompt_strength", 1.0)
-        ),
-        regional_outside_penalty=float(
-            generation.get("regional_outside_penalty", 1.0)
-        ),
+        regional_prompt_strength=float(generation.get("regional_prompt_strength", 1.0)),
+        regional_outside_penalty=float(generation.get("regional_outside_penalty", 1.0)),
         regional_feather_pixels=int(generation.get("regional_feather_pixels", 128)),
-        regional_subject_competition=bool(
-            generation.get("regional_subject_competition", True)
-        ),
+        regional_subject_competition=bool(generation.get("regional_subject_competition", True)),
         regional_subject_fill=bool(generation.get("regional_subject_fill", True)),
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
-        regional_late_step_scale=float(
-            generation.get("regional_late_step_scale", 0.35)
-        ),
+        regional_late_step_scale=float(generation.get("regional_late_step_scale", 0.35)),
         regional_lora_delta_adaptation=bool(
             generation.get("regional_lora_delta_adaptation", False)
         ),
         regional_lora_delta_adaptation_gain=float(
             generation.get("regional_lora_delta_adaptation_gain", 0.35)
         ),
-        prompt_emphases=prompt_emphases_from_payload(
-            generation.get("prompt_emphases", [])
+        pose_conditioning_enabled=bool(generation.get("pose_conditioning_enabled", False)),
+        pose_controlnet_model=(
+            Path(generation["pose_controlnet_model"]).expanduser()
+            if generation.get("pose_controlnet_model")
+            else None
         ),
+        pose_conditioning_strength=float(generation.get("pose_conditioning_strength", 0.75)),
+        pose_conditioning_start=float(generation.get("pose_conditioning_start", 0.0)),
+        pose_conditioning_end=float(generation.get("pose_conditioning_end", 0.75)),
+        prompt_emphases=prompt_emphases_from_payload(generation.get("prompt_emphases", [])),
         projector_enabled=bool(generation.get("projector_enabled", False)),
-        projector_preset=str(
-            generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)
-        ),
+        projector_preset=str(generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)),
         projector_values=validate_projector_values(
             generation.get(
                 "projector_values",
@@ -645,9 +617,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             )
         ),
         projector_multiplier=float(generation.get("projector_multiplier", 1.0)),
-        projector_identity_protection=float(
-            generation.get("projector_identity_protection", 1.0)
-        ),
+        projector_identity_protection=float(generation.get("projector_identity_protection", 1.0)),
         face_detail_seed=int(generation.get("face_detail_seed", 0)),
         face_detail_steps=int(generation.get("face_detail_steps", 8)),
         face_detail_denoise=float(generation.get("face_detail_denoise", 0.15)),
@@ -659,9 +629,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         face_detail_detector_threshold=float(
             generation.get("face_detail_detector_threshold", 0.15)
         ),
-        face_detail_detector_provider=str(
-            generation.get("face_detail_detector_provider", "auto")
-        ),
+        face_detail_detector_provider=str(generation.get("face_detail_detector_provider", "auto")),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),
         upscale_method=str(generation.get("upscale_method", "lanczos")),
@@ -671,12 +639,8 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             else None
         ),
         vram_mode=str(document.get("runtime", {}).get("vram_mode", "auto")),
-        reserve_vram_gb=float(
-            document.get("runtime", {}).get("reserve_vram_gb", 1.0)
-        ),
-        keep_model_loaded=bool(
-            document.get("runtime", {}).get("keep_model_loaded", False)
-        ),
+        reserve_vram_gb=float(document.get("runtime", {}).get("reserve_vram_gb", 1.0)),
+        keep_model_loaded=bool(document.get("runtime", {}).get("keep_model_loaded", False)),
         system_ram_guard_enabled=bool(
             document.get("runtime", {}).get("system_ram_guard_enabled", True)
         ),
@@ -697,9 +661,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             ),
             width=int(edit_document.get("width", 0)),
             height=int(edit_document.get("height", 0)),
-            reference_global_prompt=str(
-                edit_document.get("reference_global_prompt", "")
-            ),
+            reference_global_prompt=str(edit_document.get("reference_global_prompt", "")),
             reference_regions=edit_reference_regions,
             reference_prompt_emphases=prompt_emphases_from_payload(
                 edit_document.get("reference_prompt_emphases", [])
@@ -728,35 +690,21 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             scheduler=str(edit_document.get("scheduler", DEFAULT_SCHEDULER)),
             seed=int(edit_document.get("seed", 0)),
             denoise=float(edit_document.get("denoise", 0.15)),
-            latent_feather_pixels=int(
-                edit_document.get("latent_feather_pixels", 64)
-            ),
-            composite_feather_pixels=int(
-                edit_document.get("composite_feather_pixels", 48)
-            ),
+            latent_feather_pixels=int(edit_document.get("latent_feather_pixels", 64)),
+            composite_feather_pixels=int(edit_document.get("composite_feather_pixels", 48)),
             edit_entire_image=bool(edit_document.get("edit_entire_image", False)),
             preserve_identity=bool(edit_document.get("preserve_identity", True)),
             reference_description_retention=float(
                 edit_document.get("reference_description_retention", 1.0)
             ),
-            regional_prompt_strength=float(
-                edit_document.get("regional_prompt_strength", 1.0)
-            ),
-            regional_outside_penalty=float(
-                edit_document.get("regional_outside_penalty", 1.0)
-            ),
-            regional_feather_pixels=int(
-                edit_document.get("regional_feather_pixels", 128)
-            ),
+            regional_prompt_strength=float(edit_document.get("regional_prompt_strength", 1.0)),
+            regional_outside_penalty=float(edit_document.get("regional_outside_penalty", 1.0)),
+            regional_feather_pixels=int(edit_document.get("regional_feather_pixels", 128)),
             regional_subject_competition=bool(
                 edit_document.get("regional_subject_competition", True)
             ),
-            regional_subject_fill=bool(
-                edit_document.get("regional_subject_fill", True)
-            ),
-            regional_late_step_scale=float(
-                edit_document.get("regional_late_step_scale", 0.35)
-            ),
+            regional_subject_fill=bool(edit_document.get("regional_subject_fill", True)),
+            regional_late_step_scale=float(edit_document.get("regional_late_step_scale", 0.35)),
             regional_lora_delta_adaptation=bool(
                 edit_document.get("regional_lora_delta_adaptation", False)
             ),
@@ -797,9 +745,7 @@ def load_project_image(path: Path) -> ProjectState:
             raise ValueError("project image must be a PNG file")
         encoded = image.info.get(PNG_PROJECT_KEY)
     if not isinstance(encoded, str) or not encoded.strip():
-        raise ValueError(
-            f"PNG does not contain K2 Region Lab metadata ({PNG_PROJECT_KEY})"
-        )
+        raise ValueError(f"PNG does not contain K2 Region Lab metadata ({PNG_PROJECT_KEY})")
     document = json.loads(encoded)
     if not isinstance(document, dict):
         raise ValueError("embedded K2 project root must be a JSON object")
