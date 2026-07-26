@@ -21,6 +21,7 @@ import {
   promptEmphasisMatches,
   reconcilePromptEmphases,
 } from "../promptEmphasis.ts";
+import { mirrorPose, squattingPose, standingPose } from "../pose.ts";
 
 type InspectorTab = "prompt" | "regions" | "loras" | "advanced";
 
@@ -37,6 +38,7 @@ interface Props {
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
   onChooseUpscaleModel: () => void;
+  onChoosePoseModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   faces: DetectedFaceRecord[];
   selectedFaceIndices: number[];
@@ -62,6 +64,7 @@ export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
     onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
+    onChoosePoseModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
@@ -237,18 +240,34 @@ export function Inspector(props: Props) {
             <div className="section-inline-title"><span>{selected ? selected.name : "Regional prompt"}</span>{selected && <span className="active-pill">Selected</span>}</div>
             {selected ? <>
               <input className="text-input compact-input" value={selected.name} onChange={(event) => updateSelected({ name: event.target.value })} />
-              <label className="field-label">Spatial role</label>
-              <select className="select-input compact-select" value={selected.spatialRole} onChange={(event) => updateSelected({ spatialRole: event.target.value as RegionBox["spatialRole"] })}>
-                <option value="auto">Auto (based on box width)</option><option value="subject">Subject target</option><option value="background">Background band</option>
-              </select>
+              <label className="field-label">Box type</label>
+              <div className="box-type-readout">
+                <strong>{selected.regionType === "subject" ? "Subject box · mannequin" : "Region box · no mannequin"}</strong>
+                <small>{selected.regionType === "subject" ? "Contributes pose control when enabled." : "Use for objects, scenery, or background areas."}</small>
+              </div>
+              {selected.regionType === "region" && <>
+                <label className="field-label">Spatial role</label>
+                <select className="select-input compact-select" value={selected.spatialRole} onChange={(event) => updateSelected({ spatialRole: event.target.value as RegionBox["spatialRole"] })}>
+                  <option value="auto">Auto (based on box width)</option><option value="subject">Subject target</option><option value="background">Background band</option>
+                </select>
+              </>}
               <label className="field-label">Region prompt</label>
               <textarea ref={regionPromptRef} className="prompt-area" value={selected.prompt}
                 placeholder={mode === "edit" && activeLayer === "targets" ? "Describe the edit inside this box…" : "Describe this region…"}
                 onChange={(event) => updateSelected({ prompt: event.target.value })} />
-              <label className="field-label">Face identity prompt</label>
-              <textarea className="prompt-area identity-area" value={selected.faceIdentityPrompt}
-                placeholder="Stable facial identity, person class, face, and hair…"
-                onChange={(event) => updateSelected({ faceIdentityPrompt: event.target.value })} />
+              {selected.regionType === "subject" && <>
+                <label className="field-label">Face identity prompt</label>
+                <textarea className="prompt-area identity-area" value={selected.faceIdentityPrompt}
+                  placeholder="Stable facial identity, person class, face, and hair…"
+                  onChange={(event) => updateSelected({ faceIdentityPrompt: event.target.value })} />
+                <label className="check-row compact-check"><input type="checkbox" checked={selected.pose?.enabled ?? false} onChange={(event) => updateSelected({ pose: { ...(selected.pose ?? standingPose()), enabled: event.target.checked } })} /><span><strong>Enable this mannequin</strong></span></label>
+                <div className="inline-actions pose-preset-actions">
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: standingPose() })}>Standing</button>
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: squattingPose() })}>Squatting</button>
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: mirrorPose(selected.pose ?? standingPose()) })}>Mirror</button>
+                </div>
+                <p className="field-help">Drag joints directly on the canvas. Arms and legs may extend outside this box to describe interactions with another subject.</p>
+              </>}
             </> : <div className="empty-inspector"><Icon name="layers" /><span>Select a region to edit its prompt.</span></div>}
           </div>}
           {emphasisAvailable && <div className="inspector-section emphasis-panel">
@@ -281,7 +300,7 @@ export function Inspector(props: Props) {
           <div className="section-inline-title"><span>{activeLayer === "reference" ? "Reference regions · front to back" : activeLayer === "targets" ? "Edit targets · front to back" : "Scene regions · front to back"}</span></div>
           <div className="region-list">{visibleRegions.map((region, index) => <button className={`region-list-row ${selectedId === region.id ? "selected" : ""}`} key={region.id} onClick={() => onSelect(region.id)}>
             <span className="region-swatch" style={{ opacity: region.enabled ? 1 : 0.35 }}>{index + 1}</span>
-            <span className="region-list-copy"><strong>{region.name}</strong><small>{region.spatialRole} · {Math.round(region.width)} × {Math.round(region.height)}</small></span>
+            <span className="region-list-copy"><strong>{region.name}</strong><small>{region.regionType === "subject" ? "Subject · mannequin" : `Region · ${region.spatialRole}`} · {Math.round(region.width)} × {Math.round(region.height)}</small></span>
             <input type="checkbox" aria-label={`Enable ${region.name}`} checked={region.enabled} onClick={(event) => event.stopPropagation()} onChange={(event) => onRegions(regions.map((item) => item.id === region.id ? { ...item, enabled: event.target.checked } : item))} />
           </button>)}</div>
           {visibleRegions.length === 0 && <div className="empty-inspector"><Icon name="plus" /><span>Draw a box on the canvas to add a region.</span></div>}
@@ -296,7 +315,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onChoosePoseModel={onChoosePoseModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
       </div>
     </aside>
   );
@@ -379,13 +398,14 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onChoosePoseModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   onChooseUpscaleModel: () => void;
+  onChoosePoseModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   workerMemory: WorkerMemoryStatus | null;
   memoryRefreshing: boolean;
@@ -473,6 +493,17 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
     {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
+    {mode === "generation" && <>
+      <SectionTitle text="Subject pose control" />
+      <Check label="Condition generation from subject mannequins" checked={generation.poseConditioning} onChange={(poseConditioning) => updateGeneration({ poseConditioning })} />
+      {generation.poseConditioning && <>
+        <button className="quiet-button full-button" onClick={onChoosePoseModel}>{generation.poseControlnetName || "Choose Qwen Image pose ControlNet…"}</button>
+        <LinkedValue label="Pose strength" value={generation.poseStrength} min={0} max={2} step={0.05} onChange={(poseStrength) => updateGeneration({ poseStrength })} />
+        <LinkedValue label="Pose start" value={generation.poseStart} min={0} max={1} step={0.05} onChange={(poseStart) => updateGeneration({ poseStart: Math.min(poseStart, generation.poseEnd) })} />
+        <LinkedValue label="Pose end" value={generation.poseEnd} min={0} max={1} step={0.05} onChange={(poseEnd) => updateGeneration({ poseEnd: Math.max(poseEnd, generation.poseStart) })} />
+        <p className="field-help">All enabled subject mannequins are composed into one full-canvas pose map. Ordinary region boxes never add pose control, and limbs are not clipped at box edges.</p>
+      </>}
+    </>}
     <Check label="Separate overlapping subject targets" checked={values.subjectCompetition} onChange={(subjectCompetition) => update({ subjectCompetition })} />
     <Check label="Make subjects fill their boxes" checked={values.subjectFill} onChange={(subjectFill) => update({ subjectFill })} />
     {mode === "generation" && <Check label="Relax spatial guidance during late steps" checked={generation.relaxation} onChange={(relaxation) => updateGeneration({ relaxation })} />}

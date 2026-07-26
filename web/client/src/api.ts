@@ -151,7 +151,7 @@ export interface BrowserSession {
   expires_at: string;
 }
 
-export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "upscale_models" | "face_detection" | "projects" | "inputs" | "outputs";
+export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "upscale_models" | "controlnet_models" | "face_detection" | "projects" | "inputs" | "outputs";
 
 export interface FileRecord {
   id: string;
@@ -509,7 +509,7 @@ export const controlPlane = {
     command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
     diffusion_model_file_id?: string; text_encoder_file_id?: string; vae_file_id?: string;
     face_detector_file_id?: string; filename_prefix: string;
-    lora_file_ids?: string[]; upscale_model_file_id?: string; selected_face_indices?: number[];
+    lora_file_ids?: string[]; upscale_model_file_id?: string; pose_controlnet_file_id?: string; selected_face_indices?: number[];
     manual_face_paths?: number[][][];
   }) => request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs`, {
     method: "POST", body: JSON.stringify(payload),

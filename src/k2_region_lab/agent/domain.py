@@ -77,6 +77,7 @@ class FileKind(StrEnum):
     VAE = "vae"
     LORAS = "loras"
     UPSCALE_MODELS = "upscale_models"
+    CONTROLNET_MODELS = "controlnet_models"
     FACE_DETECTION = "face_detection"
     PROJECTS = "projects"
     INPUTS = "inputs"
@@ -261,6 +262,7 @@ class JobSubmitRequest(BaseModel):
     face_detector_file_id: str | None = Field(default=None, max_length=64)
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
+    pose_controlnet_file_id: str | None = Field(default=None, max_length=64)
     filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)
     manual_face_paths: list[list[list[float]]] = Field(default_factory=list, max_length=128)

@@ -22,6 +22,7 @@ import {
 } from "../studioProject";
 import {
   RegionCanvas,
+  type DrawMode,
   type RegionBox,
   type RegionLayer,
   type StudioMode,
@@ -52,7 +53,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
+  const [drawMode, setDrawMode] = useState<DrawMode>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [cloudSource, setCloudSource] = useState<FileRecord | null>(null);
@@ -66,7 +67,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale" | "pose">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -285,7 +286,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   function switchMode(next: StudioMode) {
     setMode(next);
-    setDrawMode(false);
+    setDrawMode(null);
     setSelectedId(null);
     setActiveLayer(next === "edit" ? "targets" : "generation");
   }
@@ -347,7 +348,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setActiveLayer("generation");
     setRegions([]);
     setSelectedId(null);
-    setDrawMode(false);
+    setDrawMode(null);
     setSourceUrl(null);
     setSourceName("");
     setCloudSource(null);
@@ -713,6 +714,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             : undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
+          pose_controlnet_file_id: studioSettings.generation.poseControlnetFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
           manual_face_paths: mode === "face" ? manualFacePaths : undefined,
@@ -1128,6 +1130,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onLoras={setLoras}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
+            onChoosePoseModel={() => { setAssetPurpose("pose"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
             selectedFaceIndices={selectedFaceIndices}
@@ -1337,7 +1340,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : assetPurpose === "pose" ? "controlnet_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1349,6 +1352,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         }
         if (assetPurpose === "upscale") {
           if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
+          return;
+        }
+        if (assetPurpose === "pose") {
+          if (file.kind === "controlnet_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, poseControlnetFileId: file.id, poseControlnetName: file.display_name } });
           return;
         }
         if (file.kind === "projects") { void openCloudProject(file); return; }

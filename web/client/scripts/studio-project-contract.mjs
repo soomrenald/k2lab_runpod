@@ -14,6 +14,7 @@ import {
   promptEmphasisMatches,
   reconcilePromptEmphases,
 } from "../src/promptEmphasis.ts";
+import { standingPose } from "../src/pose.ts";
 
 assert.deepEqual(
   promptEmphasisFromSelection("red coat, red coat", 10, 18, "__global__"),
@@ -71,10 +72,10 @@ settings.runtime.textEncoderName = "chosen-text.safetensors";
 settings.runtime.vaeName = "chosen-vae.safetensors";
 settings.runtime.faceDetectorName = "chosen-detector.onnx";
 const regions = [
-  { id: "person", name: "Person", layer: "generation", x: 80, y: 40, width: 400, height: 900, prompt: "red coat", faceIdentityPrompt: "green eyes", spatialRole: "subject", enabled: true },
-  { id: "wall", name: "Wall", layer: "generation", x: 0, y: 0, width: 1024, height: 1024, prompt: "brick wall", faceIdentityPrompt: "", spatialRole: "background", enabled: true },
-  { id: "reference", name: "Reference", layer: "reference", x: 20, y: 30, width: 300, height: 700, prompt: "portrait", faceIdentityPrompt: "same person", spatialRole: "subject", enabled: true },
-  { id: "target", name: "Target", layer: "targets", x: 350, y: 300, width: 200, height: 250, prompt: "blue jacket", faceIdentityPrompt: "", spatialRole: "subject", enabled: true },
+  { id: "person", name: "Person", layer: "generation", x: 80, y: 40, width: 400, height: 900, prompt: "red coat", faceIdentityPrompt: "green eyes", spatialRole: "subject", regionType: "subject", pose: standingPose(), enabled: true },
+  { id: "wall", name: "Wall", layer: "generation", x: 0, y: 0, width: 1024, height: 1024, prompt: "brick wall", faceIdentityPrompt: "", spatialRole: "background", regionType: "region", pose: null, enabled: true },
+  { id: "reference", name: "Reference", layer: "reference", x: 20, y: 30, width: 300, height: 700, prompt: "portrait", faceIdentityPrompt: "same person", spatialRole: "subject", regionType: "region", pose: null, enabled: true },
+  { id: "target", name: "Target", layer: "targets", x: 350, y: 300, width: 200, height: 250, prompt: "blue jacket", faceIdentityPrompt: "", spatialRole: "subject", regionType: "region", pose: null, enabled: true },
 ];
 const loras = [{
   id: "not-persisted",
@@ -104,6 +105,10 @@ assert.equal(second.runtime.system_ram_guard_enabled, false);
 assert.deepEqual(second.regions.map((region) => [region.id, region.priority, region.spatial_role]), [
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
+assert.equal(second.regions[0].region_type, "subject");
+assert.equal(second.regions[0].pose.joints.length, 18);
+assert.equal(second.regions[1].region_type, "region");
+assert.equal(second.regions[1].pose, null);
 
 const sanitizedProject = structuredClone(first);
 sanitizedProject.loras[0].path = "opaque:opaque-cloud-id";
