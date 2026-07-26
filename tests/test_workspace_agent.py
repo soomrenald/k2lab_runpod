@@ -197,6 +197,35 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
 
+    async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
+        self,
+    ) -> None:
+        document = self._project_document("portrait")
+        document["loras"] = [
+            {
+                "path": "people/character.safetensors",
+                "global": True,
+                "region_ids": [],
+                "strength": 1.0,
+            }
+        ]
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "lora-display-name-contract",
+                "kind": "generate",
+                "project_id": "lora-display-name-project",
+                "project": document,
+                "lora_file_ids": ["abc123"],
+            }
+        )
+
+        _state, sanitized = self.app.state.job_manager._validate_request(request)
+
+        self.assertEqual(sanitized["loras"][0]["path"], "opaque:abc123")
+        self.assertEqual(
+            sanitized["loras"][0]["display_name"], "character.safetensors"
+        )
+
     async def test_generation_payload_resolves_selected_models_and_output_prefix(self) -> None:
         selections: dict[FileKind, str] = {}
         filenames = {

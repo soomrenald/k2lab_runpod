@@ -786,6 +786,11 @@ class JobManager:
             raise JobError("manual_face_path_invalid", "Manual face paths are invalid.")
         project = copy.deepcopy(request.project)
         for index, lora in enumerate(project.get("loras", [])):
+            original_path = lora.get("path")
+            if isinstance(original_path, str):
+                display_name = Path(original_path.replace("\\", "/")).name
+                if display_name and not original_path.startswith("opaque:"):
+                    lora["display_name"] = display_name[:191]
             lora["path"] = (
                 f"opaque:{request.lora_file_ids[index]}"
                 if index < len(request.lora_file_ids)

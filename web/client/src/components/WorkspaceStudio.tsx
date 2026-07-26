@@ -13,6 +13,7 @@ import { useUploadQueue } from "../useUploadQueue";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
 import {
   buildProjectDocument,
+  bindStudioLoraFiles,
   createStudioLora,
   createStudioSettings,
   loadStudioProjectDocument,
@@ -401,10 +402,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const byName = (files: FileRecord[], target: string) => files.find(
       (file) => file.display_name.toLocaleLowerCase() === target.toLocaleLowerCase(),
     );
-    loaded.loras = loaded.loras.map((lora) => ({
-      ...lora,
-      fileId: byName(loraFiles, lora.name)?.id ?? "",
-    }));
+    loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
     const runtime = loaded.settings.runtime;

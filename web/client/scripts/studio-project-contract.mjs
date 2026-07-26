@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildProjectDocument,
+  bindStudioLoraFiles,
   createStudioLora,
   createStudioSettings,
   defaultLoraTrigger,
@@ -104,13 +105,56 @@ assert.deepEqual(second.regions.map((region) => [region.id, region.priority, reg
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
 
-const encoded = new TextEncoder().encode(`k2lab_project\0${JSON.stringify(first)}`);
-const chunk = new Uint8Array(12 + encoded.length);
-new DataView(chunk.buffer).setUint32(0, encoded.length);
-chunk.set(new TextEncoder().encode("tEXt"), 4);
-chunk.set(encoded, 8);
-const png = new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk]);
+const sanitizedProject = structuredClone(first);
+sanitizedProject.loras[0].path = "opaque:opaque-cloud-id";
+sanitizedProject.loras[0].display_name = "character.safetensors";
+const loadedSanitized = loadStudioProjectDocument(sanitizedProject);
+assert.equal(loadedSanitized.loras[0].fileId, "opaque-cloud-id");
+assert.equal(loadedSanitized.loras[0].name, "character.safetensors");
+assert.deepEqual(
+  bindStudioLoraFiles(loadedSanitized.loras, [{
+    id: "opaque-cloud-id",
+    display_name: "people/character-v2.safetensors",
+  }]).map((lora) => [lora.fileId, lora.name]),
+  [["opaque-cloud-id", "people/character-v2.safetensors"]],
+);
+const legacyOpaqueProject = structuredClone(sanitizedProject);
+delete legacyOpaqueProject.loras[0].display_name;
+const loadedLegacyOpaque = loadStudioProjectDocument(legacyOpaqueProject);
+assert.equal(loadedLegacyOpaque.loras[0].name, "Unresolved LoRA");
+assert.equal(
+  bindStudioLoraFiles(loadedLegacyOpaque.loras, [{
+    id: "opaque-cloud-id",
+    display_name: "character.safetensors",
+  }])[0].name,
+  "character.safetensors",
+);
+
+function textChunk(key, value) {
+  const encoded = new TextEncoder().encode(`${key}\0${JSON.stringify(value)}`);
+  const chunk = new Uint8Array(12 + encoded.length);
+  new DataView(chunk.buffer).setUint32(0, encoded.length);
+  chunk.set(new TextEncoder().encode("tEXt"), 4);
+  chunk.set(encoded, 8);
+  return chunk;
+}
+
+const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const png = new Blob([signature, textChunk("k2lab_project", first)]);
 assert.deepEqual(await projectDocumentFromPng(png), first);
+const legacyPng = new Blob([
+  signature,
+  textChunk("k2lab_project", legacyOpaqueProject),
+  textChunk("loras", [{
+    id: "opaque-cloud-id",
+    display_name: "archive/character-from-report.safetensors",
+  }]),
+]);
+const recoveredLegacyProject = await projectDocumentFromPng(legacyPng);
+assert.equal(
+  loadStudioProjectDocument(recoveredLegacyProject).loras[0].name,
+  "character-from-report.safetensors",
+);
 
 const events = appendBoundedEvents([], Array.from({ length: EVENT_LOG_LIMIT + 25 }, (_value, index) => index));
 assert.equal(events.length, EVENT_LOG_LIMIT);
