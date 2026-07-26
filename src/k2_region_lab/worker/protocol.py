@@ -56,6 +56,10 @@ WORKER_ERROR_MESSAGES = {
     "lora_validation_failed": (
         "LoRA validation failed. Verify that every selected LoRA targets Krea 2."
     ),
+    "pose_control_failed": (
+        "Subject pose conditioning failed. Verify that the selected model is the Qwen Image "
+        "ControlNet Union safetensors file, or disable pose conditioning and try again."
+    ),
     "generation_failed": (
         "Generation failed while applying the selected LoRA or sampling settings. "
         "Verify that the LoRA targets Krea 2 and try again."
@@ -85,6 +89,10 @@ def classify_worker_error(
         code = "model_load_failed"
     elif command_kind == CommandKind.VALIDATE_LORAS:
         code = "lora_validation_failed"
+    elif command_kind == CommandKind.GENERATE_BASELINE and (
+        "controlnet" in combined or "pose conditioning" in combined
+    ):
+        code = "pose_control_failed"
     elif command_kind == CommandKind.GENERATE_BASELINE:
         code = "generation_failed"
     elif command_kind == CommandKind.EDIT_IMAGE:

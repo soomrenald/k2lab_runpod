@@ -269,6 +269,23 @@ def main() -> int:
                     regional_lora_delta_adaptation_gain=float(
                         payload.get("regional_lora_delta_adaptation_gain", 0.35)
                     ),
+                    pose_conditioning_enabled=bool(
+                        payload.get("pose_conditioning_enabled", False)
+                    ),
+                    pose_controlnet_path=(
+                        Path(payload["pose_controlnet_path"])
+                        if payload.get("pose_controlnet_path")
+                        else None
+                    ),
+                    pose_conditioning_strength=float(
+                        payload.get("pose_conditioning_strength", 0.75)
+                    ),
+                    pose_conditioning_start=float(
+                        payload.get("pose_conditioning_start", 0.0)
+                    ),
+                    pose_conditioning_end=float(
+                        payload.get("pose_conditioning_end", 0.75)
+                    ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(
                         payload.get("projector_preset", "filter_bypass2")

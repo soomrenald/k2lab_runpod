@@ -48,6 +48,7 @@ from k2_region_lab.memory import (
     system_memory_snapshot,
 )
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.pose_control import PoseControlSummary, render_openpose_map
 from k2_region_lab.projector import (
     DEFAULT_PROJECTOR_PRESET,
     PROJECTOR_VECTOR_COUNT,
@@ -1460,6 +1461,11 @@ class ComfyBaselineRuntime:
         regional_late_step_scale: float = 0.35,
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
+        pose_conditioning_enabled: bool = False,
+        pose_controlnet_path: Path | None = None,
+        pose_conditioning_strength: float = 0.75,
+        pose_conditioning_start: float = 0.0,
+        pose_conditioning_end: float = 0.75,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1484,6 +1490,10 @@ class ComfyBaselineRuntime:
         scheduler = validate_scheduler(scheduler)
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
+        if not 0.0 <= pose_conditioning_strength <= 2.0:
+            raise ValueError("pose conditioning strength must be between zero and two")
+        if not 0.0 <= pose_conditioning_start < pose_conditioning_end <= 1.0:
+            raise ValueError("pose conditioning start and end must be ordered between zero and one")
         if not 0.0 <= projector_identity_protection <= 1.0:
             raise ValueError("projector identity protection must be between zero and one")
         if post_upscale and upscale_method == "model":
@@ -1491,6 +1501,29 @@ class ComfyBaselineRuntime:
                 raise ValueError("select a readable neural upscaler model before generation")
         filename_prefix = validate_filename_prefix(filename_prefix)
         lora_specifications = list(loras or [])
+        pose_control_image = None
+        pose_control_summary: PoseControlSummary | None = None
+        if pose_conditioning_enabled:
+            pose_control_image, pose_control_summary = render_openpose_map(
+                width,
+                height,
+                regions,
+            )
+            if pose_control_summary.subject_count == 0:
+                pose_control_image = None
+                if event is not None:
+                    event(
+                        "Pose conditioning skipped: no enabled subject mannequins",
+                        pose_control_summary.document(),
+                    )
+            elif (
+                pose_controlnet_path is None
+                or not pose_controlnet_path.expanduser().is_file()
+            ):
+                raise ValueError(
+                    "select a readable Qwen Image pose ControlNet before using subject "
+                    "mannequin conditioning"
+                )
         regional_plan = (
             compile_regional_prompt_plan(
                 width,
@@ -1527,6 +1560,12 @@ class ComfyBaselineRuntime:
                 regional_plan=regional_plan,
                 regional_lora_delta_adaptation=regional_lora_delta_adaptation,
                 regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+                pose_control_image=pose_control_image,
+                pose_control_summary=pose_control_summary,
+                pose_controlnet_path=pose_controlnet_path,
+                pose_conditioning_strength=pose_conditioning_strength,
+                pose_conditioning_start=pose_conditioning_start,
+                pose_conditioning_end=pose_conditioning_end,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1572,6 +1611,12 @@ class ComfyBaselineRuntime:
             regional_plan=regional_plan,
             regional_lora_delta_adaptation=regional_lora_delta_adaptation,
             regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+            pose_control_image=pose_control_image,
+            pose_control_summary=pose_control_summary,
+            pose_controlnet_path=pose_controlnet_path,
+            pose_conditioning_strength=pose_conditioning_strength,
+            pose_conditioning_start=pose_conditioning_start,
+            pose_conditioning_end=pose_conditioning_end,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1603,6 +1648,12 @@ class ComfyBaselineRuntime:
         regional_plan: RegionalPromptPlan | None,
         regional_lora_delta_adaptation: bool,
         regional_lora_delta_adaptation_gain: float,
+        pose_control_image,
+        pose_control_summary: PoseControlSummary | None,
+        pose_controlnet_path: Path | None,
+        pose_conditioning_strength: float,
+        pose_conditioning_start: float,
+        pose_conditioning_end: float,
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1694,6 +1745,74 @@ class ComfyBaselineRuntime:
             bound_plan=bound_regional_plan,
             event=event,
         )
+        pose_controlnet = None
+        pose_controlnet_released = False
+
+        def release_pose_controlnet() -> None:
+            nonlocal pose_controlnet, pose_controlnet_released
+            if pose_controlnet is None or pose_controlnet_released:
+                return
+            pose_controlnet.cleanup()
+            for control_model in pose_controlnet.get_models_only_self():
+                comfy.model_management.unload_model_and_clones(
+                    control_model,
+                    unload_additional_models=False,
+                )
+            pose_controlnet_released = True
+            gc.collect()
+            comfy.model_management.soft_empty_cache(force=True)
+
+        pose_summary_document: dict[str, Any] = {
+            "enabled": False,
+            "model": None,
+            "strength": pose_conditioning_strength,
+            "start": pose_conditioning_start,
+            "end": pose_conditioning_end,
+        }
+        if pose_control_image is not None and pose_control_summary is not None:
+            import comfy.controlnet
+            import nodes
+
+            if pose_controlnet_path is None:
+                raise RuntimeError("pose ControlNet path was lost before sampling")
+            self._ensure_memory("before pose ControlNet loading", event)
+            try:
+                pose_controlnet = comfy.controlnet.load_controlnet(str(pose_controlnet_path))
+                if pose_controlnet is None:
+                    raise RuntimeError(
+                        "the selected file is not a ControlNet supported by this ComfyUI runtime"
+                    )
+                # Union checkpoints use OpenPose type zero. Qwen InstantX checkpoints
+                # ignore this extra argument, so one path safely supports both forms.
+                pose_controlnet.set_extra_arg("control_type", [0])
+                pose_array = np.asarray(pose_control_image, dtype=np.float32) / 255.0
+                pose_tensor = torch.from_numpy(pose_array).unsqueeze(0)
+                positive, negative = nodes.ControlNetApplyAdvanced().apply_controlnet(
+                    positive,
+                    negative,
+                    pose_controlnet,
+                    pose_tensor,
+                    pose_conditioning_strength,
+                    pose_conditioning_start,
+                    pose_conditioning_end,
+                    vae=self.vae,
+                )
+            except Exception:
+                release_pose_controlnet()
+                raise
+            pose_summary_document = {
+                "enabled": True,
+                "model": pose_controlnet_path.name,
+                "strength": pose_conditioning_strength,
+                "start": pose_conditioning_start,
+                "end": pose_conditioning_end,
+                **pose_control_summary.document(),
+            }
+            if event is not None:
+                event(
+                    "Subject mannequin pose ControlNet applied",
+                    pose_summary_document,
+                )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
@@ -1742,13 +1861,13 @@ class ComfyBaselineRuntime:
         previous_override = transformer_options.get(
             "optimized_attention_override", missing
         )
-        if attention_override is not None:
-            if previous_override is not missing:
-                raise RuntimeError(
-                    "another optimized-attention override is already installed"
-                )
-            transformer_options["optimized_attention_override"] = attention_override
         try:
+            if attention_override is not None:
+                if previous_override is not missing:
+                    raise RuntimeError(
+                        "another optimized-attention override is already installed"
+                    )
+                transformer_options["optimized_attention_override"] = attention_override
             samples = comfy.sample.sample(
                 generation_model,
                 noise,
@@ -1771,6 +1890,13 @@ class ComfyBaselineRuntime:
                     transformer_options.pop("optimized_attention_override", None)
                 else:
                     transformer_options["optimized_attention_override"] = previous_override
+            if pose_controlnet is not None:
+                release_pose_controlnet()
+                if event is not None:
+                    event(
+                        "Pose ControlNet released; baseline retention unchanged",
+                        {"model": pose_controlnet_path.name if pose_controlnet_path else None},
+                    )
         if attention_override is not None:
             if attention_override.matched_calls == 0:
                 raise RuntimeError(
@@ -1865,6 +1991,7 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("pose_conditioning", json.dumps(pose_summary_document))
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
@@ -1889,6 +2016,7 @@ class ComfyBaselineRuntime:
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
+            "pose_conditioning": pose_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
