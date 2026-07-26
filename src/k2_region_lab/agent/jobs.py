@@ -518,6 +518,17 @@ class JobManager:
                     ),
                     "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
+                    "pose_conditioning_enabled": state.pose_conditioning_enabled,
+                    "pose_controlnet_path": (
+                        await self._optional_file_path(
+                            request.pose_controlnet_file_id, FileKind.CONTROLNET_MODELS
+                        )
+                        if state.pose_conditioning_enabled
+                        else None
+                    ),
+                    "pose_conditioning_strength": state.pose_conditioning_strength,
+                    "pose_conditioning_start": state.pose_conditioning_start,
+                    "pose_conditioning_end": state.pose_conditioning_end,
                     "projector_enabled": state.projector_enabled,
                     "projector_preset": state.projector_preset,
                     "projector_values": list(state.projector_values),
@@ -632,6 +643,9 @@ class JobManager:
             "vae": str(self._layout.destination(FileKind.VAE.value)),
             "lora_directory": str(self._layout.destination(FileKind.LORAS.value)),
             "upscale_models": str(self._layout.destination(FileKind.UPSCALE_MODELS.value)),
+            "controlnet_models": str(
+                self._layout.destination(FileKind.CONTROLNET_MODELS.value)
+            ),
             "diffusion_model_file": await self._optional_file_path(
                 request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
             ),
@@ -765,6 +779,22 @@ class JobManager:
                 "lora_binding_mismatch",
                 "Every project LoRA must have one opaque cloud file binding.",
                 409,
+            )
+        if (
+            request.kind == JobKind.GENERATE
+            and state.pose_conditioning_enabled
+            and any(
+                region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+                for region in state.regions
+            )
+            and not request.pose_controlnet_file_id
+        ):
+            raise JobError(
+                "pose_controlnet_required",
+                "Choose a Qwen Image pose ControlNet before generating with subject mannequins.",
             )
         if request.kind in {JobKind.EDIT_IMAGE, JobKind.REFINE_FACES} and not request.input_file_id:
             raise JobError(

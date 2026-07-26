@@ -33,6 +33,7 @@ if FASTAPI_AVAILABLE:
     )
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
+    from k2_region_lab.pose import default_subject_pose, subject_pose_document
     from k2_region_lab.project import PROJECT_VERSION, project_state
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
@@ -146,6 +147,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(marker, {"layout_version": LAYOUT_VERSION})
         self.assertTrue((self.root / "downloads" / "incomplete").is_dir())
         self.assertTrue((self.root / "models" / "face_detection").is_dir())
+        self.assertTrue((self.root / "models" / "controlnet_models").is_dir())
 
     async def test_generation_payload_disables_late_relaxation_exactly_like_desktop(
         self,
@@ -196,6 +198,71 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["reserve_vram_gb"], 1.5)
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
+
+    async def test_subject_pose_requires_and_resolves_controlnet_model(self) -> None:
+        document = self._project_document("two people shaking hands")
+        document["generation"].update(
+            {
+                "pose_conditioning_enabled": True,
+                "pose_conditioning_strength": 0.8,
+                "pose_conditioning_start": 0.05,
+                "pose_conditioning_end": 0.7,
+            }
+        )
+        document["regions"] = [
+            {
+                "id": "person",
+                "name": "Person",
+                "box": {"x0": 100, "y0": 100, "x1": 500, "y1": 900},
+                "prompt": "standing person",
+                "spatial_role": "subject",
+                "region_type": "subject",
+                "pose": subject_pose_document(default_subject_pose()),
+            },
+            {
+                "id": "background",
+                "name": "Background",
+                "box": {"x0": 0, "y0": 0, "x1": 1024, "y1": 1024},
+                "prompt": "studio",
+                "spatial_role": "background",
+                "region_type": "region",
+                "pose": None,
+            },
+        ]
+        missing = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-missing-model",
+                "kind": "generate",
+                "project_id": "pose-project",
+                "project": document,
+            }
+        )
+        with self.assertRaisesRegex(Exception, "Choose a Qwen Image pose ControlNet"):
+            self.app.state.job_manager._validate_request(missing)
+
+        model_path = (
+            self.app.state.layout.destination(FileKind.CONTROLNET_MODELS.value)
+            / "qwen-image-controlnet-union.safetensors"
+        )
+        model_path.write_bytes(b"selected controlnet")
+        model = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.CONTROLNET_MODELS,
+            model_path,
+        )
+        request = missing.model_copy(update={"pose_controlnet_file_id": model.id})
+        state, _project = self.app.state.job_manager._validate_request(request)
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id",
+            request,
+            state,
+            document,
+        )
+
+        self.assertTrue(payload["pose_conditioning_enabled"])
+        self.assertEqual(Path(payload["pose_controlnet_path"]).name, model_path.name)
+        self.assertEqual(payload["pose_conditioning_strength"], 0.8)
+        self.assertEqual(payload["pose_conditioning_start"], 0.05)
+        self.assertEqual(payload["pose_conditioning_end"], 0.7)
 
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,
