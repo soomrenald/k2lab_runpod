@@ -83,6 +83,13 @@ assert.ok(
     && inspector.includes("reconcileEmphases(selected.id, patch.prompt)"),
   "Prompt edits must repair or remove stale phrase emphasis metadata",
 );
+assert.ok(
+  inspector.includes("Subject box · mannequin")
+    && inspector.includes("Region box · no mannequin")
+    && inspector.includes("Condition generation from subject mannequins")
+    && inspector.includes("All enabled subject mannequins are composed into one full-canvas pose map"),
+  "The inspector must distinguish pose-controlled subject boxes from ordinary scene regions",
+);
 
 for (const relativePath of [
   "../src/components/Inspector.tsx",

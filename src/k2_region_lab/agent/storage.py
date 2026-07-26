@@ -14,6 +14,7 @@ MODEL_KINDS: Final = {
     "vae",
     "loras",
     "upscale_models",
+    "controlnet_models",
     "face_detection",
 }
 FILE_KINDS: Final = MODEL_KINDS | {"projects", "inputs", "outputs"}

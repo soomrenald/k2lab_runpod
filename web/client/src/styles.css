@@ -221,9 +221,12 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .drawing .region-overlay { cursor: crosshair; }
 .region-fill { fill: rgba(169,255,111,.10); cursor: pointer; }
 .region-outline { fill: none; stroke: rgba(169,255,111,.82); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.region-group.subject .region-outline { stroke: rgba(105,208,255,.92); stroke-dasharray: 8 4; }
 .region-group:not(.selected) { pointer-events: none; }
 .region-group.selected .region-fill { fill: rgba(169,255,111,.15); cursor: move; }
 .region-group.selected .region-outline { stroke: #f5f7f2; stroke-width: 2.5; filter: drop-shadow(0 0 5px rgba(169,255,111,.45)); }
+.region-group.subject.selected .region-fill { fill: rgba(105,208,255,.12); }
+.region-group.subject.selected .region-outline { filter: drop-shadow(0 0 5px rgba(105,208,255,.5)); }
 .region-group.disabled { opacity: .35; }
 .detected-face { cursor: pointer; }
 .detected-face rect { fill: #ff706f18; stroke: #ff8b89; stroke-width: 3; vector-effect: non-scaling-stroke; }
@@ -236,7 +239,16 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .region-label { pointer-events: none; }
 .region-label rect { fill: var(--accent); }
 .region-label text { fill: #11160e; font-family: "DM Sans"; font-size: 13px; font-weight: 700; pointer-events: none; }
+.region-group.subject .region-label rect { fill: #69d0ff; }
+.pose-mannequin { pointer-events: none; }
+.pose-mannequin line { stroke: rgba(255,255,255,.92); stroke-width: 5; stroke-linecap: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
+.pose-joint { fill: #69d0ff; stroke: #071118; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.region-group.selected .pose-joint.editable { pointer-events: all; cursor: grab; }
+.region-group.selected .pose-joint.editable:active { cursor: grabbing; }
 .resize-handle { fill: rgba(255,255,255,.08); stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.box-type-readout { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 10px; background: rgba(255,255,255,.025); }
+.box-type-readout small { color: var(--text-muted); line-height: 1.35; }
+.pose-preset-actions { margin-top: 4px; }
 .edge-n, .edge-s { cursor: ns-resize; fill: transparent; stroke: transparent; }
 .edge-e, .edge-w { cursor: ew-resize; fill: transparent; stroke: transparent; }
 .edge-nw, .edge-se { cursor: nwse-resize; }

@@ -1,9 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
+import {
+  POSE_CONNECTIONS,
+  standingPose,
+  type PoseJointName,
+  type SubjectPoseState,
+} from "../pose.ts";
 import { Icon } from "./Icon";
 
 export type StudioMode = "generation" | "edit" | "face";
 export type RegionLayer = "generation" | "reference" | "targets";
+export type DrawMode = "region" | "subject" | null;
 
 export interface RegionBox {
   id: string;
@@ -16,6 +23,8 @@ export interface RegionBox {
   prompt: string;
   faceIdentityPrompt: string;
   spatialRole: "auto" | "subject" | "background";
+  regionType: "region" | "subject";
+  pose: SubjectPoseState | null;
   enabled: boolean;
   priority?: number;
 }
@@ -23,8 +32,9 @@ export interface RegionBox {
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 interface DragState {
-  kind: "draw" | "move" | "resize" | "lasso";
+  kind: "draw" | "move" | "resize" | "lasso" | "joint";
   regionId?: string;
+  jointName?: PoseJointName;
   edge?: ResizeEdge;
   startX: number;
   startY: number;
@@ -40,7 +50,7 @@ interface Props {
   resultName: string;
   regions: RegionBox[];
   selectedId: string | null;
-  drawMode: boolean;
+  drawMode: DrawMode;
   comparePosition: number;
   canvasWidth: number;
   canvasHeight: number;
@@ -51,7 +61,7 @@ interface Props {
   onComparePosition: (value: number) => void;
   onSelect: (id: string | null) => void;
   onRegions: (regions: RegionBox[]) => void;
-  onDrawMode: (value: boolean) => void;
+  onDrawMode: (value: DrawMode) => void;
   onLoadImage: (file: File) => void;
   onClearImage: () => void;
   onToggleFace: (index: number) => void;
@@ -153,12 +163,14 @@ export function RegionCanvas({
     const names = new Set(
       regions.filter((item) => item.layer === activeLayer).map((item) => item.name.toLocaleLowerCase()),
     );
+    const namePrefix = drawMode === "subject" ? "subject" : "region";
     let nameIndex = regions.filter((item) => item.layer === activeLayer).length + 1;
-    while (names.has(`region ${nameIndex}`)) nameIndex += 1;
+    while (names.has(`${namePrefix} ${nameIndex}`)) nameIndex += 1;
     event.currentTarget.setPointerCapture(event.pointerId);
+    const isSubject = drawMode === "subject";
     const region: RegionBox = {
       id: crypto.randomUUID(),
-      name: `Region ${nameIndex}`,
+      name: `${isSubject ? "Subject" : "Region"} ${nameIndex}`,
       layer: activeLayer,
       x: start.x,
       y: start.y,
@@ -166,7 +178,9 @@ export function RegionCanvas({
       height: 1,
       prompt: "",
       faceIdentityPrompt: "",
-      spatialRole: "auto",
+      spatialRole: isSubject ? "subject" : "auto",
+      regionType: isSubject ? "subject" : "region",
+      pose: isSubject ? standingPose() : null,
       enabled: true,
     };
     onRegions([...regions, region]);
@@ -190,6 +204,25 @@ export function RegionCanvas({
     setDrag({ kind: "resize", regionId: region.id, edge, startX: start.x, startY: start.y, initial: region });
   }
 
+  function beginJoint(
+    event: React.PointerEvent<SVGCircleElement>,
+    region: RegionBox,
+    jointName: PoseJointName,
+  ) {
+    if (drawMode || selectedId !== region.id || region.regionType !== "subject") return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const start = point(event);
+    setDrag({
+      kind: "joint",
+      regionId: region.id,
+      jointName,
+      startX: start.x,
+      startY: start.y,
+      initial: region,
+    });
+  }
+
   function movePointer(event: React.PointerEvent<SVGSVGElement>) {
     if (!drag) return;
     const current = point(event);
@@ -204,6 +237,19 @@ export function RegionCanvas({
     if (!drag.regionId) return;
     onRegions(regions.map((region) => {
       if (region.id !== drag.regionId) return region;
+      if (drag.kind === "joint" && drag.jointName && region.pose) {
+        const x = Math.max(-2, Math.min(3, (current.x - region.x) / region.width));
+        const y = Math.max(-2, Math.min(3, (current.y - region.y) / region.height));
+        return {
+          ...region,
+          pose: {
+            ...region.pose,
+            joints: region.pose.joints.map((joint) => (
+              joint.name === drag.jointName ? { ...joint, x, y } : joint
+            )),
+          },
+        };
+      }
       if (drag.kind === "draw") {
         return {
           ...region,
@@ -239,7 +285,7 @@ export function RegionCanvas({
         onRegions(regions.filter((item) => item.id !== region.id));
         onSelect(null);
       }
-      onDrawMode(false);
+      onDrawMode(null);
     }
     setDrag(null);
   }
@@ -268,9 +314,22 @@ export function RegionCanvas({
           )}
           {(sourceUrl || resultUrl) && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear canvas</button>}
           {mode !== "face" && (
-            <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={() => onDrawMode(!drawMode)}>
-              <Icon name="plus" /> {drawMode ? "Drawing…" : "Draw region"}
-            </button>
+            <>
+              <button
+                className={`quiet-button ${drawMode === "region" ? "active" : ""}`}
+                onClick={() => onDrawMode(drawMode === "region" ? null : "region")}
+              >
+                <Icon name="plus" /> {drawMode === "region" ? "Drawing region…" : "Draw region"}
+              </button>
+              {mode === "generation" && activeLayer === "generation" && (
+                <button
+                  className={`quiet-button ${drawMode === "subject" ? "active" : ""}`}
+                  onClick={() => onDrawMode(drawMode === "subject" ? null : "subject")}
+                >
+                  <Icon name="face" /> {drawMode === "subject" ? "Drawing subject…" : "Draw subject"}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -311,14 +370,46 @@ export function RegionCanvas({
             onClick={(event) => { if (!drawMode && event.target === event.currentTarget) onSelect(null); }}
           >
             {orderedRegions.map((region) => (
-              <g className={`region-group ${region.id === selectedId ? "selected" : ""} ${!region.enabled ? "disabled" : ""}`} key={region.id}>
+              <g className={`region-group ${region.regionType} ${region.id === selectedId ? "selected" : ""} ${!region.enabled ? "disabled" : ""}`} key={region.id}>
                 <rect className="region-fill" x={region.x} y={region.y} width={region.width} height={region.height}
                   onPointerDown={region.id === selectedId ? (event) => beginMove(event, region) : undefined} />
                 <rect className="region-outline" x={region.x} y={region.y} width={region.width} height={region.height} />
                 <g className="region-label" transform={`translate(${region.x}, ${Math.max(0, region.y - 32)})`}>
                   <rect width={Math.max(112, region.name.length * 13 + 24)} height="28" rx="8" />
-                  <text x="12" y="19">{region.name}</text>
+                  <text x="12" y="19">{region.regionType === "subject" ? "● " : ""}{region.name}</text>
                 </g>
+                {region.regionType === "subject" && region.pose?.enabled && (
+                  <g className="pose-mannequin">
+                    {POSE_CONNECTIONS.map(([from, to]) => {
+                      const first = region.pose!.joints.find((joint) => joint.name === from);
+                      const second = region.pose!.joints.find((joint) => joint.name === to);
+                      if (!first?.enabled || !second?.enabled) return null;
+                      return (
+                        <line
+                          key={`${from}-${to}`}
+                          x1={region.x + first.x * region.width}
+                          y1={region.y + first.y * region.height}
+                          x2={region.x + second.x * region.width}
+                          y2={region.y + second.y * region.height}
+                        />
+                      );
+                    })}
+                    {region.pose.joints.filter((joint) => joint.enabled).map((joint) => (
+                      <circle
+                        key={joint.name}
+                        className={region.id === selectedId ? "pose-joint editable" : "pose-joint"}
+                        cx={region.x + joint.x * region.width}
+                        cy={region.y + joint.y * region.height}
+                        r={region.id === selectedId ? 8 : 5}
+                        onPointerDown={
+                          region.id === selectedId
+                            ? (event) => beginJoint(event, region, joint.name)
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </g>
+                )}
                 {region.id === selectedId && resizeHandles(region).map((handle) => (
                   <rect key={handle.edge} className={`resize-handle edge-${handle.edge}`}
                     x={handle.x} y={handle.y} width={handle.width} height={handle.height} rx="4"

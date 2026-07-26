@@ -1,4 +1,5 @@
 import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
+import { poseFromDocument } from "./pose.ts";
 import { reconcilePromptEmphases } from "./promptEmphasis.ts";
 
 export type SeedMode = "fixed" | "random" | "increment";
@@ -66,6 +67,12 @@ export interface GenerationSettings {
   lateStepScale: number;
   loraAdaptation: boolean;
   loraResponse: number;
+  poseConditioning: boolean;
+  poseControlnetFileId: string;
+  poseControlnetName: string;
+  poseStrength: number;
+  poseStart: number;
+  poseEnd: number;
   postUpscale: boolean;
   upscaleScale: 2 | 4;
   upscaleMethod: "lanczos" | "model";
@@ -194,6 +201,12 @@ export function createStudioSettings(): StudioSettings {
       lateStepScale: 0.35,
       loraAdaptation: false,
       loraResponse: 0.35,
+      poseConditioning: false,
+      poseControlnetFileId: "",
+      poseControlnetName: "",
+      poseStrength: 0.75,
+      poseStart: 0,
+      poseEnd: 0.75,
       postUpscale: false,
       upscaleScale: 2,
       upscaleMethod: "lanczos",
@@ -316,7 +329,7 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 19,
+    version: 20,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
@@ -337,6 +350,11 @@ export function buildProjectDocument(
       regional_late_step_scale: generation.lateStepScale,
       regional_lora_delta_adaptation: generation.loraAdaptation,
       regional_lora_delta_adaptation_gain: generation.loraResponse,
+      pose_conditioning_enabled: generation.poseConditioning,
+      pose_controlnet_model: generation.poseControlnetName || null,
+      pose_conditioning_strength: generation.poseStrength,
+      pose_conditioning_start: generation.poseStart,
+      pose_conditioning_end: generation.poseEnd,
       prompt_emphases: emphasisDocuments(
         generation.promptEmphases,
         prompts.generation,
@@ -454,6 +472,11 @@ function layerRegions(regions: RegionBox[], layer: RegionLayer) {
     enabled: region.enabled,
     priority: selected.length - index,
     spatial_role: region.spatialRole,
+    region_type: region.regionType,
+    pose: region.pose ? {
+      enabled: region.pose.enabled,
+      joints: region.pose.joints.map((joint) => ({ ...joint })),
+    } : null,
   }));
 }
 
@@ -495,7 +518,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (document.version !== 18 && document.version !== 19) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (![18, 19, 20].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -526,6 +549,12 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     lateStepScale: numberValue(generation.regional_late_step_scale, settings.generation.lateStepScale),
     loraAdaptation: booleanValue(generation.regional_lora_delta_adaptation, settings.generation.loraAdaptation),
     loraResponse: numberValue(generation.regional_lora_delta_adaptation_gain, settings.generation.loraResponse),
+    poseConditioning: booleanValue(generation.pose_conditioning_enabled, settings.generation.poseConditioning),
+    poseControlnetFileId: "",
+    poseControlnetName: stringValue(generation.pose_controlnet_model, settings.generation.poseControlnetName),
+    poseStrength: numberValue(generation.pose_conditioning_strength, settings.generation.poseStrength),
+    poseStart: numberValue(generation.pose_conditioning_start, settings.generation.poseStart),
+    poseEnd: numberValue(generation.pose_conditioning_end, settings.generation.poseEnd),
     promptEmphases: emphasisStates(generation.prompt_emphases),
     postUpscale: booleanValue(generation.post_upscale, settings.generation.postUpscale),
     upscaleScale: generation.upscale_scale === 4 ? 4 : 2,
@@ -708,6 +737,9 @@ function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
     const box = objectValue(region.box);
     const x = numberValue(box.x0, 0);
     const y = numberValue(box.y0, 0);
+    const regionType: RegionBox["regionType"] = stringValue(region.region_type, "region") === "subject"
+      ? "subject"
+      : "region";
     return {
       id: stringValue(region.id, crypto.randomUUID()),
       name: stringValue(region.name, `Region ${index + 1}`),
@@ -718,7 +750,9 @@ function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
       height: numberValue(box.y1, y + 16) - y,
       prompt: stringValue(region.prompt, ""),
       faceIdentityPrompt: stringValue(region.face_identity_prompt, ""),
-      spatialRole: spatialRoleValue(region.spatial_role),
+      spatialRole: regionType === "subject" ? "subject" : spatialRoleValue(region.spatial_role),
+      regionType,
+      pose: regionType === "subject" ? poseFromDocument(region.pose) : null,
       enabled: booleanValue(region.enabled, true),
       priority: integerValue(region.priority, 0),
     };

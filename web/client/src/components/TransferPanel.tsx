@@ -8,6 +8,7 @@ const destinations: { value: FileKind; label: string }[] = [
   { value: "vae", label: "VAE" },
   { value: "loras", label: "LoRAs" },
   { value: "upscale_models", label: "Upscalers" },
+  { value: "controlnet_models", label: "ControlNet models" },
   { value: "face_detection", label: "Face detection" },
 ];
 
