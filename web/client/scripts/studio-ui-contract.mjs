@@ -111,6 +111,7 @@ assert.ok(
 );
 assert.ok(
   workspaceStudio.includes('loraFiles = await allFiles("loras")')
+    && workspaceStudio.includes('controlnetFiles = await allFiles("controlnet_models")')
     && workspaceStudio.includes('outputFiles = await allFiles("outputs")')
     && !workspaceStudio.includes('allFiles("loras"), allFiles("upscale_models")'),
   "Project restoration must not burst all Pod inventory requests concurrently",
