@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, JobSubmitPayload, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -11,6 +11,14 @@ import { DraftNumberInput } from "./DraftNumberInput";
 import { uploadWorkspaceFile } from "../uploads";
 import { useUploadQueue } from "../useUploadQueue";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
+import {
+  clearPendingJobSubmission,
+  isAmbiguousJobSubmissionError,
+  loadPendingJobSubmission,
+  type PendingJobSubmission,
+  savePendingJobSubmission,
+  uniqueJobs,
+} from "../submissionRecovery";
 import {
   buildProjectDocument,
   bindStudioLoraFiles,
@@ -89,6 +97,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [eventLog, setEventLog] = useState<StudioEvent[]>([]);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
+  const [submissionRecovery, setSubmissionRecovery] = useState<PendingJobSubmission | null>(
+    () => loadPendingJobSubmission(window.localStorage, workspace.id),
+  );
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
   const [projectName, setProjectName] = useState("untitled.k2lab.json");
   const [faceDetections, setFaceDetections] = useState<DetectedFaceRecord[]>([]);
@@ -124,10 +135,27 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     appendEvent(messageText, kind);
   }
 
+  function rememberSubmissionRecovery(next: PendingJobSubmission | null) {
+    setSubmissionRecovery(next);
+    if (next) savePendingJobSubmission(window.localStorage, next);
+    else clearPendingJobSubmission(window.localStorage, workspace.id);
+  }
+
+  function trackSubmittedJobs(jobs: GenerationJob[]) {
+    const distinct = uniqueJobs(jobs);
+    if (distinct.length === 0) return;
+    setJob(distinct[0]);
+    setQueuedJobs(distinct.slice(1));
+  }
+
   const uploadQueue = useUploadQueue(workspace.id, report);
   const pendingUploadCount = uploadQueue.items.filter((item) => (
     !["completed", "cancelled"].includes(item.state)
   )).length;
+
+  useEffect(() => {
+    setSubmissionRecovery(loadPendingJobSubmission(window.localStorage, workspace.id));
+  }, [workspace.id]);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
@@ -707,7 +735,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
       const runCount = mode === "generation" && studioSettings.generation.batchMode
         ? studioSettings.generation.batchCount : 1;
-      const submitted: GenerationJob[] = [];
+      const payloads: JobSubmitPayload[] = [];
       let lastSeed = studioSettings.generation.seed;
       for (let index = 0; index < runCount; index += 1) {
         let seed = studioSettings.generation.seed;
@@ -720,7 +748,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         const jobSettings = mode === "generation"
           ? { ...studioSettings, generation: { ...studioSettings.generation, seed } }
           : studioSettings;
-        submitted.push(await controlPlane.submitJob(workspace.id, {
+        payloads.push({
           command_id: crypto.randomUUID(),
           kind,
           project_id: `studio-${workspace.id}`,
@@ -737,18 +765,88 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
           manual_face_paths: mode === "face" ? manualFacePaths : undefined,
-        }));
+        });
+      }
+      const submitted: GenerationJob[] = [];
+      for (let index = 0; index < payloads.length; index += 1) {
+        try {
+          submitted.push(await controlPlane.submitJob(workspace.id, payloads[index]));
+        } catch (caught) {
+          if (!isAmbiguousJobSubmissionError(caught)) throw caught;
+          const lastError = caught instanceof Error
+            ? caught.message
+            : "The job submission did not receive an acknowledgment.";
+          const recovery: PendingJobSubmission = {
+            version: 1,
+            workspaceId: workspace.id,
+            payloads: payloads.slice(index),
+            acknowledgedJobs: submitted,
+            createdAt: new Date().toISOString(),
+            lastError,
+          };
+          rememberSubmissionRecovery(recovery);
+          trackSubmittedJobs(submitted);
+          report(
+            "Job submission acknowledgment timed out. The request may already be queued; use Recover submission instead of starting another job.",
+            "error",
+          );
+          return;
+        }
       }
       if (mode === "generation") {
         const nextSeed = studioSettings.generation.seedMode === "increment"
           ? (studioSettings.generation.seed + runCount) % 2147483648 : lastSeed;
         setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, seed: nextSeed } });
       }
-      setJob(submitted[0]);
-      setQueuedJobs(submitted.slice(1));
+      trackSubmittedJobs(submitted);
       report(runCount > 1 ? `${runCount} remote batch runs queued.` : "Remote job queued.", "worker");
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Could not submit remote job", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recoverTimedOutSubmission() {
+    if (!submissionRecovery) return;
+    setBusy(true);
+    const recovered = [...submissionRecovery.acknowledgedJobs];
+    try {
+      for (let index = 0; index < submissionRecovery.payloads.length; index += 1) {
+        const payload = submissionRecovery.payloads[index];
+        try {
+          recovered.push(await controlPlane.submitJob(workspace.id, payload));
+        } catch (caught) {
+          const lastError = caught instanceof Error
+            ? caught.message
+            : "The recovery request did not receive an acknowledgment.";
+          const next: PendingJobSubmission = {
+            ...submissionRecovery,
+            payloads: submissionRecovery.payloads.slice(index),
+            acknowledgedJobs: uniqueJobs(recovered),
+            lastError,
+          };
+          rememberSubmissionRecovery(next);
+          trackSubmittedJobs(recovered);
+          report(
+            isAmbiguousJobSubmissionError(caught)
+              ? "Recovery still did not receive a job receipt. The same command ID remains saved; retry recovery when the agent responds."
+              : `The agent rejected submission recovery: ${lastError}`,
+            "error",
+          );
+          return;
+        }
+      }
+      const jobs = uniqueJobs(recovered);
+      rememberSubmissionRecovery(null);
+      trackSubmittedJobs(jobs);
+      eventCursor.current = undefined;
+      report(
+        jobs.length > 1
+          ? `Recovered ${jobs.length} remote batch jobs without duplicating work.`
+          : "Recovered the remote job without duplicating work.",
+        "worker",
+      );
     } finally {
       setBusy(false);
     }
@@ -776,6 +874,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setBusy(true);
     try {
       const released = await controlPlane.releaseWorkerMemory(workspace.id);
+      rememberSubmissionRecovery(null);
       setJob(null);
       setQueuedJobs([]);
       eventCursor.current = undefined;
@@ -1219,6 +1318,24 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           {job && !["completed", "failed", "cancelled"].includes(job.state) ? "Cancel remote job" : mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine faces"}
         </button>
       </footer>
+
+      {submissionRecovery && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal submission-recovery-modal" role="alertdialog" aria-modal="true" aria-labelledby="submission-recovery-title" aria-describedby="submission-recovery-description">
+            <div className="danger-icon submission-recovery-icon"><Icon name="cloud" /></div>
+            <p className="kicker">Safe timeout recovery</p>
+            <h2 id="submission-recovery-title">Job receipt was not received</h2>
+            <p id="submission-recovery-description">The Pod may already have accepted this request. Recover submission resends the exact same command ID, so the existing job is returned without creating a duplicate. This recovery remains available after a page refresh.</p>
+            <div className="submission-command-id"><span>Command ID</span><code>{submissionRecovery.payloads[0].command_id}</code></div>
+            <p className="field-help">{submissionRecovery.lastError}</p>
+            <p className="field-help">Cancel all remote work stops running and queued jobs and unloads the resident model. Workspace models, projects, inputs, and outputs are retained.</p>
+            <div className="modal-actions submission-recovery-actions">
+              <button className="danger-button" disabled={busy} onClick={() => void releaseWorkerMemory()}>Cancel all remote work</button>
+              <button className="primary-button" disabled={busy} onClick={() => void recoverTimedOutSubmission()}>{busy ? "Recovering…" : "Recover submission"}</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showDelete && (
         <div className="modal-backdrop" role="presentation">
