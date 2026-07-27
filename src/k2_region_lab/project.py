@@ -11,7 +11,18 @@ from k2_region_lab.lora import (
     LORA_ROUTING_MODES,
     STANDARD_LORA_ROUTING,
 )
-from k2_region_lab.pose import subject_pose_document, subject_pose_from_document
+from k2_region_lab.pose import (
+    volumetric_subject_pose_document,
+    volumetric_subject_pose_from_document,
+)
+from k2_region_lab.pose_gating import (
+    PoseGatePhases,
+    SigmaScheduleMode,
+    SigmaScheduleRequest,
+    SoftGateSchedule,
+    phase_weighted_positions,
+    validate_normalized_positions,
+)
 from k2_region_lab.projector import (
     CUSTOM_PROJECTOR_PRESET,
     DEFAULT_PROJECTOR_PRESET,
@@ -34,7 +45,11 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 20
+PROJECT_VERSION = 21
+LEGACY_POSE_MIGRATION_NOTICE = (
+    "Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating "
+    "is available but remains disabled until enabled."
+)
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -53,6 +68,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     16,
     17,
     19,
+    20,
     PROJECT_VERSION,
 }
 
@@ -141,11 +157,14 @@ class ProjectState:
     regional_late_step_scale: float = 0.35
     regional_lora_delta_adaptation: bool = False
     regional_lora_delta_adaptation_gain: float = 0.35
-    pose_conditioning_enabled: bool = False
-    pose_controlnet_model: Path | None = None
-    pose_conditioning_strength: float = 0.75
-    pose_conditioning_start: float = 0.0
-    pose_conditioning_end: float = 0.75
+    pose_gating_enabled: bool = False
+    pose_hard_gate_steps: int = 2
+    pose_soft_gate_steps: int = 2
+    pose_soft_gate_schedule: str = SoftGateSchedule.COSINE.value
+    pose_sigma_schedule_mode: str = SigmaScheduleMode.AUTOMATIC.value
+    pose_sigma_hard_share: float = 0.20
+    pose_sigma_soft_share: float = 0.30
+    pose_sigma_knots: tuple[float, ...] = ()
     prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
@@ -201,14 +220,29 @@ class ProjectState:
             raise ValueError("late-step spatial scale must be between 0 and 1")
         if not 0.0 <= self.regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
-        if not 0.0 <= self.pose_conditioning_strength <= 2.0:
-            raise ValueError("pose conditioning strength must be between zero and two")
-        if not 0.0 <= self.pose_conditioning_start <= 1.0:
-            raise ValueError("pose conditioning start must be between zero and one")
-        if not 0.0 <= self.pose_conditioning_end <= 1.0:
-            raise ValueError("pose conditioning end must be between zero and one")
-        if self.pose_conditioning_end <= self.pose_conditioning_start:
-            raise ValueError("pose conditioning end must be after its start")
+        phases = PoseGatePhases(
+            self.pose_hard_gate_steps,
+            self.pose_soft_gate_steps,
+            self.steps,
+        )
+        SoftGateSchedule(self.pose_soft_gate_schedule)
+        sigma_mode = SigmaScheduleMode(self.pose_sigma_schedule_mode)
+        sigma_request = SigmaScheduleRequest(
+            mode=sigma_mode,
+            hard_share=self.pose_sigma_hard_share,
+            soft_share=self.pose_sigma_soft_share,
+            normalized_knots=self.pose_sigma_knots,
+        )
+        if sigma_mode == SigmaScheduleMode.PHASE_WEIGHTED:
+            phase_weighted_positions(
+                phases,
+                hard_share=sigma_request.hard_share,
+                soft_share=sigma_request.soft_share,
+            )
+        elif sigma_mode == SigmaScheduleMode.ADVANCED:
+            validate_normalized_positions(
+                sigma_request.normalized_knots, phases.effective_steps
+            )
         if self.projector_preset not in {
             *PROJECTOR_PRESETS,
             CUSTOM_PROJECTOR_PRESET,
@@ -311,15 +345,14 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_late_step_scale": state.regional_late_step_scale,
             "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
             "regional_lora_delta_adaptation_gain": (state.regional_lora_delta_adaptation_gain),
-            "pose_conditioning_enabled": state.pose_conditioning_enabled,
-            "pose_controlnet_model": (
-                str(state.pose_controlnet_model)
-                if state.pose_controlnet_model is not None
-                else None
-            ),
-            "pose_conditioning_strength": state.pose_conditioning_strength,
-            "pose_conditioning_start": state.pose_conditioning_start,
-            "pose_conditioning_end": state.pose_conditioning_end,
+            "pose_gating_enabled": state.pose_gating_enabled,
+            "pose_hard_gate_steps": state.pose_hard_gate_steps,
+            "pose_soft_gate_steps": state.pose_soft_gate_steps,
+            "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
+            "pose_sigma_schedule_mode": state.pose_sigma_schedule_mode,
+            "pose_sigma_hard_share": state.pose_sigma_hard_share,
+            "pose_sigma_soft_share": state.pose_sigma_soft_share,
+            "pose_sigma_knots": list(state.pose_sigma_knots),
             "prompt_emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -367,7 +400,11 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "priority": region.priority,
                 "spatial_role": region.spatial_role,
                 "region_type": region.region_type,
-                "pose": (subject_pose_document(region.pose) if region.pose is not None else None),
+                "pose": (
+                    volumetric_subject_pose_document(region.pose)
+                    if region.pose is not None
+                    else None
+                ),
             }
             for region in state.regions
         ],
@@ -464,7 +501,9 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "spatial_role": region.spatial_role,
                     "region_type": region.region_type,
                     "pose": (
-                        subject_pose_document(region.pose) if region.pose is not None else None
+                        volumetric_subject_pose_document(region.pose)
+                        if region.pose is not None
+                        else None
                     ),
                 }
                 for region in state.image_edit.regions
@@ -486,7 +525,9 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "spatial_role": region.spatial_role,
                     "region_type": region.region_type,
                     "pose": (
-                        subject_pose_document(region.pose) if region.pose is not None else None
+                        volumetric_subject_pose_document(region.pose)
+                        if region.pose is not None
+                        else None
                     ),
                 }
                 for region in state.image_edit.reference_regions
@@ -523,7 +564,11 @@ def _region_from_document(item: dict[str, Any]) -> RegionDefinition:
         priority=int(item.get("priority", 0)),
         spatial_role=spatial_role,
         region_type=region_type,
-        pose=(subject_pose_from_document(item.get("pose")) if region_type == "subject" else None),
+        pose=(
+            volumetric_subject_pose_from_document(item.get("pose"))
+            if region_type == "subject"
+            else None
+        ),
     )
 
 
@@ -532,6 +577,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         raise ValueError("not a K2 Region Lab project file")
     if document.get("version") not in SUPPORTED_PROJECT_VERSIONS:
         raise ValueError(f"unsupported project version: {document.get('version')!r}")
+    source_version = int(document["version"])
     canvas = document["canvas"]
     generation = document.get("generation", {})
     regions = tuple(_region_from_document(item) for item in document.get("regions", []))
@@ -573,6 +619,16 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         for item in document.get("loras", [])
     )
     background = document.get("background_image")
+    runtime = dict(document.get("runtime", {}))
+    if source_version == 20:
+        notices = [
+            str(item)
+            for item in runtime.get("migration_notices", [])
+            if isinstance(item, str)
+        ]
+        if LEGACY_POSE_MIGRATION_NOTICE not in notices:
+            notices.append(LEGACY_POSE_MIGRATION_NOTICE)
+        runtime["migration_notices"] = notices
     return ProjectState(
         canvas_width=int(canvas["width"]),
         canvas_height=int(canvas["height"]),
@@ -598,15 +654,26 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         regional_lora_delta_adaptation_gain=float(
             generation.get("regional_lora_delta_adaptation_gain", 0.35)
         ),
-        pose_conditioning_enabled=bool(generation.get("pose_conditioning_enabled", False)),
-        pose_controlnet_model=(
-            Path(generation["pose_controlnet_model"]).expanduser()
-            if generation.get("pose_controlnet_model")
-            else None
+        pose_gating_enabled=(
+            bool(generation.get("pose_gating_enabled", False))
+            if source_version >= PROJECT_VERSION
+            else False
         ),
-        pose_conditioning_strength=float(generation.get("pose_conditioning_strength", 0.75)),
-        pose_conditioning_start=float(generation.get("pose_conditioning_start", 0.0)),
-        pose_conditioning_end=float(generation.get("pose_conditioning_end", 0.75)),
+        pose_hard_gate_steps=int(generation.get("pose_hard_gate_steps", 2)),
+        pose_soft_gate_steps=int(generation.get("pose_soft_gate_steps", 2)),
+        pose_soft_gate_schedule=str(
+            generation.get("pose_soft_gate_schedule", SoftGateSchedule.COSINE.value)
+        ),
+        pose_sigma_schedule_mode=str(
+            generation.get(
+                "pose_sigma_schedule_mode", SigmaScheduleMode.AUTOMATIC.value
+            )
+        ),
+        pose_sigma_hard_share=float(generation.get("pose_sigma_hard_share", 0.20)),
+        pose_sigma_soft_share=float(generation.get("pose_sigma_soft_share", 0.30)),
+        pose_sigma_knots=tuple(
+            float(value) for value in generation.get("pose_sigma_knots", [])
+        ),
         prompt_emphases=prompt_emphases_from_payload(generation.get("prompt_emphases", [])),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)),
@@ -646,7 +713,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         regions=regions,
         loras=loras,
-        runtime=dict(document.get("runtime", {})),
+        runtime=runtime,
         background_image=Path(background).expanduser() if background else None,
         image_edit=ImageEditState(
             source_image=(

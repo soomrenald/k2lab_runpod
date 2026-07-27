@@ -7,6 +7,12 @@ from types import MethodType
 from unittest.mock import patch
 
 from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
+from k2_region_lab.pose_gating import (
+    PoseGateController,
+    PoseGatePhases,
+    PoseGateRegionBinding,
+    SoftGateSchedule,
+)
 from k2_region_lab.regional_lora import (
     compile_lora_delta_routes,
     route_allows_adapter_target,
@@ -138,6 +144,41 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         self.assertEqual(route.region_ids, ("left", "right"))
         self.assertEqual(route.image_token_mask, (1.0, 1.0))
         self.assertEqual(route.region_names, ("Left subject", "Right subject"))
+
+    def test_pose_gating_routes_image_delta_from_ownership_back_to_box(self) -> None:
+        plan, bound = self._plans()
+        controller = PoseGateController(
+            phases=PoseGatePhases(1, 1, 1),
+            soft_schedule=SoftGateSchedule.LINEAR,
+        )
+        binding = PoseGateRegionBinding(
+            controller=controller,
+            hard_image_fields={"right": (1.0, 0.0)},
+        )
+        route = compile_lora_delta_routes(
+            [{
+                "id": "face",
+                "name": "Face",
+                "global": False,
+                "region_ids": ["right"],
+            }],
+            width=32,
+            height=16,
+            text_token_count=bound.text_token_count,
+            regional_plan=plan,
+            bound_plan=bound,
+            pose_gate_binding=binding,
+        )[0]
+
+        self.assertEqual(route.image_token_mask, (0.0, 1.0))
+        self.assertEqual(route.effective_image_token_mask(), (1.0, 0.0))
+        controller.mark_transition_complete(0)
+        self.assertEqual(
+            route.effective_image_token_mask(),
+            (0.5, 0.5),
+        )
+        controller.mark_transition_complete(1)
+        self.assertEqual(route.effective_image_token_mask(), (0.0, 1.0))
 
     def test_character_identity_route_keeps_full_regional_text_coverage(self) -> None:
         regions = (

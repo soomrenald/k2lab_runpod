@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from k2_region_lab.pose_gating import PoseGateRegionBinding
 from k2_region_lab.regional_prompting import BoundRegionalPromptPlan
 
 
@@ -67,6 +68,7 @@ class KreaSpatialAttentionOverride:
         query_chunk_size: int = 256,
         lora_delta_adaptation: bool = False,
         lora_delta_adaptation_gain: float = 0.35,
+        pose_gate_binding: PoseGateRegionBinding | None = None,
     ) -> None:
         self.plan = plan
         self.outside_penalty_ratio = outside_penalty_ratio
@@ -77,6 +79,7 @@ class KreaSpatialAttentionOverride:
         self.query_chunk_size = query_chunk_size
         self.lora_delta_adaptation = lora_delta_adaptation
         self.lora_delta_adaptation_gain = lora_delta_adaptation_gain
+        self.pose_gate_binding = pose_gate_binding
         self.expected_sequence_length = (
             plan.text_token_count + plan.image_token_count
         )
@@ -86,7 +89,7 @@ class KreaSpatialAttentionOverride:
         self.image_owners = image_region_ownership(plan)
         self.step_scale = 1.0
         self.region_scales: dict[str, float] = {}
-        self._cache: dict[tuple[str, int | None, str], Any] = {}
+        self._cache: dict[tuple[Any, ...], Any] = {}
 
     def __call__(self, original, *args, **kwargs):
         q = args[0]
@@ -166,44 +169,104 @@ class KreaSpatialAttentionOverride:
         device = reference.device
         key = (device.type, device.index, str(reference.dtype))
         cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+        if cached is None:
+            normal_fields = []
+            hard_fields = []
+            for span in self.plan.spans:
+                outside_penalty = self.plan.outside_penalty * (
+                    1.0 if span.spatial_role in {"subject", "edit"} else 0.25
+                )
+                normal = span.image_token_field
+                hard = (
+                    self.pose_gate_binding.hard_field(span.region_id, normal)
+                    if self.pose_gate_binding is not None
+                    else normal
+                )
+                normal_fields.append(
+                    torch.tensor(
+                        spatial_pair_bias(
+                            normal,
+                            self.plan.strength,
+                            outside_penalty_ratio=self.outside_penalty_ratio,
+                            outside_penalty=outside_penalty,
+                        ),
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                )
+                hard_fields.append(
+                    torch.tensor(
+                        spatial_pair_bias(
+                            hard,
+                            self.plan.strength,
+                            outside_penalty_ratio=self.outside_penalty_ratio,
+                            outside_penalty=outside_penalty,
+                        ),
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                )
+            emphasis_fields = tuple(
+                torch.tensor(
+                    emphasis.image_token_field,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                for emphasis in self.plan.emphases
+            )
+            text_owners = torch.tensor(
+                self.text_owners, dtype=torch.int16, device=device
+            )
+            cached = (
+                tuple(normal_fields),
+                tuple(hard_fields),
+                emphasis_fields,
+                text_owners,
+            )
+            self._cache[key] = cached
+        normal_fields, hard_fields, emphasis_fields, text_owners = cached
+        gate = (
+            self.pose_gate_binding.gate_strength
+            if self.pose_gate_binding is not None
+            else 0.0
+        )
+        fields = (
+            normal_fields
+            if gate <= 0.0
+            else hard_fields
+            if gate >= 1.0
+            else tuple(
+                normal + gate * (hard - normal)
+                for normal, hard in zip(normal_fields, hard_fields, strict=True)
+            )
+        )
+        owner_key = (*key, f"owners:{gate:.12g}")
+        image_owners = self._cache.get(owner_key)
+        if image_owners is None:
+            image_owners = torch.tensor(
+                self._current_image_owners(),
+                dtype=torch.int16,
+                device=device,
+            )
+            self._cache[owner_key] = image_owners
+        return fields, emphasis_fields, text_owners, image_owners
 
-        fields = tuple(
-            torch.tensor(
-                spatial_pair_bias(
-                    span.image_token_field,
-                    self.plan.strength,
-                    outside_penalty_ratio=self.outside_penalty_ratio,
-                    outside_penalty=self.plan.outside_penalty
-                    * (
-                        1.0
-                        if span.spatial_role in {"subject", "edit"}
-                        else 0.25
-                    ),
-                ),
-                dtype=torch.float32,
-                device=device,
+    def _current_image_owners(self) -> tuple[int, ...]:
+        if self.pose_gate_binding is None or self.pose_gate_binding.gate_strength <= 0.0:
+            return self.image_owners
+        owners = [0] * self.plan.image_token_count
+        owner = 0
+        for span in self.plan.spans:
+            if span.spatial_role != "subject":
+                continue
+            owner += 1
+            field = self.pose_gate_binding.effective_field(
+                span.region_id, span.image_token_field
             )
-            for span in self.plan.spans
-        )
-        emphasis_fields = tuple(
-            torch.tensor(
-                emphasis.image_token_field,
-                dtype=torch.float32,
-                device=device,
-            )
-            for emphasis in self.plan.emphases
-        )
-        text_owners = torch.tensor(
-            self.text_owners, dtype=torch.int16, device=device
-        )
-        image_owners = torch.tensor(
-            self.image_owners, dtype=torch.int16, device=device
-        )
-        cached = fields, emphasis_fields, text_owners, image_owners
-        self._cache[key] = cached
-        return cached
+            for index, weight in enumerate(field):
+                if weight > 0.0 and owners[index] == 0:
+                    owners[index] = owner
+        return tuple(owners)
 
     def _partition_regional_text(self, scores, start, end, text_owners) -> None:
         """Keep subject-owned keys private to that subject in both text stages."""
@@ -340,4 +403,5 @@ class KreaSpatialAttentionOverride:
             "lora_delta_adaptation": self.lora_delta_adaptation,
             "lora_delta_adaptation_gain": self.lora_delta_adaptation_gain,
             "final_region_scales": dict(self.region_scales),
+            "volumetric_pose_gating": self.pose_gate_binding is not None,
         }

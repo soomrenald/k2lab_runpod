@@ -8,6 +8,7 @@ from k2_region_lab.pose_gating import (
     PoseGateController,
     PoseGatePhases,
     PoseGateRuntimeError,
+    PoseGateRegionBinding,
     SigmaScheduleError,
     SigmaScheduleMode,
     SigmaScheduleRequest,
@@ -121,3 +122,24 @@ def test_schedule_rejects_nonfinite_knots() -> None:
                 normalized_knots=(0.0, math.nan, 0.8, 1.0),
             ),
         )
+
+
+def test_regional_binding_blends_ownership_back_to_normal_field() -> None:
+    controller = PoseGateController(
+        phases=PoseGatePhases(1, 1, 1),
+        soft_schedule=SoftGateSchedule.LINEAR,
+    )
+    binding = PoseGateRegionBinding(
+        controller=controller,
+        hard_image_fields={"subject": (1.0, 0.0, 0.0)},
+    )
+    normal = (1.0, 1.0, 0.5)
+
+    assert binding.effective_field("subject", normal) == (1.0, 0.0, 0.0)
+    assert binding.effective_field("ordinary-region", normal) == normal
+    controller.mark_transition_complete(0)
+    assert binding.effective_field("subject", normal) == pytest.approx(
+        (1.0, 0.5, 0.25)
+    )
+    controller.mark_transition_complete(1)
+    assert binding.effective_field("subject", normal) == normal

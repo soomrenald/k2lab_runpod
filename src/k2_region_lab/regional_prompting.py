@@ -5,7 +5,7 @@ from math import hypot
 from numbers import Integral
 from typing import Callable
 
-from k2_region_lab.pose import subject_pose_from_document
+from k2_region_lab.pose import volumetric_subject_pose_from_document
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
@@ -897,7 +897,7 @@ def region_definitions_from_payload(items: list[dict]) -> tuple[RegionDefinition
                 ),
                 region_type=region_type,
                 pose=(
-                    subject_pose_from_document(item.get("pose"))
+                    volumetric_subject_pose_from_document(item.get("pose"))
                     if region_type == "subject"
                     else None
                 ),

@@ -7,6 +7,7 @@ from k2_region_lab.pose import (
     PoseJoint,
     SubjectPose,
     default_subject_pose,
+    default_volumetric_subject_pose,
     subject_pose_document,
     subject_pose_from_document,
 )
@@ -60,11 +61,9 @@ class SubjectPoseTests(unittest.TestCase):
         state = ProjectState(
             1024,
             1024,
-            pose_conditioning_enabled=True,
-            pose_controlnet_model=None,
-            pose_conditioning_strength=0.8,
-            pose_conditioning_start=0.05,
-            pose_conditioning_end=0.7,
+            pose_gating_enabled=True,
+            pose_hard_gate_steps=3,
+            pose_soft_gate_steps=2,
             regions=(
                 RegionDefinition(
                     "person",
@@ -73,7 +72,7 @@ class SubjectPoseTests(unittest.TestCase):
                     prompt="an adult standing",
                     spatial_role="subject",
                     region_type="subject",
-                    pose=default_subject_pose(),
+                    pose=default_volumetric_subject_pose(),
                 ),
                 RegionDefinition(
                     "lamp",
@@ -87,10 +86,9 @@ class SubjectPoseTests(unittest.TestCase):
 
         restored = project_state(project_document(state))
 
-        self.assertTrue(restored.pose_conditioning_enabled)
-        self.assertEqual(restored.pose_conditioning_strength, 0.8)
-        self.assertEqual(restored.pose_conditioning_start, 0.05)
-        self.assertEqual(restored.pose_conditioning_end, 0.7)
+        self.assertTrue(restored.pose_gating_enabled)
+        self.assertEqual(restored.pose_hard_gate_steps, 3)
+        self.assertEqual(restored.pose_soft_gate_steps, 2)
         self.assertEqual(restored.regions[0].region_type, "subject")
         self.assertIsNotNone(restored.regions[0].pose)
         self.assertEqual(restored.regions[1].region_type, "region")

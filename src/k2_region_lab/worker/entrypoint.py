@@ -11,6 +11,12 @@ from typing import Any
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
+from k2_region_lab.pose_gating import (
+    PoseGatingSettings,
+    SigmaScheduleMode,
+    SigmaScheduleRequest,
+    SoftGateSchedule,
+)
 from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET
 from k2_region_lab.regional_prompting import (
     prompt_emphases_from_payload,
@@ -269,22 +275,28 @@ def main() -> int:
                     regional_lora_delta_adaptation_gain=float(
                         payload.get("regional_lora_delta_adaptation_gain", 0.35)
                     ),
-                    pose_conditioning_enabled=bool(
-                        payload.get("pose_conditioning_enabled", False)
-                    ),
-                    pose_controlnet_path=(
-                        Path(payload["pose_controlnet_path"])
-                        if payload.get("pose_controlnet_path")
-                        else None
-                    ),
-                    pose_conditioning_strength=float(
-                        payload.get("pose_conditioning_strength", 0.75)
-                    ),
-                    pose_conditioning_start=float(
-                        payload.get("pose_conditioning_start", 0.0)
-                    ),
-                    pose_conditioning_end=float(
-                        payload.get("pose_conditioning_end", 0.75)
+                    pose_gating=PoseGatingSettings(
+                        enabled=bool(payload.get("pose_gating_enabled", False)),
+                        hard_steps=int(payload.get("pose_hard_gate_steps", 2)),
+                        soft_steps=int(payload.get("pose_soft_gate_steps", 2)),
+                        soft_schedule=SoftGateSchedule(
+                            payload.get("pose_soft_gate_schedule", "cosine")
+                        ),
+                        sigma_request=SigmaScheduleRequest(
+                            mode=SigmaScheduleMode(
+                                payload.get("pose_sigma_schedule_mode", "automatic")
+                            ),
+                            hard_share=float(
+                                payload.get("pose_sigma_hard_share", 0.20)
+                            ),
+                            soft_share=float(
+                                payload.get("pose_sigma_soft_share", 0.30)
+                            ),
+                            normalized_knots=tuple(
+                                float(value)
+                                for value in payload.get("pose_sigma_knots", ())
+                            ),
+                        ),
                     ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(

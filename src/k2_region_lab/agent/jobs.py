@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from PIL import Image
 
-from k2_region_lab.pose import subject_pose_document
+from k2_region_lab.pose import volumetric_subject_pose_document
 from k2_region_lab.agent.domain import (
     FileKind,
     GenerationJob,
@@ -518,17 +518,14 @@ class JobManager:
                     ),
                     "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
-                    "pose_conditioning_enabled": state.pose_conditioning_enabled,
-                    "pose_controlnet_path": (
-                        await self._optional_file_path(
-                            request.pose_controlnet_file_id, FileKind.CONTROLNET_MODELS
-                        )
-                        if state.pose_conditioning_enabled
-                        else None
-                    ),
-                    "pose_conditioning_strength": state.pose_conditioning_strength,
-                    "pose_conditioning_start": state.pose_conditioning_start,
-                    "pose_conditioning_end": state.pose_conditioning_end,
+                    "pose_gating_enabled": state.pose_gating_enabled,
+                    "pose_hard_gate_steps": state.pose_hard_gate_steps,
+                    "pose_soft_gate_steps": state.pose_soft_gate_steps,
+                    "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
+                    "pose_sigma_schedule_mode": state.pose_sigma_schedule_mode,
+                    "pose_sigma_hard_share": state.pose_sigma_hard_share,
+                    "pose_sigma_soft_share": state.pose_sigma_soft_share,
+                    "pose_sigma_knots": list(state.pose_sigma_knots),
                     "projector_enabled": state.projector_enabled,
                     "projector_preset": state.projector_preset,
                     "projector_values": list(state.projector_values),
@@ -782,19 +779,19 @@ class JobManager:
             )
         if (
             request.kind == JobKind.GENERATE
-            and state.pose_conditioning_enabled
-            and any(
+            and state.pose_gating_enabled
+            and state.pose_hard_gate_steps + state.pose_soft_gate_steps > 0
+            and not any(
                 region.enabled
                 and region.region_type == "subject"
                 and region.pose is not None
                 and region.pose.enabled
                 for region in state.regions
             )
-            and not request.pose_controlnet_file_id
         ):
             raise JobError(
-                "pose_controlnet_required",
-                "Choose a Qwen Image pose ControlNet before generating with subject mannequins.",
+                "pose_mannequin_required",
+                "Enable at least one subject mannequin before using volumetric pose gating.",
             )
         if request.kind in {JobKind.EDIT_IMAGE, JobKind.REFINE_FACES} and not request.input_file_id:
             raise JobError(
@@ -858,7 +855,11 @@ class JobManager:
             "priority": region.priority,
             "spatial_role": region.spatial_role,
             "region_type": region.region_type,
-            "pose": (subject_pose_document(region.pose) if region.pose is not None else None),
+            "pose": (
+                volumetric_subject_pose_document(region.pose)
+                if region.pose is not None
+                else None
+            ),
         }
 
     @staticmethod

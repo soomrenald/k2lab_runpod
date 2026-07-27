@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from k2_region_lab.pose import VOLUMETRIC_POSE_FORMAT, VolumetricSubjectPose
 from k2_region_lab.pose_gating import PoseMaskBuildError
-from k2_region_lab.regions import RegionDefinition
+from k2_region_lab.regions import CanvasGeometry, RegionDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +96,51 @@ class VolumetricMaskBundle:
     union_core: np.ndarray
     union_support: np.ndarray
     summary: PoseMaskSummary
+
+
+def pixel_mask_to_image_tokens(
+    mask: np.ndarray,
+    geometry: CanvasGeometry,
+) -> tuple[float, ...]:
+    """Area-average an output-pixel field onto Krea's image-token grid."""
+    expected = (geometry.aligned_height, geometry.aligned_width)
+    if mask.shape != expected:
+        raise PoseMaskBuildError(
+            f"pose field shape {mask.shape!r} does not match canvas {expected!r}"
+        )
+    size = geometry.output_pixels_per_image_token
+    token_field = mask.reshape(
+        geometry.patch_height,
+        size,
+        geometry.patch_width,
+        size,
+    ).mean(axis=(1, 3))
+    return tuple(float(value) for value in token_field.reshape(-1))
+
+
+def ownership_image_token_fields(
+    bundle: VolumetricMaskBundle,
+    geometry: CanvasGeometry,
+) -> dict[str, tuple[float, ...]]:
+    if (bundle.width, bundle.height) != (
+        geometry.aligned_width,
+        geometry.aligned_height,
+    ):
+        raise PoseMaskBuildError("pose bundle and regional token geometry differ")
+    claimed = [False] * geometry.image_lane_count
+    fields: dict[str, tuple[float, ...]] = {}
+    for subject in bundle.subjects:
+        sampled = pixel_mask_to_image_tokens(subject.ownership, geometry)
+        exclusive = tuple(
+            0.0 if claimed[index] else value
+            for index, value in enumerate(sampled)
+        )
+        fields[subject.region_id] = exclusive
+        claimed = [
+            occupied or value > 0.0
+            for occupied, value in zip(claimed, exclusive, strict=True)
+        ]
+    return fields
 
 
 def _point(region: RegionDefinition, x: float, y: float, scale: int) -> tuple[float, float]:
