@@ -269,8 +269,14 @@ assert.ok(
   "A missing provider Pod must open migration-or-cleanup recovery instead of the studio",
 );
 assert.ok(
-  app.includes('.filter((item) => item.state !== "deleted").at(-1)'),
+  app.includes("workspace: activeWorkspaces.at(-1) ?? null"),
   "Startup must prefer the newest active workspace record",
+);
+assert.ok(
+  app.includes("existingWorkspaces={state.workspaces}")
+    && app.includes("onWorkspaceMenu")
+    && app.includes("workspace: null"),
+  "The studio must be able to return to the workspace menu without deleting a Pod",
 );
 assert.ok(
   workspaceStudio.includes('href="https://console.runpod.io/pods"'),
@@ -293,6 +299,13 @@ assert.ok(
 );
 
 const onboarding = await readFile(new URL("../src/components/CloudOnboarding.tsx", import.meta.url), "utf8");
+assert.ok(
+  onboarding.includes("Existing cloud workspaces")
+    && onboarding.includes("Reconnect without recreating")
+    && onboarding.includes("controlPlane.workspace(workspace.id)")
+    && onboarding.includes("Connect"),
+  "The creation menu must list and reconnect existing managed Pods without starting them",
+);
 assert.ok(
   onboarding.includes("request.lease_unlimited")
     && onboarding.includes("keep running and billing until you manually stop it"),

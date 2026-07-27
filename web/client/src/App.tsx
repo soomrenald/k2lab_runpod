@@ -18,6 +18,7 @@ interface BootstrapState {
   gpus: GpuOption[];
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
+  workspaces: WorkspaceRecord[];
   workspace: WorkspaceRecord | null;
 }
 
@@ -37,13 +38,17 @@ export function App() {
         const datacenters = credential.configured ? await controlPlane.datacenters() : [];
         const networkVolumes = credential.configured ? await controlPlane.networkVolumes() : [];
         if (!cancelled) {
+          const activeWorkspaces = workspaces.filter(
+            (item) => item.state !== "deleted",
+          );
           setState({
             capabilities,
             credential,
             gpus,
             datacenters,
             networkVolumes,
-            workspace: workspaces.filter((item) => item.state !== "deleted").at(-1) ?? null,
+            workspaces: activeWorkspaces,
+            workspace: activeWorkspaces.at(-1) ?? null,
           });
         }
       } catch (caught) {
@@ -77,6 +82,17 @@ export function App() {
     );
   }
 
+  const rememberWorkspace = (workspace: WorkspaceRecord) => {
+    setState((current) => {
+      if (!current) return current;
+      const workspaces = [
+        ...current.workspaces.filter((item) => item.id !== workspace.id),
+        workspace,
+      ].filter((item) => item.state !== "deleted");
+      return { ...current, workspaces, workspace };
+    });
+  };
+
   if (!state.workspace) {
     return (
       <div className="entry-shell">
@@ -90,9 +106,10 @@ export function App() {
           gpus={state.gpus}
           datacenters={state.datacenters}
           networkVolumes={state.networkVolumes}
+          existingWorkspaces={state.workspaces}
           onCredential={(credential, gpus, datacenters, networkVolumes) =>
             setState({ ...state, credential, gpus, datacenters, networkVolumes })}
-          onWorkspace={(workspace) => setState({ ...state, workspace })}
+          onWorkspace={rememberWorkspace}
         />
       </div>
     );
@@ -107,8 +124,15 @@ export function App() {
     return (
       <MissingWorkspace
         workspace={state.workspace}
-        onWorkspace={(workspace) => setState({ ...state, workspace })}
-        onForget={() => setState({ ...state, workspace: null })}
+        onWorkspace={rememberWorkspace}
+        onForget={() =>
+          setState({
+            ...state,
+            workspaces: state.workspaces.filter(
+              (item) => item.id !== state.workspace?.id,
+            ),
+            workspace: null,
+          })}
       />
     );
   }
@@ -125,8 +149,16 @@ export function App() {
       }
       datacenters={state.datacenters}
       networkVolumes={state.networkVolumes}
-      onWorkspace={(workspace) => setState({ ...state, workspace })}
-      onDelete={() => setState({ ...state, workspace: null })}
+      onWorkspace={rememberWorkspace}
+      onWorkspaceMenu={() => setState({ ...state, workspace: null })}
+      onDelete={() =>
+        setState({
+          ...state,
+          workspaces: state.workspaces.filter(
+            (item) => item.id !== state.workspace?.id,
+          ),
+          workspace: null,
+        })}
     />
   );
 }

@@ -43,6 +43,7 @@ interface Props {
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
+  onWorkspaceMenu: () => void;
   onDelete: () => void;
 }
 
@@ -57,7 +58,7 @@ interface StudioEvent {
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -1182,6 +1183,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             </label>
           )}
           <div className="popover-actions">
+            <button
+              className="quiet-button"
+              onClick={() => {
+                setShowCloud(false);
+                onWorkspaceMenu();
+              }}
+            >
+              <Icon name="layers" /> All workspaces
+            </button>
             {canExtend
               ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
               : canStart
