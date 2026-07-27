@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 class PoseGatingError(RuntimeError):
@@ -37,6 +37,25 @@ class SigmaScheduleMode(StrEnum):
     AUTOMATIC = "automatic"
     PHASE_WEIGHTED = "phase_weighted"
     ADVANCED = "advanced"
+
+
+@dataclass(frozen=True, slots=True)
+class PoseGatingSettings:
+    enabled: bool = False
+    hard_steps: int = 2
+    soft_steps: int = 2
+    soft_schedule: SoftGateSchedule = SoftGateSchedule.COSINE
+    sigma_request: SigmaScheduleRequest | None = None
+
+    def phases(self, normal_steps: int) -> PoseGatePhases:
+        return PoseGatePhases(
+            hard_steps=self.hard_steps,
+            soft_steps=self.soft_steps,
+            normal_steps=normal_steps,
+        )
+
+    def resolved_sigma_request(self) -> SigmaScheduleRequest:
+        return self.sigma_request or SigmaScheduleRequest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,3 +364,46 @@ class PoseGateController:
                 "pose gate transition callback arrived out of sequence"
             )
         self.current_transition += 1
+
+
+@dataclass(frozen=True, slots=True)
+class PoseGateRegionBinding:
+    """Static ownership fields paired with the mutable sampler gate controller."""
+
+    controller: PoseGateController
+    hard_image_fields: Mapping[str, tuple[float, ...]]
+
+    @property
+    def gate_strength(self) -> float:
+        return self.controller.gate_strength
+
+    def hard_field(
+        self,
+        region_id: str,
+        normal_field: tuple[float, ...],
+    ) -> tuple[float, ...]:
+        hard = self.hard_image_fields.get(region_id)
+        if hard is None:
+            return normal_field
+        if len(hard) != len(normal_field):
+            raise PoseGateRuntimeError(
+                f"pose ownership field for region {region_id!r} has "
+                f"{len(hard)} tokens; expected {len(normal_field)}"
+            )
+        return hard
+
+    def effective_field(
+        self,
+        region_id: str,
+        normal_field: tuple[float, ...],
+    ) -> tuple[float, ...]:
+        hard = self.hard_field(region_id, normal_field)
+        gate = self.gate_strength
+        if gate <= 0.0:
+            return normal_field
+        if gate >= 1.0:
+            return hard
+        return tuple(
+            (1.0 - gate) * normal + gate * owned
+            for normal, owned in zip(normal_field, hard, strict=True)
+        )

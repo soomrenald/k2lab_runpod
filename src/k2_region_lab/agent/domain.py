@@ -38,6 +38,13 @@ class AgentCapabilities(BaseModel):
     supported_job_kinds: list[str] = Field(
         default_factory=lambda: ["generate", "edit_image", "refine_faces"]
     )
+    volumetric_pose_gating: dict[str, object] = Field(
+        default_factory=lambda: {
+            "format": "k2-volumetric-pose-v1",
+            "soft_schedules": ["cosine", "linear", "exponential", "stepped"],
+            "sigma_modes": ["automatic", "phase_weighted", "advanced"],
+        }
+    )
 
 
 class StorageStatus(BaseModel):
@@ -262,7 +269,6 @@ class JobSubmitRequest(BaseModel):
     face_detector_file_id: str | None = Field(default=None, max_length=64)
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
-    pose_controlnet_file_id: str | None = Field(default=None, max_length=64)
     filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)
     manual_face_paths: list[list[list[float]]] = Field(default_factory=list, max_length=128)

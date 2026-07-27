@@ -48,7 +48,13 @@ from k2_region_lab.memory import (
     system_memory_snapshot,
 )
 from k2_region_lab.output import validate_filename_prefix
-from k2_region_lab.pose_control import PoseControlSummary, render_openpose_map
+from k2_region_lab.pose_gating import (
+    PoseGateController,
+    PoseGatePhases,
+    PoseGateRegionBinding,
+    PoseGatingSettings,
+    resolve_sigma_schedule,
+)
 from k2_region_lab.projector import (
     DEFAULT_PROJECTOR_PRESET,
     PROJECTOR_VECTOR_COUNT,
@@ -71,13 +77,18 @@ from k2_region_lab.regional_prompting import (
     compile_regional_prompt_plan,
     krea_prompt_token_count,
 )
-from k2_region_lab.regions import RegionDefinition
+from k2_region_lab.regions import CanvasGeometry, RegionDefinition
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
     DEFAULT_SCHEDULER,
     register_bong_tangent_scheduler,
     validate_sampler,
     validate_scheduler,
+)
+from k2_region_lab.volumetric_pose import (
+    VolumetricMaskBundle,
+    ownership_image_token_fields,
+    render_volumetric_masks,
 )
 from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
@@ -651,7 +662,8 @@ class ComfyBaselineRuntime:
         text_token_count: int,
         regional_plan: RegionalPromptPlan | None,
         bound_plan: BoundRegionalPromptPlan | None,
-        event: Callable[[str, dict[str, Any]], None] | None,
+        pose_gate_binding: PoseGateRegionBinding | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         routes = compile_lora_delta_routes(
             specifications,
@@ -660,6 +672,7 @@ class ComfyBaselineRuntime:
             text_token_count=text_token_count,
             regional_plan=regional_plan,
             bound_plan=bound_plan,
+            pose_gate_binding=pose_gate_binding,
         )
         routes_by_id = {route.lora_id: route for route in routes}
         reports: list[dict[str, Any]] = []
@@ -946,7 +959,16 @@ class ComfyBaselineRuntime:
                     x.device,
                     x.dtype,
                 )
-                mask = self._mask_cache.get(key)
+                dynamic = (
+                    route.pose_gate_binding is not None
+                    and self.route_kind not in {
+                        "text_layerwise",
+                        "text_projector",
+                        "text_refiner",
+                    }
+                    and bool(route.image_token_components)
+                )
+                mask = None if dynamic else self._mask_cache.get(key)
                 if mask is None:
                     if route.global_scope:
                         mask = torch.ones((), device=x.device, dtype=x.dtype)
@@ -979,15 +1001,59 @@ class ComfyBaselineRuntime:
                                 f"expected one of {sorted(expected_counts)}"
                             )
                         token_axis = token_axes[0]
-                        values = route.sequence_mask(
-                            int(x.shape[token_axis]), text_fusion=text_fusion
-                        )
                         mask_shape = [1] * x.ndim
-                        mask_shape[token_axis] = len(values)
-                        mask = torch.tensor(
-                            values, device=x.device, dtype=x.dtype
-                        ).view(*mask_shape)
-                    self._mask_cache[key] = mask
+                        mask_shape[token_axis] = int(x.shape[token_axis])
+                        if dynamic:
+                            component_key = (*key, "pose_components")
+                            components = self._mask_cache.get(component_key)
+                            if components is None:
+                                normal_components = []
+                                hard_components = []
+                                combined = (
+                                    int(x.shape[token_axis])
+                                    == text_count + image_count
+                                )
+                                for normal, hard in route.image_token_components:
+                                    normal_values = (
+                                        route.text_token_mask + normal
+                                        if combined
+                                        else normal
+                                    )
+                                    hard_values = (
+                                        route.text_token_mask + hard
+                                        if combined
+                                        else hard
+                                    )
+                                    normal_components.append(normal_values)
+                                    hard_components.append(hard_values)
+                                components = (
+                                    torch.tensor(
+                                        normal_components,
+                                        device=x.device,
+                                        dtype=x.dtype,
+                                    ),
+                                    torch.tensor(
+                                        hard_components,
+                                        device=x.device,
+                                        dtype=x.dtype,
+                                    ),
+                                )
+                                self._mask_cache[component_key] = components
+                            normal, hard = components
+                            gate = route.pose_gate_binding.gate_strength
+                            values = normal if gate <= 0.0 else (
+                                hard if gate >= 1.0 else normal + gate * (hard - normal)
+                            )
+                            mask = values.amax(dim=0).view(*mask_shape)
+                        else:
+                            values = route.sequence_mask(
+                                int(x.shape[token_axis]), text_fusion=text_fusion
+                            )
+                            mask = torch.tensor(
+                                values, device=x.device, dtype=x.dtype
+                            ).view(*mask_shape)
+                    if not dynamic:
+                        self._mask_cache[key] = mask
                 return mask
 
             def h(self, x, base_out):
@@ -1461,11 +1527,7 @@ class ComfyBaselineRuntime:
         regional_late_step_scale: float = 0.35,
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
-        pose_conditioning_enabled: bool = False,
-        pose_controlnet_path: Path | None = None,
-        pose_conditioning_strength: float = 0.75,
-        pose_conditioning_start: float = 0.0,
-        pose_conditioning_end: float = 0.75,
+        pose_gating: PoseGatingSettings | None = None,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1490,10 +1552,6 @@ class ComfyBaselineRuntime:
         scheduler = validate_scheduler(scheduler)
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
-        if not 0.0 <= pose_conditioning_strength <= 2.0:
-            raise ValueError("pose conditioning strength must be between zero and two")
-        if not 0.0 <= pose_conditioning_start < pose_conditioning_end <= 1.0:
-            raise ValueError("pose conditioning start and end must be ordered between zero and one")
         if not 0.0 <= projector_identity_protection <= 1.0:
             raise ValueError("projector identity protection must be between zero and one")
         if post_upscale and upscale_method == "model":
@@ -1501,28 +1559,19 @@ class ComfyBaselineRuntime:
                 raise ValueError("select a readable neural upscaler model before generation")
         filename_prefix = validate_filename_prefix(filename_prefix)
         lora_specifications = list(loras or [])
-        pose_control_image = None
-        pose_control_summary: PoseControlSummary | None = None
-        if pose_conditioning_enabled:
-            pose_control_image, pose_control_summary = render_openpose_map(
-                width,
-                height,
-                regions,
+        pose_gating = pose_gating or PoseGatingSettings()
+        pose_phases = pose_gating.phases(steps)
+        pose_mask_bundle: VolumetricMaskBundle | None = None
+        if pose_gating.enabled and pose_gating.hard_steps + pose_gating.soft_steps > 0:
+            pose_mask_bundle = render_volumetric_masks(
+                regions=regions,
+                width=width,
+                height=height,
             )
-            if pose_control_summary.subject_count == 0:
-                pose_control_image = None
-                if event is not None:
-                    event(
-                        "Pose conditioning skipped: no enabled subject mannequins",
-                        pose_control_summary.document(),
-                    )
-            elif (
-                pose_controlnet_path is None
-                or not pose_controlnet_path.expanduser().is_file()
-            ):
+            if pose_mask_bundle.summary.subject_count == 0:
                 raise ValueError(
-                    "select a readable Qwen Image pose ControlNet before using subject "
-                    "mannequin conditioning"
+                    "enable at least one subject mannequin before using volumetric "
+                    "pose gating"
                 )
         regional_plan = (
             compile_regional_prompt_plan(
@@ -1560,12 +1609,9 @@ class ComfyBaselineRuntime:
                 regional_plan=regional_plan,
                 regional_lora_delta_adaptation=regional_lora_delta_adaptation,
                 regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
-                pose_control_image=pose_control_image,
-                pose_control_summary=pose_control_summary,
-                pose_controlnet_path=pose_controlnet_path,
-                pose_conditioning_strength=pose_conditioning_strength,
-                pose_conditioning_start=pose_conditioning_start,
-                pose_conditioning_end=pose_conditioning_end,
+                pose_gating=pose_gating,
+                pose_phases=pose_phases,
+                pose_mask_bundle=pose_mask_bundle,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1611,12 +1657,9 @@ class ComfyBaselineRuntime:
             regional_plan=regional_plan,
             regional_lora_delta_adaptation=regional_lora_delta_adaptation,
             regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
-            pose_control_image=pose_control_image,
-            pose_control_summary=pose_control_summary,
-            pose_controlnet_path=pose_controlnet_path,
-            pose_conditioning_strength=pose_conditioning_strength,
-            pose_conditioning_start=pose_conditioning_start,
-            pose_conditioning_end=pose_conditioning_end,
+            pose_gating=pose_gating,
+            pose_phases=pose_phases,
+            pose_mask_bundle=pose_mask_bundle,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1648,12 +1691,9 @@ class ComfyBaselineRuntime:
         regional_plan: RegionalPromptPlan | None,
         regional_lora_delta_adaptation: bool,
         regional_lora_delta_adaptation_gain: float,
-        pose_control_image,
-        pose_control_summary: PoseControlSummary | None,
-        pose_controlnet_path: Path | None,
-        pose_conditioning_strength: float,
-        pose_conditioning_start: float,
-        pose_conditioning_end: float,
+        pose_gating: PoseGatingSettings,
+        pose_phases: PoseGatePhases,
+        pose_mask_bundle: VolumetricMaskBundle | None,
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1735,6 +1775,73 @@ class ComfyBaselineRuntime:
             bound_plan=bound_regional_plan,
             event=event,
         )
+        pose_gate_binding: PoseGateRegionBinding | None = None
+        pose_controller: PoseGateController | None = None
+        pose_support_tensor = None
+        resolved_sigmas_tensor = None
+        effective_steps = steps
+        pose_summary_document: dict[str, Any] = {
+            "enabled": False,
+            "format": "k2-volumetric-pose-v1",
+        }
+        if pose_mask_bundle is not None:
+            effective_steps = pose_phases.effective_steps
+            baseline_sampler = comfy.samplers.KSampler(
+                generation_model,
+                steps=effective_steps,
+                device=generation_model.load_device,
+                sampler=sampler,
+                scheduler=scheduler,
+                denoise=1.0,
+                model_options=generation_model.model_options,
+            )
+            baseline_sigmas_tensor = baseline_sampler.sigmas
+            resolved_schedule = resolve_sigma_schedule(
+                baseline_sigmas=tuple(
+                    float(value)
+                    for value in baseline_sigmas_tensor.detach().to("cpu").tolist()
+                ),
+                phases=pose_phases,
+                request=pose_gating.resolved_sigma_request(),
+            )
+            resolved_sigmas_tensor = baseline_sigmas_tensor.new_tensor(
+                resolved_schedule.resolved_sigmas
+            )
+            pose_controller = PoseGateController(
+                phases=pose_phases,
+                soft_schedule=pose_gating.soft_schedule,
+                resolved_sigmas=resolved_schedule,
+            )
+            pose_gate_binding = PoseGateRegionBinding(
+                controller=pose_controller,
+                hard_image_fields=ownership_image_token_fields(
+                    pose_mask_bundle,
+                    CanvasGeometry.resolve(width, height),
+                ),
+            )
+            pose_support_tensor = torch.from_numpy(
+                pose_mask_bundle.union_support.copy()
+            ).unsqueeze(0)
+            pose_summary_document = {
+                "enabled": True,
+                "format": "k2-volumetric-pose-v1",
+                "effective_steps": effective_steps,
+                "phases": {
+                    "hard": pose_phases.hard_steps,
+                    "soft": pose_phases.soft_steps,
+                    "normal": pose_phases.normal_steps,
+                },
+                "soft_schedule": pose_gating.soft_schedule.value,
+                "gate_strengths": list(pose_controller.strengths),
+                "sigma_mode": resolved_schedule.mode.value,
+                "normalized_positions": list(resolved_schedule.normalized_positions),
+                "baseline_sigmas": list(resolved_schedule.baseline_sigmas),
+                "resolved_sigmas": list(resolved_schedule.resolved_sigmas),
+                "phase_shares": resolved_schedule.phase_shares,
+                "masks": pose_mask_bundle.summary.document(),
+            }
+            if event is not None:
+                event("Volumetric pose gating prepared", pose_summary_document)
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
             loras,
             base_model=generation_model,
@@ -1743,79 +1850,19 @@ class ComfyBaselineRuntime:
             text_token_count=conditioning_text_token_count,
             regional_plan=regional_plan,
             bound_plan=bound_regional_plan,
+            pose_gate_binding=pose_gate_binding,
             event=event,
         )
-        pose_controlnet = None
-        pose_controlnet_released = False
-
-        def release_pose_controlnet() -> None:
-            nonlocal pose_controlnet, pose_controlnet_released
-            if pose_controlnet is None or pose_controlnet_released:
-                return
-            pose_controlnet.cleanup()
-            for control_model in pose_controlnet.get_models_only_self():
-                comfy.model_management.unload_model_and_clones(
-                    control_model,
-                    unload_additional_models=False,
-                )
-            pose_controlnet_released = True
-            gc.collect()
-            comfy.model_management.soft_empty_cache(force=True)
-
-        pose_summary_document: dict[str, Any] = {
-            "enabled": False,
-            "model": None,
-            "strength": pose_conditioning_strength,
-            "start": pose_conditioning_start,
-            "end": pose_conditioning_end,
-        }
-        if pose_control_image is not None and pose_control_summary is not None:
-            import comfy.controlnet
-            import nodes
-
-            if pose_controlnet_path is None:
-                raise RuntimeError("pose ControlNet path was lost before sampling")
-            self._ensure_memory("before pose ControlNet loading", event)
-            try:
-                pose_controlnet = comfy.controlnet.load_controlnet(str(pose_controlnet_path))
-                if pose_controlnet is None:
-                    raise RuntimeError(
-                        "the selected file is not a ControlNet supported by this ComfyUI runtime"
-                    )
-                # Union checkpoints use OpenPose type zero. Qwen InstantX checkpoints
-                # ignore this extra argument, so one path safely supports both forms.
-                pose_controlnet.set_extra_arg("control_type", [0])
-                pose_array = np.asarray(pose_control_image, dtype=np.float32) / 255.0
-                pose_tensor = torch.from_numpy(pose_array).unsqueeze(0)
-                positive, negative = nodes.ControlNetApplyAdvanced().apply_controlnet(
-                    positive,
-                    negative,
-                    pose_controlnet,
-                    pose_tensor,
-                    pose_conditioning_strength,
-                    pose_conditioning_start,
-                    pose_conditioning_end,
-                    vae=self.vae,
-                )
-            except Exception:
-                release_pose_controlnet()
-                raise
-            pose_summary_document = {
-                "enabled": True,
-                "model": pose_controlnet_path.name,
-                "strength": pose_conditioning_strength,
-                "start": pose_conditioning_start,
-                "end": pose_conditioning_end,
-                **pose_control_summary.document(),
-            }
-            if event is not None:
-                event(
-                    "Subject mannequin pose ControlNet applied",
-                    pose_summary_document,
-                )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
+            phase = "normal"
+            gate_strength = 0.0
+            if pose_controller is not None:
+                if step != pose_controller.current_transition:
+                    raise RuntimeError("pose gate callback and sampler step diverged")
+                phase = pose_controller.phase
+                gate_strength = pose_controller.gate_strength
             if attention_override is not None:
                 attention_override.set_denoising_progress(step + 1, total)
                 if regional_lora_delta_adaptation:
@@ -1826,6 +1873,19 @@ class ComfyBaselineRuntime:
                     )
                     lora_statistics.reset_step_measurements()
             snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
+            if pose_controller is not None:
+                resolved = pose_controller.resolved_sigmas
+                snapshot.update(
+                    {
+                        "pose_gate_phase": phase,
+                        "pose_gate_strength": gate_strength,
+                        "sigma": resolved.resolved_sigmas[step],
+                        "next_sigma": resolved.resolved_sigmas[step + 1],
+                        "normalized_trajectory_progress": (
+                            resolved.normalized_positions[step + 1]
+                        ),
+                    }
+                )
             if progress is not None:
                 progress(
                     step + 1,
@@ -1838,12 +1898,15 @@ class ComfyBaselineRuntime:
                     f"{step + 1}/{total}: "
                     f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
                 )
+            if pose_controller is not None:
+                pose_controller.mark_transition_complete(step)
 
         attention_override = (
             KreaSpatialAttentionOverride(
                 bound_regional_plan,
                 lora_delta_adaptation=regional_lora_delta_adaptation,
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+                pose_gate_binding=pose_gate_binding,
             )
             if bound_regional_plan is not None
             and (bound_regional_plan.spans or bound_regional_plan.emphases)
@@ -1861,6 +1924,9 @@ class ComfyBaselineRuntime:
         previous_override = transformer_options.get(
             "optimized_attention_override", missing
         )
+        previous_denoise_mask_function = generation_model.model_options.get(
+            "denoise_mask_function", missing
+        )
         try:
             if attention_override is not None:
                 if previous_override is not missing:
@@ -1868,10 +1934,25 @@ class ComfyBaselineRuntime:
                         "another optimized-attention override is already installed"
                     )
                 transformer_options["optimized_attention_override"] = attention_override
+            if pose_controller is not None:
+                if previous_denoise_mask_function is not missing:
+                    raise RuntimeError(
+                        "a pre-existing denoise-mask callback is incompatible with "
+                        "volumetric pose gating"
+                    )
+
+                def dynamic_denoise_mask(sigma, prepared_support_mask, extra_options):
+                    del extra_options
+                    pose_controller.observe_sigma(sigma)
+                    return pose_controller.denoise_mask(prepared_support_mask)
+
+                generation_model.model_options[
+                    "denoise_mask_function"
+                ] = dynamic_denoise_mask
             samples = comfy.sample.sample(
                 generation_model,
                 noise,
-                steps,
+                effective_steps,
                 1.0,
                 sampler,
                 scheduler,
@@ -1879,6 +1960,8 @@ class ComfyBaselineRuntime:
                 negative,
                 latent,
                 denoise=1.0,
+                noise_mask=pose_support_tensor,
+                sigmas=resolved_sigmas_tensor,
                 callback=callback,
                 disable_pbar=True,
                 seed=seed,
@@ -1890,13 +1973,22 @@ class ComfyBaselineRuntime:
                     transformer_options.pop("optimized_attention_override", None)
                 else:
                     transformer_options["optimized_attention_override"] = previous_override
-            if pose_controlnet is not None:
-                release_pose_controlnet()
-                if event is not None:
-                    event(
-                        "Pose ControlNet released; baseline retention unchanged",
-                        {"model": pose_controlnet_path.name if pose_controlnet_path else None},
+            if pose_controller is not None:
+                if previous_denoise_mask_function is missing:
+                    generation_model.model_options.pop(
+                        "denoise_mask_function", None
                     )
+                else:
+                    generation_model.model_options[
+                        "denoise_mask_function"
+                    ] = previous_denoise_mask_function
+        if pose_controller is not None:
+            if pose_controller.current_transition != effective_steps:
+                raise RuntimeError(
+                    "volumetric pose gate did not observe every sampler transition"
+                )
+            if event is not None:
+                event("Volumetric pose gating completed", pose_summary_document)
         if attention_override is not None:
             if attention_override.matched_calls == 0:
                 raise RuntimeError(
@@ -1977,6 +2069,7 @@ class ComfyBaselineRuntime:
         metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
+        metadata.add_text("effective_steps", str(effective_steps))
         metadata.add_text("sampler", sampler)
         metadata.add_text("scheduler", scheduler)
         metadata.add_text("size", f"{output_image.width}x{output_image.height}")
@@ -1991,7 +2084,7 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
-        metadata.add_text("pose_conditioning", json.dumps(pose_summary_document))
+        metadata.add_text("pose_gating", json.dumps(pose_summary_document))
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
@@ -2013,10 +2106,11 @@ class ComfyBaselineRuntime:
             "base_width": width,
             "base_height": height,
             "steps": steps,
+            "effective_steps": effective_steps,
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
-            "pose_conditioning": pose_summary_document,
+            "pose_gating": pose_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,

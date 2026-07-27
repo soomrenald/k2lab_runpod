@@ -56,9 +56,20 @@ WORKER_ERROR_MESSAGES = {
     "lora_validation_failed": (
         "LoRA validation failed. Verify that every selected LoRA targets Krea 2."
     ),
-    "pose_control_failed": (
-        "Subject pose conditioning failed. Verify that the selected model is the Qwen Image "
-        "ControlNet Union safetensors file, or disable pose conditioning and try again."
+    "pose_mask_build_failed": (
+        "The volumetric mannequin masks could not be built. Check the subject boxes "
+        "and mannequin geometry."
+    ),
+    "pose_gate_schedule_invalid": (
+        "The volumetric pose gate or sigma schedule is invalid. Check phase steps "
+        "and trajectory settings."
+    ),
+    "pose_gate_runtime_failed": (
+        "Volumetric pose gating failed during sampling. Review the pose-gating "
+        "diagnostics and try again."
+    ),
+    "pose_gate_hook_incompatible": (
+        "Another sampling mask hook conflicts with volumetric pose gating."
     ),
     "generation_failed": (
         "Generation failed while applying the selected LoRA or sampling settings. "
@@ -89,10 +100,20 @@ def classify_worker_error(
         code = "model_load_failed"
     elif command_kind == CommandKind.VALIDATE_LORAS:
         code = "lora_validation_failed"
+    elif command_kind == CommandKind.GENERATE_BASELINE and "posemaskbuild" in combined:
+        code = "pose_mask_build_failed"
     elif command_kind == CommandKind.GENERATE_BASELINE and (
-        "controlnet" in combined or "pose conditioning" in combined
+        "posegateschedule" in combined or "sigmaschedule" in combined
     ):
-        code = "pose_control_failed"
+        code = "pose_gate_schedule_invalid"
+    elif command_kind == CommandKind.GENERATE_BASELINE and (
+        "pre-existing denoise-mask" in combined or "posegatehook" in combined
+    ):
+        code = "pose_gate_hook_incompatible"
+    elif command_kind == CommandKind.GENERATE_BASELINE and (
+        "pose gate" in combined or "volumetric pose" in combined
+    ):
+        code = "pose_gate_runtime_failed"
     elif command_kind == CommandKind.GENERATE_BASELINE:
         code = "generation_failed"
     elif command_kind == CommandKind.EDIT_IMAGE:

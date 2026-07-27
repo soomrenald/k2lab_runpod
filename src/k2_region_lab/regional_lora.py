@@ -12,6 +12,7 @@ from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     RegionalPromptPlan,
 )
+from k2_region_lab.pose_gating import PoseGateRegionBinding
 from k2_region_lab.regions import CanvasGeometry
 
 
@@ -31,16 +32,36 @@ class LoraDeltaRoute:
     routing_mode: str = STANDARD_LORA_ROUTING
     trigger_phrase: str = ""
     backend: str = BACKEND
+    pose_gate_binding: PoseGateRegionBinding | None = None
+    image_token_components: tuple[
+        tuple[tuple[float, ...], tuple[float, ...]], ...
+    ] = ()
+
+    def effective_image_token_mask(self) -> tuple[float, ...]:
+        if self.global_scope or self.pose_gate_binding is None:
+            return self.image_token_mask
+        gate = self.pose_gate_binding.gate_strength
+        if gate <= 0.0 or not self.image_token_components:
+            return self.image_token_mask
+        values = [0.0] * len(self.image_token_mask)
+        for normal, hard in self.image_token_components:
+            for index, (normal_value, hard_value) in enumerate(
+                zip(normal, hard, strict=True)
+            ):
+                current = (1.0 - gate) * normal_value + gate * hard_value
+                values[index] = max(values[index], current)
+        return tuple(values)
 
     def sequence_mask(self, sequence_length: int, *, text_fusion: bool) -> tuple[float, ...]:
         text_count = len(self.text_token_mask)
-        image_count = len(self.image_token_mask)
+        image_mask = self.effective_image_token_mask()
+        image_count = len(image_mask)
         if text_fusion and sequence_length == text_count:
             return self.text_token_mask
         if not text_fusion and sequence_length == image_count:
-            return self.image_token_mask
+            return image_mask
         if not text_fusion and sequence_length == text_count + image_count:
-            return self.text_token_mask + self.image_token_mask
+            return self.text_token_mask + image_mask
         raise ValueError(
             f"LoRA route {self.display_name!r} expected "
             f"{text_count} text, {image_count} image, or "
@@ -137,6 +158,7 @@ def compile_lora_delta_routes(
     text_token_count: int,
     regional_plan: RegionalPromptPlan | None,
     bound_plan: BoundRegionalPromptPlan | None,
+    pose_gate_binding: PoseGateRegionBinding | None = None,
 ) -> tuple[LoraDeltaRoute, ...]:
     """Compile exact text/image token gates for every active LoRA.
 
@@ -205,6 +227,9 @@ def compile_lora_delta_routes(
 
         text_mask = [0.0] * text_token_count
         image_mask = [0.0] * geometry.image_lane_count
+        image_components: list[
+            tuple[tuple[float, ...], tuple[float, ...]]
+        ] = []
         names = []
         for region_id in region_ids:
             region = active_regions[region_id]
@@ -217,6 +242,12 @@ def compile_lora_delta_routes(
             for index in range(span.start, span.end):
                 text_mask[index] = 1.0
             strict_box_mask = geometry.rasterize_box(region.box)
+            hard_mask = (
+                pose_gate_binding.hard_field(region_id, strict_box_mask)
+                if pose_gate_binding is not None
+                else strict_box_mask
+            )
+            image_components.append((strict_box_mask, hard_mask))
             image_mask = [
                 max(current, candidate)
                 for current, candidate in zip(image_mask, strict_box_mask, strict=True)
@@ -233,6 +264,8 @@ def compile_lora_delta_routes(
                 image_token_mask=tuple(image_mask),
                 routing_mode=routing_mode,
                 trigger_phrase=trigger_phrase,
+                pose_gate_binding=pose_gate_binding,
+                image_token_components=tuple(image_components),
             )
         )
     return tuple(routes)

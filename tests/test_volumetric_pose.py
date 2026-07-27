@@ -17,8 +17,12 @@ from k2_region_lab.pose import (
     volumetric_subject_pose_document,
     volumetric_subject_pose_from_document,
 )
-from k2_region_lab.regions import PixelBox, RegionDefinition
-from k2_region_lab.volumetric_pose import render_volumetric_masks
+from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
+from k2_region_lab.volumetric_pose import (
+    ownership_image_token_fields,
+    pixel_mask_to_image_tokens,
+    render_volumetric_masks,
+)
 
 
 def _subject(
@@ -145,3 +149,34 @@ def test_empty_subject_set_produces_zero_bundle() -> None:
     assert bundle.summary.subject_count == 0
     assert bundle.union_support.shape == (96, 64)
     assert np.count_nonzero(bundle.union_support) == 0
+
+
+def test_pixel_masks_area_average_to_the_canvas_token_grid() -> None:
+    geometry = CanvasGeometry.resolve(32, 16)
+    mask = np.zeros((16, 32), dtype=np.float32)
+    mask[:, :8] = 1.0
+
+    values = pixel_mask_to_image_tokens(mask, geometry)
+
+    assert values == pytest.approx((0.5, 0.0))
+
+
+def test_ownership_token_fields_remain_exclusive_after_downsampling() -> None:
+    geometry = CanvasGeometry.resolve(320, 256)
+    bundle = render_volumetric_masks(
+        regions=(
+            _subject("front", PixelBox(50, 20, 210, 250), priority=10),
+            _subject("back", PixelBox(130, 20, 290, 250), priority=5),
+        ),
+        width=320,
+        height=256,
+    )
+
+    fields = ownership_image_token_fields(bundle, geometry)
+
+    assert len(fields["front"]) == geometry.image_lane_count
+    assert len(fields["back"]) == geometry.image_lane_count
+    assert all(
+        not (front > 0.0 and back > 0.0)
+        for front, back in zip(fields["front"], fields["back"], strict=True)
+    )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from k2_region_lab.pose import SubjectPose
+from k2_region_lab.pose import SubjectPose, VolumetricSubjectPose
 from k2_region_lab.regions.geometry import CanvasGeometry, PixelBox
 
 
@@ -24,7 +24,7 @@ class RegionDefinition:
     priority: int = 0
     spatial_role: str = "auto"
     region_type: str = "region"
-    pose: SubjectPose | None = None
+    pose: SubjectPose | VolumetricSubjectPose | None = None
 
     def __post_init__(self) -> None:
         if not self.region_id.strip():
