@@ -1,203 +1,223 @@
-# K2 Lab RunPod
+# K2 Region Lab for RunPod
 
-K2 Lab RunPod is the independently installable browser application and remote GPU runtime
-for K2 Region Lab workflows. It contains the React studio, FastAPI control plane, RunPod
-provisioning backend, authenticated workspace agent, and the shared generation engine needed
-inside the GPU image. It does not contain the PySide6/QML desktop application.
+K2 Region Lab is a browser-based image generation workspace for people who want precise
+control over where subjects, objects, prompts, and LoRAs affect an image. The interface runs
+locally on your computer while generation runs on a GPU Pod in your RunPod account.
 
-The web implementation was separated from
-[`soomrenald/krea_region_project`](https://github.com/soomrenald/krea_region_project) at desktop
-source commit `2af341c5406b10f3028e65bf43de514d55a24fff`.
+K2 supports ordinary text-to-image generation, regional prompting, regional and
+character-identity LoRAs, image editing, face refinement, post-upscaling, and pose-controlled
+subject boxes. Models, projects, inputs, and outputs live in persistent RunPod storage rather
+than disappearing when the browser closes.
 
-## Current milestone
+> **Preview software:** K2 can create billable RunPod resources and is under active
+> development. Read the storage and deletion warnings before creating a workspace.
 
-The exact equivalence boundary with the local application is tracked in
-[`docs/web_desktop_parity.md`](docs/web_desktop_parity.md). RunPod image publication is
-blocked until every non-excluded acceptance row is complete and confirmed.
+For a complete explanation of every screen and setting, see the
+**[K2 Region Lab User Guide](docs/user_guide.md)**. It also contains common workflows,
+troubleshooting steps, memory diagnostics, and safe Pod-update instructions.
 
-Implemented:
+## How K2 works
 
-- FastAPI workspace contracts and lifecycle endpoints;
-- a safe in-memory development backend that never calls or bills RunPod;
-- account connection, ordered GPU preferences, cloud type, storage, idle timeout, cost
-  review, workspace creation, stop/start, lease extension, and typed deletion UX;
-- the Generate, Edit, and Faces workspace shell;
-- local PNG/JPEG/WebP loading for interface development;
-- separate image-edit reference and target layers;
-- SVG region drawing, selection, movement, and live eight-direction resizing;
-- complete version-21 prompt, region, phrase-emphasis, character/standard LoRA routing,
-  seed/batch, regional-guidance, image-edit, face, projector, and post-upscale controls;
-- separate ordinary region boxes and pose-controlled subject boxes, including filled editable
-  13-joint volumetric mannequins, head ellipses, standing/squatting/mirror presets, and
-  scheduler-consistent early denoising/ownership gates that require no pose model;
-- exact front-to-back region priority and subject/background-role serialization plus a unified
-  prompt preview compiled by the same Python implementation as the legacy desktop;
-- prompt editors with overflow scrollbars and live state synchronization;
-- responsive desktop/mobile styling with locally bundled fonts;
-- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-21
-  browser round trips, persistent cloud project copies, and cloud source restoration;
-- deterministic diffusion-model, text-encoder, VAE, face-detector, LoRA, and upscaler
-  selection from persistent workspace inventory, plus a safe configurable output prefix;
-- automatic local-image upload, authenticated input/output/project previews and downloads,
-  source replacement/clearing, and latest-output reuse;
-- remote face detection with numbered selectable proposals, select all/none, multiple manual
-  lassos, undo/clear, and exact refinement payloads;
-- a chronological 1,000-entry rolling event log and explicit worker-memory release control.
-- a production RunPod REST/GraphQL adapter with redacted provider errors;
-- encrypted process-local credential storage and explicit production backend selection;
-- live GPU inventory/pricing plans and persistent-Pod create/start/stop/delete requests.
-- a separate versioned workspace-agent image with authenticated health, capabilities,
-  storage validation, and idempotent persistent-layout initialization.
-- durable cloud-file inventory, checksum-verified resumable uploads, duplicate detection,
-  and authenticated ranged output retrieval;
-- an Assets panel with streaming SHA-256 hashing, pause/resume/retry/cancel controls,
-  transfer progress, throughput, and ETA.
-- provider-side Civitai and Hugging Face inspection/download jobs with encrypted
-  least-privilege tokens, strict URL/redirect validation, resumable Civitai ranges,
-  Hugging Face cache reuse, unsafe-format confirmation, and safetensors validation.
-- generation, image-edit, and face-refinement jobs using the canonical project document,
-  durable summaries/events, cursor-based reconnect, cancellation, progress display, and
-  authenticated output retrieval through opaque file IDs; explicit tensor-manifest validation,
-  accelerator diagnostics, LoRA compatibility inspection, memory-policy controls, and live
-  hardware telemetry are intentionally omitted from the browser parity boundary.
-- persistent-Pod and portable-workspace onboarding, RunPod datacenter/network-volume
-  inventory, compatible GPU filtering, independent storage pricing, and ephemeral Pod
-  termination/recreation around a retained network volume.
-- sealed allowlisted workspace manifests, resumable checksum-verified persistent-to-portable
-  copy, durable reconnectable migration progress, manifest-gated switchover, and separate
-  typed confirmation before deleting the stopped original Pod.
+K2 has three parts:
 
-Not yet implemented:
+1. **The local control plane** runs on your computer at `http://127.0.0.1:8000`. It stores
+   your encrypted RunPod credential, workspace records, and the browser interface.
+2. **The RunPod workspace agent** runs inside a versioned GPU image. It manages persistent
+   files, model downloads, generation jobs, and worker memory.
+3. **The persistent workspace** stores models, LoRAs, projects, source images, and outputs.
+   A Persistent Pod uses a volume attached to that Pod; a Portable workspace uses an
+   independent RunPod network volume.
 
-- a cloud-KMS adapter (the production vault currently uses a persisted Fernet root key);
-- a published and signed CUDA workspace image (the build definition and agent are present);
-- multi-account tenancy or a hosted deployment.
+Your prompts and model files do not need to pass through a third-party K2 service. The local
+application talks directly to RunPod and to the authenticated agent on your Pod.
 
-The development backend is labelled throughout the UI. Its generation buttons are
-disabled so it cannot be confused with a connected GPU worker.
+## Feature overview
 
-## RunPod backend
+- Krea 2 text-to-image generation with selectable sampler, scheduler, seed, size, and steps.
+- Unified global and regional prompting without hard rectangular image seams.
+- Ordinary region boxes for objects, scenery, architecture, and background areas.
+- Subject boxes with editable volumetric mannequins and early-denoising pose gating.
+- Regional LoRA routing and dedicated character-identity LoRA routing.
+- Image editing with separate reference-layout and edit-target layers.
+- Optional face detection and selected-face refinement. Face detection is not required for
+  normal generation or image editing.
+- Local uploads plus sequential Civitai and Hugging Face downloads performed on the Pod.
+- Persistent asset browsing, previews, sorting, downloads, and batch deletion.
+- JSON project files and project metadata import from generated PNG files.
+- Fixed, random, and incrementing seeds plus sequential multi-run batches.
+- High-, dynamic-, and low-VRAM modes; optional baseline-model retention on large GPUs.
+- Pod RAM diagnostics that distinguish real process memory from reclaimable Linux file cache.
+- Recoverable, idempotent job submission when a network POST times out.
+- Persistent Pod and portable network-volume workspace lifecycles.
 
-The default development command uses the non-billing development backend. The real RunPod
-backend must be selected explicitly and requires an immutable runtime image plus a Fernet
-encryption key:
+The regional implementation follows the unified latent-space prompting and LoRA-isolation
+method inherited from the original desktop K2 Region Lab. See
+[regional isolation parity](docs/regional_isolation_parity.md) for the technical comparison.
 
-### Personal computer: one-command launcher
+The optional projector is disabled by default. If it is enabled, the interface initially
+selects **FilterBypass2**. That preset and the other bundled projector vectors were transcribed
+from community reference LoRA weights; they are not official Krea defaults or recommendations.
+See [projector defaults and source provenance](docs/user_guide.md#projector-preset-defaults-and-source-provenance)
+for the exact values and pinned source links.
 
-From a checkout, the recommended single-user path is:
+## Requirements
+
+You need:
+
+- a Linux computer with a current web browser;
+- `git`;
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the local Python
+  environment;
+- a RunPod account with billing configured;
+- a restricted RunPod API key that can manage Pods and read inventory/pricing;
+- enough RunPod storage for your baseline model, text encoder, VAE, LoRAs, and outputs.
+
+Node.js is only required for frontend development. The normal launcher serves the already
+built browser interface.
+
+## Install
+
+Clone the current pose-preview branch and enter the repository:
 
 ```bash
-./scripts/k2lab-runpod \
-  --image 'ghcr.io/OWNER/k2lab-runpod-workspace@sha256:64_HEX_DIGEST'
+git clone --branch k2lab_pose https://github.com/soomrenald/k2lab_runpod.git
+cd k2lab_runpod
 ```
 
-The launcher uses `uv` to install the web dependencies when needed. It generates a persistent
-Fernet key, creates a SQLite control-plane database, serves the bundled React interface and API
-at `http://127.0.0.1:8000`, and opens the browser. The image digest is saved, so subsequent runs
-are just:
+On the first launch, provide both the immutable workspace image and its matching version:
+
+```bash
+./scripts/k2lab-runpod --image 'ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:71d034c346a5a2c1bb21a90df507d9a0b2dfb3f3e718e5380a9526e29b65b2c5' --image-version '0.2.0-pose.2'
+```
+
+Keep that command on one line. The launcher:
+
+- creates a private state directory;
+- generates a local encryption key;
+- creates the local database;
+- saves the immutable image selection for later launches;
+- opens `http://127.0.0.1:8000`;
+- writes a persistent control-plane log.
+
+Future launches only need:
 
 ```bash
 ./scripts/k2lab-runpod
 ```
 
-Runtime and access logs are retained at
-`${XDG_STATE_HOME:-~/.local/state}/k2-region-lab/control-plane.log`. If the app is already
-running, launching the command again follows that log instead of attempting to start a second
-server on port 8000. Pressing `Ctrl+C` in the follower stops only the log view. Pass
-`--no-follow` to report the existing instance and exit.
+If K2 is already running, launching it again follows the existing log instead of trying to
+start a second server. Pressing `Ctrl+C` in that follower stops only the log view.
 
-By default, configuration, encrypted credentials, workspace records, and provider-resource
-mappings are stored under `${XDG_STATE_HOME:-~/.local/state}/k2-region-lab`. Use `--state-dir`
-to select another private directory, `--port` to change the loopback port, or `--no-open` to
-leave the browser closed. Back up `credential.key` together with `state.sqlite3`; losing the key
-makes the stored RunPod credential unreadable.
+## First-time setup
 
-Local mode is intentionally bound to `127.0.0.1`, disables proxy-header trust, rejects
-non-loopback clients and unrecognized Host headers, and requires a same-origin browser for
-mutations. Do not forward or publicly proxy its port. The workspace image must be public and
-must contain this repository's versioned agent. The release workflow in
-`.github/workflows/workspace-image.yml` publishes that image when a version tag is pushed; copy
-the resulting GHCR `image@sha256:digest` value into the first-run command. Until an image has
-actually been published, there is no valid default digest to embed safely.
+1. Create a restricted user-owned API key in RunPod.
+2. Paste it into **RunPod account** and choose **Validate and continue**.
+3. Choose a **Persistent Pod** or **Portable workspace**.
+4. Select one or more GPUs in preference order.
+5. Set storage, idle-stop, and session-limit values.
+6. Review the live cost estimate and create the workspace.
+7. Wait until the workspace, agent, storage, and GPU readiness indicators are green.
+8. Open **Transfers** or **Assets** to install the required model files.
+9. Open **Setup** and select the diffusion model, text encoder, and VAE.
+10. Enter a prompt and choose **Generate image**.
 
-After the browser opens, create a restricted user-owned RunPod key, paste it into **RunPod
-account**, and choose **Validate and continue**. Select a Persistent Pod or portable network
-volume, order the GPU fallbacks, set the storage and idle timeout, review the cost, and create
-the workspace. This can create billable resources.
+The face detector shown in Setup is optional and is used only by **Faces** tools.
 
-### Hosted deployment
+## Required model files
 
-```bash
-export K2LAB_WEB_BACKEND=runpod
-export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
-export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
-export K2LAB_RUNPOD_IMAGE_DIGEST="registry.example/k2lab@sha256:<64-hex-digest>"
-export K2LAB_RUNPOD_IMAGE_VERSION="0.2.0"
-export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
-export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
-export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"
-uv run k2lab-web
+Normal Krea 2 generation requires compatible files for:
+
+- the Krea 2 diffusion/transformer model;
+- the text encoder;
+- the VAE.
+
+LoRAs and upscalers are optional. Use **Transfers** to inspect and download files from Civitai
+or Hugging Face directly on the Pod, or use **Assets** to upload local files. Select the exact
+baseline files in **Setup** before generating.
+
+K2 does not bundle copyrighted model weights and does not bypass provider access controls.
+Only download files you are authorized to use.
+
+## Basic generation workflow
+
+1. Describe the whole image in **Prompt → Global prompt**.
+2. Use **Draw region** for objects/backgrounds or **Draw subject** for a person with a
+   mannequin.
+3. Select each box and enter its regional prompt.
+4. Add LoRAs in **LoRAs**, then choose global, regional, or character-identity routing.
+5. Start with the default regional guidance values.
+6. Open **Preview unified prompt** to verify subject count and front-to-back order.
+7. Choose **Generate image**.
+8. The newest completed output appears on the canvas and at the top of
+   **Assets → Outputs**.
+
+Pose gating is optional. A subject box may be used for character prompting without enabling
+the global mannequin gate.
+
+## Data, billing, and deletion
+
+- **Stop GPU now** stops compute billing but keeps persistent storage billing.
+- Stopping a Persistent Pod retains its attached volume.
+- Stopping a Portable workspace terminates its temporary Pod and retains its network volume.
+- Deleting a Persistent Pod workspace permanently deletes its regular volume.
+- K2 deliberately retains portable network volumes when deleting an application workspace.
+  Delete those separately in RunPod only after verifying a backup.
+- **No time limit** keeps a Pod running and billing until you stop it manually.
+- Interruptible compute may stop without notice.
+
+See [RunPod workspace operations](docs/runpod_workspace_operations.md) before migrating or
+deleting storage.
+
+## Local files and logs
+
+The default local state directory is:
+
+```text
+~/.local/state/k2-region-lab
 ```
 
-Generate the Fernet value once with `Fernet.generate_key()`, store it in a secret manager,
-and reuse it after every restart. Rotating or losing it makes existing provider credentials
-unreadable. SQLite (`sqlite+aiosqlite:////absolute/path`) is supported for isolated local
-tests, while PostgreSQL is the production store.
+Important files include:
 
-The RunPod backend refuses to start without the hosted security settings above. Deploy it
-behind a TLS authentication proxy that removes all inbound `X-K2-*` headers, completes
-identity-provider login/MFA, and then injects `X-K2-Authenticated-User`,
-`X-K2-Authenticated-MFA: true`, and `X-K2-Proxy-Secret` on the session-bootstrap request.
-The allowed subject makes this deployment single-account by design. The control plane then
-uses a rotating opaque `Secure`, `HttpOnly`, `SameSite=Strict` browser session plus a
-double-submit CSRF token, strict Origin checks, request bounds, and endpoint-class rate
-limits. Do not expose the Uvicorn port directly to the internet.
+- `config.json` — saved immutable image digest and version;
+- `credential.key` — encryption key for stored credentials;
+- `state.sqlite3` — workspace and operation records;
+- `control-plane.log` — local runtime and HTTP log.
 
-This mode can create billable Pods. Workspace records, leases, encrypted credentials,
-provider-resource mappings, the operation-journal schema, and redacted audit events are
-durable. Startup reconciliation refreshes known Pod state, and a background reaper stops
-compute after lease expiry. The Pod remains in `starting` until the versioned workspace
-image and authenticated agent are available.
+Back up `credential.key` together with `state.sqlite3`. Losing the key makes the encrypted
+credentials in that database unreadable.
 
-Browser uploads currently pass through the authenticated control plane to the workspace
-agent. Upload manifests and completed chunks live on the persistent workspace volume, so
-an interrupted browser transfer can query the session and send only missing chunks.
-Provider downloads run inside the workspace, so large model files do not pass through the
-browser or control plane. Provider tokens are encrypted at rest and are forwarded in an
-agent request header for one operation; they are not written into transfer records.
+The launcher listens only on `127.0.0.1`. Do not port-forward or publicly proxy the local
+single-user control plane.
 
-Remote runs start an isolated line-delimited worker process and send the same versioned
-project data used by the local application. The agent persists redacted job events on the
-workspace volume, while the control plane persists job summaries and reconnectable event
-cursors. Raw filesystem paths, prompts, and credentials are excluded from those events;
-completed images are returned through authenticated opaque output URLs with HTTP Range
-support.
+## Updating
 
-Every browser run is first parsed as a version-21 project and compiled by the shared Python
-unified-prompt implementation. Invalid emphasis matches, LoRA scopes/triggers, duplicate region
-names, or out-of-canvas geometry fail before a GPU job is submitted. **Preview unified prompt**
-shows the exact compiled text and resolved front-to-back subject/background order.
-Generation **Advanced** settings also persist the GPU execution mode and VRAM reserve. **Auto**
-uses High VRAM on devices with at least 40 GiB and Dynamic VRAM below that threshold; users can
-override the mode and reserve per project.
+Updating has two separate parts:
 
-Volumetric pose gating is documented in
-[`docs/subject_pose_control.md`](docs/subject_pose_control.md). It uses the mannequin geometry
-already stored in each subject box and requires no ControlNet or other pose-model download.
-Ordinary region boxes remain mannequin-free and are still appropriate for objects and backgrounds.
+1. Update the local UI/control plane with `git pull --ff-only` while on `k2lab_pose`.
+2. Configure the matching immutable workspace image and `--image-version` before creating or
+   migrating a Pod.
 
-Migration temporarily bills both source and target compute plus both storage resources.
-Closing the browser does not discard progress: reopen the workspace, choose the migration
-action, and resume from the last accepted chunk. Explicit **Stop GPU now** aborts an active
-migration, terminates its temporary target Pod, unseals the source, and retains the target
-network volume. A manifest mismatch also leaves the original workspace authoritative and
-retains the network volume for inspection. The application never automatically deletes a
-network volume. See [`docs/runpod_workspace_operations.md`](docs/runpod_workspace_operations.md)
-for the lifecycle and recovery runbook.
+Stop the local control-plane process before launching it with new image arguments. Changing
+the saved image does not replace an already running Pod. Follow the
+[safe update procedure](docs/user_guide.md#updating-k2-and-a-pod-without-losing-data) for an
+existing workspace.
 
-## Local development
+Never pair an image digest with a different image-version string. K2 intentionally rejects a
+Pod whose agent version or immutable image does not match the workspace record.
 
-Install the Python and browser dependencies:
+## Documentation
+
+- [Complete user guide](docs/user_guide.md)
+- [Projector defaults and source provenance](docs/user_guide.md#projector-preset-defaults-and-source-provenance)
+- [Volumetric subject pose control](docs/subject_pose_control.md)
+- [RunPod lifecycle and migration runbook](docs/runpod_workspace_operations.md)
+- [Regional isolation parity](docs/regional_isolation_parity.md)
+- [Web/desktop parity notes](docs/web_desktop_parity.md)
+- [RunPod web workspace specification](docs/runpod_web_workspace_spec.md)
+
+## Development
+
+Install development dependencies:
 
 ```bash
 uv sync --extra dev --extra web
@@ -205,47 +225,32 @@ cd web/client
 npm install
 ```
 
-Run the control plane from the repository root:
+Run the non-billing development backend:
 
 ```bash
 uv run k2lab-web --reload
 ```
 
-In a second terminal, run the Vite client:
+In another terminal:
 
 ```bash
 cd web/client
 npm run dev
 ```
 
-Open <http://127.0.0.1:5173>. Vite proxies `/api` to
-`http://127.0.0.1:8000`. In development mode, any test key containing at least eight
-characters passes the simulated credential check. Do not use a real provider credential
-with the development backend.
+Open `http://127.0.0.1:5173`. The development backend is labelled in the interface and does
+not provision RunPod resources.
 
-## Validation
+Run validation:
 
 ```bash
-uv run pytest -q tests/test_web_control_plane.py
+uv run pytest
 cd web/client
+npm run test:project
+npm run test:ui
+npm run typecheck
 npm run build
 ```
 
-The production bundle is written to the ignored `web/client/dist/` directory.
-
-The ordinary suite never provisions a Pod. A destructive live acceptance test exists for
-a dedicated disposable RunPod account and remains skipped unless every required variable
-and this exact sentinel are provided:
-
-```bash
-export K2LAB_RUNPOD_LIVE_TESTS=I_ACCEPT_BILLING_AND_DELETION
-export K2LAB_RUNPOD_API_KEY='<restricted disposable-account key>'
-export K2LAB_RUNPOD_IMAGE_DIGEST='registry.example/k2lab@sha256:<digest>'
-export K2LAB_RUNPOD_TEST_GPU='<supported GPU ID>'
-uv run pytest -q tests/test_runpod_live_acceptance.py
-```
-
-The live suite covers both a billable persistent Pod and a portable network-volume workspace.
-It verifies upload persistence across persistent stop/start and verifies an allowlisted SHA-256
-manifest across portable Pod termination/recreation. Cleanup permanently deletes every test Pod
-and the explicitly tracked disposable network volume.
+The ordinary test suite does not create a Pod. The destructive live acceptance suite requires
+an explicit billing/deletion sentinel and a dedicated disposable RunPod account.
