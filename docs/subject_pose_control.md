@@ -17,13 +17,8 @@ leave global pose gating disabled until the user enables it.
 
 1. Choose **Draw subject** and draw a box around the intended person.
 2. Select the box. Use **Standing**, **Squatting**, or **Mirror** as a starting point.
-3. Pose the mannequin on the canvas:
-   - drag a circular joint handle for individual articulation;
-   - drag a pink diamond to move an entire arm or leg without changing its internal shape;
-   - drag the gold torso-center handle to move the torso and attached head together;
-   - drag the cream rotation handle above the torso to rotate the entire figure;
-   - drag the head’s center control to move it, or its right/bottom controls to change its
-     horizontal and vertical radii.
+3. Drag the visible body joints. Drag the head’s center control to move it; drag the right and
+   bottom controls to change its horizontal and vertical radii.
 4. A limb may extend outside the subject box for interactions with another subject or object.
 5. Open **Advanced → Volumetric pose gating** and enable
    **Constrain generation to subject mannequins**.
