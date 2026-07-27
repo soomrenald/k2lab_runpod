@@ -45,6 +45,20 @@ class AgentCapabilities(BaseModel):
             "sigma_modes": ["automatic", "phase_weighted", "advanced"],
         }
     )
+    pose_semantic_routing: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "modes": [
+                "spatial_only",
+                "attention_isolation",
+                "prediction_composite",
+            ],
+            "subject_prompt_encoding": True,
+            "scope_aware_regional_lora": True,
+            "single_sampler_trajectory": True,
+            "multigpu_prediction_composite": False,
+        }
+    )
 
 
 class StorageStatus(BaseModel):

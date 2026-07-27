@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   GenerationSettings,
+  PoseSemanticMode,
   PoseSigmaMode,
   PoseSoftRelease,
 } from "../studioProject";
@@ -14,12 +15,14 @@ import { DraftNumberInput } from "./DraftNumberInput";
 interface Props {
   generation: GenerationSettings;
   hasEnabledMannequin: boolean;
+  subjectCount: number;
   onChange: (patch: Partial<GenerationSettings>) => void;
 }
 
 export function PoseGatingControls({
   generation,
   hasEnabledMannequin,
+  subjectCount,
   onChange,
 }: Props) {
   const hard = generation.poseHardGateSteps;
@@ -99,6 +102,29 @@ export function PoseGatingControls({
     {generation.poseGating && <>
       {!hasEnabledMannequin && <div className="memory-warning">
         Add and enable at least one subject mannequin before generating.
+      </div>}
+      <label className="field-label">Subject semantic routing</label>
+      <select
+        className="select-input"
+        value={generation.poseSemanticMode}
+        onChange={(event) => onChange({ poseSemanticMode: event.target.value as PoseSemanticMode })}
+      >
+        <option value="prediction_composite">Prediction composite — recommended</option>
+        <option value="attention_isolation">Attention isolation</option>
+        <option value="spatial_only">⚠ Spatial only — legacy diagnostic</option>
+      </select>
+      {generation.poseSemanticMode === "prediction_composite" && <p className="field-help">
+        Computes a clean subject-only prediction for every enabled mannequin during hard and soft steps, then fuses it into that subject&apos;s exclusive pose volume. Slower but strongest.
+      </p>}
+      {generation.poseSemanticMode === "attention_isolation" && <p className="field-help">
+        Uses one unified prediction but blocks scene and other-subject attention into each mannequin during gated steps. Faster, but unified text encoding can still carry leakage.
+      </p>}
+      {generation.poseSemanticMode === "spatial_only" && <div className="memory-warning">
+        Spatial only restricts where denoising occurs without restricting what the unified scene prompt generates there.
+      </div>}
+      {generation.poseSemanticMode === "prediction_composite" && <div className="semantic-forward-estimate">
+        <strong>Estimated Euler model forwards: {normal} + ({hard} + {soft}) × (1 + {subjectCount}) = {normal + (hard + soft) * (1 + subjectCount)}</strong>
+        <small>One sampler trajectory; subject predictions are evaluated sequentially.</small>
       </div>}
       <div className="number-grid pose-step-grid">
         <label><span>Hard gate steps</span><DraftNumberInput min={0} max={100} step={1} value={hard} onCommit={(value) => updateSteps("poseHardGateSteps", value)} /></label>

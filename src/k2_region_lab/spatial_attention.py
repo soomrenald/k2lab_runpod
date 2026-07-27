@@ -4,6 +4,15 @@ from typing import Any
 
 from k2_region_lab.pose_gating import PoseGateRegionBinding
 from k2_region_lab.regional_prompting import BoundRegionalPromptPlan
+from k2_region_lab.regional_prompting import PromptTokenRoleKind
+from k2_region_lab.semantic_conditioning import (
+    CURRENT_CONDITIONING_CONTEXT,
+    ConditioningScopeKind,
+    PoseSemanticMode,
+    SEMANTIC_ATTENTION_PENALTY,
+    SUBJECT_ISLAND_THRESHOLD,
+    SemanticAttentionError,
+)
 
 
 def text_region_ownership(plan: BoundRegionalPromptPlan) -> tuple[int, ...]:
@@ -69,6 +78,7 @@ class KreaSpatialAttentionOverride:
         lora_delta_adaptation: bool = False,
         lora_delta_adaptation_gain: float = 0.35,
         pose_gate_binding: PoseGateRegionBinding | None = None,
+        semantic_mode: PoseSemanticMode | str = PoseSemanticMode.SPATIAL_ONLY,
     ) -> None:
         self.plan = plan
         self.outside_penalty_ratio = outside_penalty_ratio
@@ -80,6 +90,7 @@ class KreaSpatialAttentionOverride:
         self.lora_delta_adaptation = lora_delta_adaptation
         self.lora_delta_adaptation_gain = lora_delta_adaptation_gain
         self.pose_gate_binding = pose_gate_binding
+        self.semantic_mode = PoseSemanticMode(semantic_mode)
         self.expected_sequence_length = (
             plan.text_token_count + plan.image_token_count
         )
@@ -89,6 +100,8 @@ class KreaSpatialAttentionOverride:
         self.image_owners = image_region_ownership(plan)
         self.step_scale = 1.0
         self.region_scales: dict[str, float] = {}
+        self.semantic_hard_blocks = 0
+        self.semantic_soft_blocks = 0
         self._cache: dict[tuple[Any, ...], Any] = {}
 
     def __call__(self, original, *args, **kwargs):
@@ -96,9 +109,16 @@ class KreaSpatialAttentionOverride:
         k = args[1]
         query_length = int(q.shape[-2])
         key_length = int(k.shape[-2])
+        execution_context = CURRENT_CONDITIONING_CONTEXT.get()
+        scoped_text_count = (
+            execution_context.text_token_count
+            if execution_context is not None
+            and execution_context.scope.kind == ConditioningScopeKind.SUBJECT
+            else self.plan.text_token_count
+        )
         main_stream = (
-            query_length == self.expected_sequence_length
-            and key_length == self.expected_sequence_length
+            query_length == scoped_text_count + self.plan.image_token_count
+            and key_length == scoped_text_count + self.plan.image_token_count
         )
         # Krea folds prompt tokens into the batch while its first two text-fusion
         # blocks attend over the checkpoint's 12 Qwen layer states.
@@ -109,26 +129,44 @@ class KreaSpatialAttentionOverride:
             and int(q.shape[0]) % self.plan.text_token_count == 0
         )
         text_refiner = (
-            query_length == self.plan.text_token_count
-            and key_length == self.plan.text_token_count
+            query_length == scoped_text_count
+            and key_length == scoped_text_count
             and not folded_layerwise_text
         )
         if not main_stream and not text_refiner:
             return original(*args, **kwargs)
 
         if kwargs.get("mask") is not None:
-            raise RuntimeError(
+            error_type = (
+                SemanticAttentionError
+                if self.semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                else RuntimeError
+            )
+            raise error_type(
                 "Krea chunked regional attention requires an unmasked stream"
             )
         if not kwargs.get("skip_reshape", False) or q.ndim != 4:
-            raise RuntimeError(
+            error_type = (
+                SemanticAttentionError
+                if self.semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                else RuntimeError
+            )
+            raise error_type(
                 "Krea chunked spatial attention expected head-shaped query tensors"
             )
 
         v = args[2]
         original_head_dim = q.shape[-1]
         scale = float(kwargs.get("scale", original_head_dim**-0.5))
-        output = self._chunked_attention(q, k, v, scale, main_stream=main_stream)
+        output = self._chunked_attention(
+            q,
+            k,
+            v,
+            scale,
+            main_stream=main_stream,
+            text_count=scoped_text_count,
+            execution_context=execution_context,
+        )
         if main_stream:
             self.matched_calls += 1
         else:
@@ -137,7 +175,17 @@ class KreaSpatialAttentionOverride:
             return output
         return output.transpose(1, 2).reshape(output.shape[0], output.shape[2], -1)
 
-    def _chunked_attention(self, q, k, v, scale: float, *, main_stream: bool):
+    def _chunked_attention(
+        self,
+        q,
+        k,
+        v,
+        scale: float,
+        *,
+        main_stream: bool,
+        text_count: int,
+        execution_context,
+    ):
         import torch
 
         output = torch.empty(
@@ -146,22 +194,164 @@ class KreaSpatialAttentionOverride:
             device=v.device,
         )
         key_transposed = k.transpose(-2, -1)
-        pair_fields, emphasis_fields, text_owners, image_owners = self._pair_fields(q)
+        full_scope = (
+            execution_context is None
+            or execution_context.scope.kind == ConditioningScopeKind.FULL
+        )
+        if full_scope:
+            pair_fields, emphasis_fields, text_owners, image_owners = (
+                self._pair_fields(q)
+            )
+        else:
+            pair_fields, emphasis_fields = (), ()
+            text_owners = image_owners = None
         for start in range(0, q.shape[-2], self.query_chunk_size):
             end = min(q.shape[-2], start + self.query_chunk_size)
             scores = torch.matmul(q[:, :, start:end], key_transposed) * scale
             scores = scores.float()
-            if main_stream:
+            self._apply_semantic_partition(
+                scores,
+                start,
+                end,
+                main_stream=main_stream,
+                text_count=text_count,
+                execution_context=execution_context,
+                reference=q,
+            )
+            if main_stream and full_scope:
                 self._partition_regional_stream(
                     scores, start, end, text_owners, image_owners
                 )
                 self._add_spatial_bias(scores, start, end, pair_fields, emphasis_fields)
-            else:
+            elif not main_stream and full_scope:
                 self._partition_regional_text(scores, start, end, text_owners)
             probabilities = torch.softmax(scores, dim=-1).to(v.dtype)
             output[:, :, start:end] = torch.matmul(probabilities, v)
             del scores, probabilities
         return output
+
+    def _apply_semantic_partition(
+        self,
+        scores,
+        start: int,
+        end: int,
+        *,
+        main_stream: bool,
+        text_count: int,
+        execution_context,
+        reference,
+    ) -> None:
+        import torch
+
+        gate = (
+            self.pose_gate_binding.gate_strength
+            if self.pose_gate_binding is not None
+            else 0.0
+        )
+        subject_scope = (
+            execution_context is not None
+            and execution_context.scope.kind == ConditioningScopeKind.SUBJECT
+        )
+        if gate <= 0.0:
+            return
+        if subject_scope:
+            if self.semantic_mode != PoseSemanticMode.PREDICTION_COMPOSITE:
+                return
+            region_id = execution_context.scope.region_id
+            hard_field = self.pose_gate_binding.hard_image_fields.get(region_id)
+            if hard_field is None:
+                raise SemanticAttentionError(
+                    f"semantic attention has no ownership field for {region_id!r}"
+                )
+            text_domains = torch.full(
+                (text_count,), 10, dtype=torch.int16, device=reference.device
+            )
+            if main_stream:
+                image_domains = torch.tensor(
+                    [
+                        10 if value >= SUBJECT_ISLAND_THRESHOLD else 2
+                        for value in hard_field
+                    ],
+                    dtype=torch.int16,
+                    device=reference.device,
+                )
+                domains = torch.cat((text_domains, image_domains))
+            else:
+                domains = text_domains
+            query_domains = domains[start:end]
+            allowed = query_domains.reshape(-1, 1) == domains.reshape(1, -1)
+        else:
+            if self.semantic_mode != PoseSemanticMode.ATTENTION_ISOLATION:
+                return
+            owner_by_region: dict[str, int] = {}
+            owner = 0
+            for span in self.plan.spans:
+                if span.spatial_role == "subject":
+                    owner += 1
+                    owner_by_region[span.region_id] = owner
+            role_codes = {
+                PromptTokenRoleKind.SPECIAL: 0,
+                PromptTokenRoleKind.SHARED_VISUAL: 1,
+                PromptTokenRoleKind.SCENE: 2,
+                PromptTokenRoleKind.RELATIONSHIP: 3,
+                PromptTokenRoleKind.OTHER_REGION: 4,
+            }
+            text_domains = torch.tensor(
+                [
+                    (
+                        10 + owner_by_region.get(role.region_id, 0)
+                        if role.kind == PromptTokenRoleKind.SUBJECT
+                        else role_codes[role.kind]
+                    )
+                    for role in self.plan.token_roles
+                ],
+                dtype=torch.int16,
+                device=reference.device,
+            )
+            if len(text_domains) != text_count:
+                raise SemanticAttentionError(
+                    "semantic attention token roles do not match full conditioning"
+                )
+            if main_stream:
+                current_image_owners = self._current_image_owners()
+                image_domains = torch.tensor(
+                    [10 + value if value > 0 else 2 for value in current_image_owners],
+                    dtype=torch.int16,
+                    device=reference.device,
+                )
+                domains = torch.cat((text_domains, image_domains))
+            else:
+                domains = text_domains
+            query_domains = domains[start:end]
+            subject_queries = query_domains >= 10
+            same_subject = query_domains.reshape(-1, 1) == domains.reshape(1, -1)
+            shared_or_special = domains.reshape(1, -1) <= 1
+            non_subject = domains.reshape(1, -1) < 10
+            allowed = torch.where(
+                subject_queries.reshape(-1, 1),
+                same_subject | shared_or_special,
+                non_subject,
+            )
+            shared_queries = query_domains <= 1
+            allowed = torch.where(
+                shared_queries.reshape(-1, 1),
+                shared_or_special,
+                allowed,
+            )
+        blocked = ~allowed
+        blocked_count = int(blocked.sum().item())
+        if gate >= 1.0:
+            scores.masked_fill_(
+                blocked.reshape(1, 1, end - start, -1),
+                float("-inf"),
+            )
+            self.semantic_hard_blocks += blocked_count
+        else:
+            scores.add_(
+                blocked.to(scores.dtype).reshape(1, 1, end - start, -1),
+                alpha=-SEMANTIC_ATTENTION_PENALTY * gate,
+            )
+            self.semantic_soft_blocks += blocked_count
 
     def _pair_fields(self, reference):
         import torch
@@ -399,7 +589,24 @@ class KreaSpatialAttentionOverride:
             "text_partition": "subject_keys_private_to_region",
             "subject_box_exclusion": True,
             "cross_modal_partition": "subject_text_private_to_box",
-            "image_to_image_attention": "unmodified",
+            "image_to_image_attention": (
+                "semantic_islands"
+                if self.semantic_mode
+                in {
+                    PoseSemanticMode.ATTENTION_ISOLATION,
+                    PoseSemanticMode.PREDICTION_COMPOSITE,
+                }
+                else "unmodified"
+            ),
+            "semantic_mode": self.semantic_mode.value,
+            "semantic_hard_blocks": self.semantic_hard_blocks,
+            "semantic_soft_blocks": self.semantic_soft_blocks,
+            "semantic_attention_penalty": SEMANTIC_ATTENTION_PENALTY,
+            "image_to_image_isolation": self.semantic_mode
+            in {
+                PoseSemanticMode.ATTENTION_ISOLATION,
+                PoseSemanticMode.PREDICTION_COMPOSITE,
+            },
             "lora_delta_adaptation": self.lora_delta_adaptation,
             "lora_delta_adaptation_gain": self.lora_delta_adaptation_gain,
             "final_region_scales": dict(self.region_scales),

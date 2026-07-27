@@ -1,16 +1,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+from hashlib import sha256
 from math import hypot
 from numbers import Integral
-from typing import Callable
+from typing import Callable, Mapping
 
 from k2_region_lab.pose import volumetric_subject_pose_from_document
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
+from k2_region_lab.semantic_conditioning import (
+    BoundSubjectPrompt,
+    SubjectConditioningCompileError,
+)
 
 
 BACKEND = "krea-unified-spatial-attention-v6"
 GLOBAL_EMPHASIS_SCOPE = "__global__"
+
+
+class PromptTokenRoleKind(StrEnum):
+    SPECIAL = "special"
+    SHARED_VISUAL = "shared_visual"
+    SCENE = "scene"
+    RELATIONSHIP = "relationship"
+    SUBJECT = "subject"
+    OTHER_REGION = "other_region"
+
+
+@dataclass(frozen=True, slots=True)
+class PromptTokenRole:
+    kind: PromptTokenRoleKind
+    region_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +124,9 @@ class RegionalPromptPlan:
     image_token_width: int
     image_token_height: int
     prompt: str
+    shared_visual_character_span: tuple[int, int] | None
+    scene_character_span: tuple[int, int] | None
+    relationship_character_span: tuple[int, int] | None
     strength: float
     outside_penalty: float
     falloff_pixels: float
@@ -219,6 +243,11 @@ class RegionalPromptPlan:
             emphases=emphases,
             character_identities=character_identities,
             face_identities=face_identities,
+            token_roles=_bind_prompt_token_roles(
+                self,
+                prompt_prefix_token_count,
+                text_token_count,
+            ),
             backend=self.backend,
         )
 
@@ -226,6 +255,21 @@ class RegionalPromptPlan:
         return {
             "backend": self.backend,
             "compiled_prompt": self.prompt,
+            "shared_visual_character_span": (
+                list(self.shared_visual_character_span)
+                if self.shared_visual_character_span is not None
+                else None
+            ),
+            "scene_character_span": (
+                list(self.scene_character_span)
+                if self.scene_character_span is not None
+                else None
+            ),
+            "relationship_character_span": (
+                list(self.relationship_character_span)
+                if self.relationship_character_span is not None
+                else None
+            ),
             "strength": self.strength,
             "outside_penalty": self.outside_penalty,
             "falloff_pixels": self.falloff_pixels,
@@ -302,6 +346,7 @@ class BoundRegionalPromptPlan:
     emphases: tuple[TextTokenEmphasis, ...] = ()
     character_identities: tuple[CharacterIdentityTokenSpans, ...] = ()
     face_identities: tuple[FaceIdentityTokenSpan, ...] = ()
+    token_roles: tuple[PromptTokenRole, ...] = ()
     backend: str = BACKEND
 
     def summary(self) -> dict[str, object]:
@@ -315,6 +360,10 @@ class BoundRegionalPromptPlan:
             "text_token_count": self.text_token_count,
             "image_token_count": self.image_token_count,
             "region_count": len(self.spans),
+            "token_role_counts": {
+                role.value: sum(token.kind == role for token in self.token_roles)
+                for role in PromptTokenRoleKind
+            },
             "emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -352,12 +401,278 @@ class BoundRegionalPromptPlan:
         }
 
 
+def _token_span(
+    prompt: str,
+    character_span: tuple[int, int] | None,
+    prompt_prefix_token_count: Callable[[str], int],
+) -> tuple[int, int] | None:
+    if character_span is None:
+        return None
+    start, end = character_span
+    return (
+        prompt_prefix_token_count(prompt[:start]),
+        prompt_prefix_token_count(prompt[:end]),
+    )
+
+
+def _bind_prompt_token_roles(
+    plan: RegionalPromptPlan,
+    prompt_prefix_token_count: Callable[[str], int],
+    text_token_count: int,
+) -> tuple[PromptTokenRole, ...]:
+    roles = [PromptTokenRole(PromptTokenRoleKind.SPECIAL)] * text_token_count
+
+    def assign(
+        character_span: tuple[int, int] | None,
+        role: PromptTokenRole,
+    ) -> None:
+        span = _token_span(plan.prompt, character_span, prompt_prefix_token_count)
+        if span is None:
+            return
+        start, end = span
+        if start < 0 or end > text_token_count or end < start:
+            raise ValueError("prompt token role exceeds the conditioning sequence")
+        roles[start:end] = [role] * (end - start)
+
+    assign(
+        plan.shared_visual_character_span,
+        PromptTokenRole(PromptTokenRoleKind.SHARED_VISUAL),
+    )
+    assign(
+        plan.scene_character_span,
+        PromptTokenRole(PromptTokenRoleKind.SCENE),
+    )
+    for region in plan.regions:
+        assign(
+            region.character_span,
+            PromptTokenRole(
+                PromptTokenRoleKind.SUBJECT
+                if region.spatial_role == "subject"
+                else PromptTokenRoleKind.OTHER_REGION,
+                region.region_id,
+            ),
+        )
+    assign(
+        plan.relationship_character_span,
+        PromptTokenRole(PromptTokenRoleKind.RELATIONSHIP),
+    )
+    return tuple(roles)
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectPromptEmphasis:
+    phrase: str
+    strength: float
+    character_span: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectConditioningPromptPlan:
+    region_id: str
+    region_name: str
+    prompt: str
+    shared_visual_character_span: tuple[int, int] | None
+    subject_character_span: tuple[int, int]
+    face_identity_character_span: tuple[int, int] | None
+    character_trigger_character_spans: Mapping[
+        str, tuple[tuple[int, int], ...]
+    ]
+    emphases: tuple[SubjectPromptEmphasis, ...]
+
+    def bind_tokens(
+        self,
+        prompt_prefix_token_count: Callable[[str], int],
+        *,
+        conditioning_text_token_count: int | None = None,
+    ) -> BoundSubjectPrompt:
+        text_token_count = (
+            prompt_prefix_token_count(self.prompt)
+            if conditioning_text_token_count is None
+            else conditioning_text_token_count
+        )
+        subject_span = _token_span(
+            self.prompt, self.subject_character_span, prompt_prefix_token_count
+        )
+        if subject_span is None or subject_span[1] <= subject_span[0]:
+            raise SubjectConditioningCompileError(
+                f"subject {self.region_name!r} owns no conditioning tokens"
+            )
+        shared_span = _token_span(
+            self.prompt,
+            self.shared_visual_character_span,
+            prompt_prefix_token_count,
+        )
+        face_span = _token_span(
+            self.prompt,
+            self.face_identity_character_span,
+            prompt_prefix_token_count,
+        )
+        trigger_spans = {
+            trigger: tuple(
+                span
+                for character_span in character_spans
+                if (
+                    span := _token_span(
+                        self.prompt, character_span, prompt_prefix_token_count
+                    )
+                )
+                is not None
+            )
+            for trigger, character_spans in self.character_trigger_character_spans.items()
+        }
+        emphasis_spans = tuple(
+            TextTokenEmphasis(
+                scope_id=self.region_id,
+                phrase=emphasis.phrase,
+                strength=emphasis.strength,
+                start=prompt_prefix_token_count(
+                    self.prompt[: emphasis.character_span[0]]
+                ),
+                end=prompt_prefix_token_count(
+                    self.prompt[: emphasis.character_span[1]]
+                ),
+                image_token_field=(),
+            )
+            for emphasis in self.emphases
+        )
+        all_ends = [
+            subject_span[1],
+            *(span[1] for spans in trigger_spans.values() for span in spans),
+            *(emphasis.end for emphasis in emphasis_spans),
+        ]
+        if max(all_ends, default=0) > text_token_count:
+            raise SubjectConditioningCompileError(
+                f"subject {self.region_name!r} token span exceeds its conditioning"
+            )
+        return BoundSubjectPrompt(
+            region_id=self.region_id,
+            region_name=self.region_name,
+            prompt=self.prompt,
+            text_token_count=text_token_count,
+            shared_visual_span=shared_span,
+            subject_span=subject_span,
+            face_identity_span=face_span,
+            character_trigger_spans=trigger_spans,
+            emphasis_spans=emphasis_spans,
+            prompt_sha256=sha256(self.prompt.encode("utf-8")).hexdigest(),
+        )
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "region_id": self.region_id,
+            "region_name": self.region_name,
+            "prompt": self.prompt,
+            "prompt_sha256": sha256(self.prompt.encode("utf-8")).hexdigest(),
+        }
+
+
+def compile_subject_conditioning_prompt(
+    *,
+    shared_visual_prompt: str,
+    region: RegionDefinition,
+    identity_triggers: tuple[str, ...] = (),
+    emphases: tuple[PromptEmphasis, ...] = (),
+) -> SubjectConditioningPromptPlan:
+    if (
+        not region.enabled
+        or region.region_type != "subject"
+        or region.pose is None
+        or not region.pose.enabled
+    ):
+        raise SubjectConditioningCompileError(
+            f"region {region.name!r} is not an enabled posed subject"
+        )
+    face = _clean_description(region.face_identity_prompt)
+    description = _clean_description(region.prompt)
+    if not face and not description:
+        raise SubjectConditioningCompileError(
+            f"posed subject {region.name!r} requires a subject or face-identity prompt"
+        )
+
+    prompt = ""
+    shared_span: tuple[int, int] | None = None
+    shared = _sentence(shared_visual_prompt.strip())
+    if shared:
+        shared_span = (0, len(shared))
+        prompt = shared + "\n\n"
+    prompt += "Generate one coherent visible person described as:\n"
+    subject_start = len(prompt)
+    face_span: tuple[int, int] | None = None
+    if face:
+        face_span = (len(prompt), len(prompt) + len(face))
+        prompt += face
+    if face and description:
+        prompt += "\n"
+    description_start = len(prompt)
+    prompt += description
+    subject_end = len(prompt)
+    prompt += (
+        "\n\nUse the described action, posture, clothing, held items, and body "
+        "orientation. Do not generate unrelated scenery, architecture, furniture, "
+        "landscape, background objects, text, borders, guides, or additional people "
+        "in this subject-conditioning branch."
+    )
+
+    trigger_spans: dict[str, tuple[tuple[int, int], ...]] = {}
+    for trigger in dict.fromkeys(identity_triggers):
+        clean_trigger = trigger.strip()
+        if not clean_trigger:
+            raise SubjectConditioningCompileError(
+                "character identity trigger must not be empty"
+            )
+        instruction = _character_identity_instruction(clean_trigger)
+        prompt += "\n\n"
+        instruction_start = len(prompt)
+        prompt += instruction
+        trigger_spans[clean_trigger] = tuple(
+            (
+                instruction_start + offset,
+                instruction_start + offset + len(clean_trigger),
+            )
+            for offset in _all_occurrences(instruction, clean_trigger)
+        )
+
+    subject_emphases: list[SubjectPromptEmphasis] = []
+    for emphasis in emphases:
+        if emphasis.scope_id != region.region_id:
+            continue
+        try:
+            source_offset = _nth_occurrence(
+                region.prompt, emphasis.phrase, emphasis.occurrence
+            )
+        except ValueError as error:
+            raise SubjectConditioningCompileError(
+                f"could not bind emphasis {emphasis.phrase!r} in posed subject "
+                f"{region.name!r}"
+            ) from error
+        leading_whitespace = len(region.prompt) - len(region.prompt.lstrip())
+        start = description_start + source_offset - leading_whitespace
+        subject_emphases.append(
+            SubjectPromptEmphasis(
+                phrase=emphasis.phrase,
+                strength=emphasis.strength,
+                character_span=(start, start + len(emphasis.phrase)),
+            )
+        )
+    return SubjectConditioningPromptPlan(
+        region_id=region.region_id,
+        region_name=region.name,
+        prompt=prompt,
+        shared_visual_character_span=shared_span,
+        subject_character_span=(subject_start, subject_end),
+        face_identity_character_span=face_span,
+        character_trigger_character_spans=trigger_spans,
+        emphases=tuple(subject_emphases),
+    )
+
+
 def compile_regional_prompt_plan(
     width: int,
     height: int,
     global_prompt: str,
     regions: tuple[RegionDefinition, ...],
     *,
+    shared_visual_prompt: str = "",
     strength: float = 1.0,
     outside_penalty: float = 1.0,
     falloff_pixels: float = 128.0,
@@ -400,7 +715,19 @@ def compile_regional_prompt_plan(
     )
     fields = _apply_subject_competition(raw_fields, roles) if subject_competition else raw_fields
 
-    prompt = _sentence(global_prompt.strip())
+    prompt = ""
+    shared_visual_character_span: tuple[int, int] | None = None
+    shared_visual = _sentence(shared_visual_prompt.strip())
+    if shared_visual:
+        shared_visual_character_span = (0, len(shared_visual))
+        prompt = shared_visual
+    scene_character_span: tuple[int, int] | None = None
+    scene = _sentence(global_prompt.strip())
+    if scene:
+        if prompt:
+            prompt += "\n"
+        scene_character_span = (len(prompt), len(prompt) + len(scene))
+        prompt += scene
     compiled: list[UnifiedPromptRegion] = []
     resolved_identities: list[ResolvedCharacterIdentity] = []
     resolved_face_identities: list[ResolvedFaceIdentityPrompt] = []
@@ -473,8 +800,15 @@ def compile_regional_prompt_plan(
         )
 
     relationship_clause = _relationship_clause(compiled, width, height)
+    relationship_character_span: tuple[int, int] | None = None
     if relationship_clause:
-        prompt += f"\n{relationship_clause}"
+        if prompt:
+            prompt += "\n"
+        relationship_character_span = (
+            len(prompt),
+            len(prompt) + len(relationship_clause),
+        )
+        prompt += relationship_clause
     resolved_emphases = _resolve_prompt_emphases(
         prompt,
         compiled,
@@ -488,6 +822,9 @@ def compile_regional_prompt_plan(
         image_token_width=geometry.patch_width,
         image_token_height=geometry.patch_height,
         prompt=prompt,
+        shared_visual_character_span=shared_visual_character_span,
+        scene_character_span=scene_character_span,
+        relationship_character_span=relationship_character_span,
         strength=float(strength),
         outside_penalty=float(outside_penalty),
         falloff_pixels=float(falloff_pixels),

@@ -65,6 +65,8 @@ settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;
 settings.generation.batchCount = 4;
 settings.generation.poseGating = true;
+settings.generation.poseSemanticMode = "attention_isolation";
+settings.generation.sharedVisualPrompt = "cinematic 35 mm photography";
 settings.generation.poseHardGateSteps = 3;
 settings.generation.poseSoftGateSteps = 2;
 settings.generation.poseSigmaMode = "phase_weighted";
@@ -122,14 +124,25 @@ assert.deepEqual(second.regions.map((region) => [region.id, region.priority, reg
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
 assert.equal(second.regions[0].region_type, "subject");
-assert.equal(second.version, 21);
+assert.equal(second.version, 22);
 assert.equal(second.generation.pose_gating_enabled, true);
+assert.equal(second.generation.pose_semantic_mode, "attention_isolation");
+assert.equal(second.generation.shared_visual_prompt, "cinematic 35 mm photography");
 assert.equal(second.generation.pose_hard_gate_steps, 3);
 assert.equal(second.regions[0].pose.format, "k2-volumetric-pose-v1");
 assert.equal(Object.keys(second.regions[0].pose.joints).length, 13);
 assert.ok(second.regions[0].pose.head.rx > 0);
 assert.equal(second.regions[1].region_type, "region");
 assert.equal(second.regions[1].pose, null);
+
+const version21 = structuredClone(first);
+version21.version = 21;
+delete version21.generation.pose_semantic_mode;
+delete version21.generation.shared_visual_prompt;
+const migrated21 = loadStudioProjectDocument(version21);
+assert.equal(migrated21.settings.generation.poseSemanticMode, "spatial_only");
+assert.equal(migrated21.settings.generation.sharedVisualPrompt, "");
+assert.ok(migrated21.migrationNotices.some((notice) => notice.includes("subject-semantic pose routing")));
 
 const version20 = structuredClone(first);
 version20.version = 20;

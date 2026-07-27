@@ -35,6 +35,7 @@ from k2_region_lab.regional_prompting import (
     PromptEmphasis,
     prompt_emphases_from_payload,
 )
+from k2_region_lab.semantic_conditioning import PoseSemanticMode
 from k2_region_lab.regions import PixelBox, RegionDefinition
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
@@ -46,10 +47,16 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 21
+PROJECT_VERSION = 22
 LEGACY_POSE_MIGRATION_NOTICE = (
     "Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating "
     "is available but remains disabled until enabled."
+)
+SUBJECT_SEMANTIC_MIGRATION_NOTICE = (
+    "This project was created before subject-semantic pose routing. "
+    "It was opened in Spatial only mode to preserve its previous behavior. "
+    "Select Prediction composite to bind gated mannequin cells to each "
+    "subject's own prompt and LoRAs."
 )
 SUPPORTED_PROJECT_VERSIONS = {
     1,
@@ -70,6 +77,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     17,
     19,
     20,
+    21,
     PROJECT_VERSION,
 }
 
@@ -141,6 +149,7 @@ class ProjectState:
     canvas_width: int
     canvas_height: int
     global_prompt: str = ""
+    shared_visual_prompt: str = ""
     steps: int = 8
     sampler: str = DEFAULT_SAMPLER
     scheduler: str = DEFAULT_SCHEDULER
@@ -159,6 +168,7 @@ class ProjectState:
     regional_lora_delta_adaptation: bool = False
     regional_lora_delta_adaptation_gain: float = 0.35
     pose_gating_enabled: bool = False
+    pose_semantic_mode: str = PoseSemanticMode.PREDICTION_COMPOSITE.value
     pose_hard_gate_steps: int = 2
     pose_soft_gate_steps: int = 2
     pose_soft_gate_schedule: str = SoftGateSchedule.COSINE.value
@@ -201,6 +211,9 @@ class ProjectState:
             raise ValueError("canvas dimensions must be between 256 and 4096 pixels")
         if not 1 <= self.steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        if len(self.global_prompt) > 100_000 or len(self.shared_visual_prompt) > 100_000:
+            raise ValueError("scene and shared visual prompts must not exceed 100000 characters")
+        semantic_mode = PoseSemanticMode(self.pose_semantic_mode)
         validate_sampler(self.sampler)
         validate_scheduler(self.scheduler)
         if self.seed < 0:
@@ -290,6 +303,31 @@ class ProjectState:
         names = [region.name.casefold() for region in self.regions]
         if any(not name.strip() for name in names) or len(names) != len(set(names)):
             raise ValueError("project region names must be non-empty and unique")
+        if (
+            semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+            and self.pose_gating_enabled
+            and self.pose_hard_gate_steps + self.pose_soft_gate_steps > 0
+        ):
+            posed_subjects = [
+                region
+                for region in self.regions
+                if region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+            ]
+            if not posed_subjects:
+                raise ValueError(
+                    "Prediction composite requires at least one enabled posed subject"
+                )
+            if any(
+                not region.prompt.strip() and not region.face_identity_prompt.strip()
+                for region in posed_subjects
+            ):
+                raise ValueError(
+                    "every Prediction composite subject requires descriptive or "
+                    "face-identity text"
+                )
         known_ids = set(region_ids)
         for emphasis in self.prompt_emphases:
             if emphasis.scope_id != GLOBAL_EMPHASIS_SCOPE and emphasis.scope_id not in known_ids:
@@ -329,6 +367,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
         "canvas": {"width": state.canvas_width, "height": state.canvas_height},
         "generation": {
             "global_prompt": state.global_prompt,
+            "shared_visual_prompt": state.shared_visual_prompt,
             "steps": state.steps,
             "sampler": state.sampler,
             "scheduler": state.scheduler,
@@ -347,6 +386,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
             "regional_lora_delta_adaptation_gain": (state.regional_lora_delta_adaptation_gain),
             "pose_gating_enabled": state.pose_gating_enabled,
+            "pose_semantic_mode": state.pose_semantic_mode,
             "pose_hard_gate_steps": state.pose_hard_gate_steps,
             "pose_soft_gate_steps": state.pose_soft_gate_steps,
             "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
@@ -621,14 +661,19 @@ def project_state(document: dict[str, Any]) -> ProjectState:
     )
     background = document.get("background_image")
     runtime = dict(document.get("runtime", {}))
-    if source_version == 20:
+    if source_version in {20, 21}:
         notices = [
             str(item)
             for item in runtime.get("migration_notices", [])
             if isinstance(item, str)
         ]
-        if LEGACY_POSE_MIGRATION_NOTICE not in notices:
+        if source_version == 20 and LEGACY_POSE_MIGRATION_NOTICE not in notices:
             notices.append(LEGACY_POSE_MIGRATION_NOTICE)
+        if (
+            source_version == 21
+            and SUBJECT_SEMANTIC_MIGRATION_NOTICE not in notices
+        ):
+            notices.append(SUBJECT_SEMANTIC_MIGRATION_NOTICE)
         runtime["migration_notices"] = notices
     normal_steps = int(generation.get("steps", 8))
     hard_steps = int(generation.get("pose_hard_gate_steps", 2))
@@ -649,6 +694,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         canvas_width=int(canvas["width"]),
         canvas_height=int(canvas["height"]),
         global_prompt=str(generation.get("global_prompt", "")),
+        shared_visual_prompt=str(generation.get("shared_visual_prompt", "")),
         steps=normal_steps,
         sampler=str(generation.get("sampler", DEFAULT_SAMPLER)),
         scheduler=str(generation.get("scheduler", DEFAULT_SCHEDULER)),
@@ -672,8 +718,18 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         pose_gating_enabled=(
             bool(generation.get("pose_gating_enabled", False))
-            if source_version >= PROJECT_VERSION
+            if source_version >= 21
             else False
+        ),
+        pose_semantic_mode=(
+            str(
+                generation.get(
+                    "pose_semantic_mode",
+                    PoseSemanticMode.PREDICTION_COMPOSITE.value,
+                )
+            )
+            if source_version >= PROJECT_VERSION
+            else PoseSemanticMode.SPATIAL_ONLY.value
         ),
         pose_hard_gate_steps=hard_steps,
         pose_soft_gate_steps=soft_steps,

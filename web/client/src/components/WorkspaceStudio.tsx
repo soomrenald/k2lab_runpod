@@ -39,6 +39,7 @@ import {
 interface Props {
   workspace: WorkspaceRecord;
   developmentBackend: boolean;
+  poseSemanticRoutingAvailable: boolean;
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
@@ -56,7 +57,7 @@ interface StudioEvent {
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -725,6 +726,29 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report("Add and enable at least one subject mannequin before using volumetric pose gating.", "error");
       return;
     }
+    if (
+      mode === "generation"
+      && studioSettings.generation.poseGating
+      && studioSettings.generation.poseSemanticMode === "prediction_composite"
+    ) {
+      if (!poseSemanticRoutingAvailable) {
+        report("This control plane or workspace protocol does not support subject-semantic pose routing. Update the workspace image; the mode will not be changed automatically.", "error");
+        return;
+      }
+      const posedSubjects = regions.filter((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ));
+      const missingDescription = posedSubjects.find((region) => (
+        !region.prompt.trim() && !region.faceIdentityPrompt.trim()
+      ));
+      if (missingDescription) {
+        report(`Add a subject or face-identity prompt for ${missingDescription.name} before using Prediction composite.`, "error");
+        return;
+      }
+    }
     setBusy(true);
     setMessage("");
     eventCursor.current = undefined;
@@ -1356,10 +1380,21 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       {promptPreview && (
         <div className="modal-backdrop" role="presentation">
           <section className="confirm-modal prompt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-preview-title">
-            <p className="kicker">Legacy compiler output</p>
-            <h2 id="prompt-preview-title">Unified spatial prompt</h2>
+            <p className="kicker">Canonical compiler output</p>
+            <h2 id="prompt-preview-title">Conditioning prompts</h2>
             <p>{promptPreview.regions.length} regional clause{promptPreview.regions.length === 1 ? "" : "s"} in front-to-back order. Pixel boxes are applied separately as a hidden soft attention grid.</p>
-            <textarea className="prompt-area prompt-preview-text" readOnly value={promptPreview.prompt} />
+            <div className="conditioning-preview-list">
+              {(promptPreview.conditioning_prompts.length
+                ? promptPreview.conditioning_prompts
+                : [{ kind: "full" as const, region_id: null, region_name: "Full scene", prompt: promptPreview.prompt }]
+              ).map((item) => <section key={item.region_id ?? "full"}>
+                <div className="section-inline-title">
+                  <strong>{item.region_name}</strong>
+                  {item.text_token_count != null && <span>{item.text_token_count} tokens</span>}
+                </div>
+                <textarea className="prompt-area prompt-preview-text" readOnly value={item.prompt} />
+              </section>)}
+            </div>
             <div className="preview-region-order">
               {promptPreview.regions.map((region, index) => <div key={region.id}><strong>{index + 1}. {region.name}</strong><span>{region.spatial_role}</span></div>)}
             </div>

@@ -223,7 +223,7 @@ export function Inspector(props: Props) {
         {tab === "prompt" && <>
           <div className="inspector-section">
             <label className="field-label" htmlFor="global-prompt">
-              {mode === "edit" && activeLayer === "targets" ? "Edit instruction" : mode === "edit" ? "Original global prompt · reference" : mode === "face" ? "Generation prompt · reference" : "Global prompt"}
+              {mode === "edit" && activeLayer === "targets" ? "Edit instruction" : mode === "edit" ? "Original global prompt · reference" : mode === "face" ? "Generation prompt · reference" : "Scene prompt"}
             </label>
             <textarea ref={globalPromptRef} id="global-prompt" className="prompt-area global-area"
               placeholder={mode === "edit" ? "Describe the overall edit intent…" : "Describe the complete scene…"}
@@ -234,6 +234,17 @@ export function Inspector(props: Props) {
                 }
               }} />
             {mode === "edit" && activeLayer === "targets" && <p className="field-help">Combined with each target prompt. Leave blank for box-only instructions.</p>}
+            {mode === "generation" && <>
+              <label className="field-label" htmlFor="shared-visual-prompt">Shared visual context</label>
+              <textarea
+                id="shared-visual-prompt"
+                className="prompt-area identity-area"
+                placeholder="Lighting, lens, medium, palette, and visual style…"
+                value={settings.generation.sharedVisualPrompt}
+                onChange={(event) => updateGeneration({ sharedVisualPrompt: event.target.value })}
+              />
+              <p className="field-help">Lighting, lens, medium, palette, and visual style shared by the scene and every subject-only conditioning branch. Do not put scene objects or background content here.</p>
+            </>}
           </div>
           {mode !== "face" && <div className="inspector-section">
             <div className="section-inline-title"><span>{selected ? selected.name : "Regional prompt"}</span>{selected && <span className="active-pill">Selected</span>}</div>
@@ -314,7 +325,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} hasEnabledMannequin={regions.some((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled)} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
       </div>
     </aside>
   );
@@ -397,7 +408,7 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, hasEnabledMannequin }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
@@ -410,7 +421,7 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
   memoryActionsDisabled: boolean;
   onRefreshMemory: () => void;
   onReleaseMemory: () => void;
-  hasEnabledMannequin: boolean;
+  enabledMannequinCount: number;
 }) {
   const generation = settings.generation;
   const edit = settings.edit;
@@ -496,7 +507,8 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
       <SectionTitle text="Volumetric pose gating" />
       <PoseGatingControls
         generation={generation}
-        hasEnabledMannequin={hasEnabledMannequin}
+        hasEnabledMannequin={enabledMannequinCount > 0}
+        subjectCount={enabledMannequinCount}
         onChange={updateGeneration}
       />
       <p className="field-help">Filled mannequins define early denoising volumes and subject ownership. Ordinary region boxes remain available for objects and backgrounds and never add mannequin gating.</p>

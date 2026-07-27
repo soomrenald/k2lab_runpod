@@ -19,6 +19,7 @@ if FASTAPI_AVAILABLE:
     import httpx
     from httpx import ASGITransport, AsyncClient
 
+    from k2_region_lab.agent import WORKER_PROTOCOL_VERSION
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
     from k2_region_lab.agent.domain import (
         FaceDetectionRequest,
@@ -125,9 +126,22 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["api_version"], "v1")
         self.assertEqual(body["project_schema"], "k2-region-lab-project")
         self.assertEqual(body["project_schema_version"], PROJECT_VERSION)
+        self.assertEqual(
+            body["worker_protocol_version"],
+            WORKER_PROTOCOL_VERSION,
+        )
         self.assertEqual(body["workspace_layout_version"], LAYOUT_VERSION)
         self.assertEqual(body["cuda_version"], "12.8")
         self.assertEqual(body["pytorch_version"], "2.9.1")
+        self.assertEqual(body["pose_semantic_routing"]["version"], 1)
+        self.assertEqual(
+            body["pose_semantic_routing"]["modes"],
+            [
+                "spatial_only",
+                "attention_isolation",
+                "prediction_composite",
+            ],
+        )
 
     async def test_worker_memory_separates_raw_charge_from_reclaimable_cache(self) -> None:
         response = await self.client.get("/v1/worker/memory", headers=self.headers)
@@ -211,6 +225,8 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "pose_soft_gate_steps": 2,
                 "pose_soft_gate_schedule": "cosine",
                 "pose_sigma_schedule_mode": "automatic",
+                "shared_visual_prompt": "Cinematic photography, 35 mm lens",
+                "pose_semantic_mode": "prediction_composite",
             }
         )
         missing = JobSubmitRequest.model_validate(
@@ -265,6 +281,11 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["pose_gating_enabled"])
         self.assertEqual(payload["pose_hard_gate_steps"], 3)
         self.assertEqual(payload["pose_soft_gate_steps"], 2)
+        self.assertEqual(
+            payload["shared_visual_prompt"],
+            "Cinematic photography, 35 mm lens",
+        )
+        self.assertEqual(payload["pose_semantic_mode"], "prediction_composite")
         self.assertNotIn("pose_controlnet_path", payload)
 
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(

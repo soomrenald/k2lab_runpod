@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 from k2_region_lab.lora.library import (
     CHARACTER_IDENTITY_LORA_ROUTING,
@@ -14,9 +14,22 @@ from k2_region_lab.regional_prompting import (
 )
 from k2_region_lab.pose_gating import PoseGateRegionBinding
 from k2_region_lab.regions import CanvasGeometry
+from k2_region_lab.semantic_conditioning import (
+    CURRENT_CONDITIONING_CONTEXT,
+    BoundSubjectPrompt,
+    ConditioningScopeKind,
+    ConditioningScopeMismatchError,
+)
 
 
 BACKEND = "krea-regional-lora-delta-gating-v3"
+
+
+@dataclass(frozen=True, slots=True)
+class ConditioningScopeMask:
+    enabled: bool
+    text_token_mask: tuple[float, ...]
+    image_token_mask: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +49,39 @@ class LoraDeltaRoute:
     image_token_components: tuple[
         tuple[tuple[float, ...], tuple[float, ...]], ...
     ] = ()
+    full_scope_mask: ConditioningScopeMask | None = None
+    subject_scope_masks: Mapping[str, ConditioningScopeMask] = field(
+        default_factory=dict
+    )
+
+    def current_scope_mask(self) -> ConditioningScopeMask:
+        context = CURRENT_CONDITIONING_CONTEXT.get()
+        if context is None:
+            return ConditioningScopeMask(
+                True,
+                self.text_token_mask,
+                self.effective_image_token_mask(),
+            )
+        if context.scope.kind == ConditioningScopeKind.FULL:
+            return self.full_scope_mask or ConditioningScopeMask(
+                True,
+                self.text_token_mask,
+                self.effective_image_token_mask(),
+            )
+        region_id = context.scope.region_id
+        if region_id is None or region_id not in self.subject_scope_masks:
+            raise ConditioningScopeMismatchError(
+                f"LoRA {self.display_name!r} has no route for conditioning "
+                f"scope {context.scope.cache_key!r}"
+            )
+        mask = self.subject_scope_masks[region_id]
+        if len(mask.text_token_mask) != context.text_token_count:
+            raise ConditioningScopeMismatchError(
+                f"LoRA {self.display_name!r} scope {region_id!r} has "
+                f"{len(mask.text_token_mask)} text tokens; expected "
+                f"{context.text_token_count}"
+            )
+        return mask
 
     def effective_image_token_mask(self) -> tuple[float, ...]:
         if self.global_scope or self.pose_gate_binding is None:
@@ -159,6 +205,7 @@ def compile_lora_delta_routes(
     regional_plan: RegionalPromptPlan | None,
     bound_plan: BoundRegionalPromptPlan | None,
     pose_gate_binding: PoseGateRegionBinding | None = None,
+    bound_subject_plans: Mapping[str, BoundSubjectPrompt] | None = None,
 ) -> tuple[LoraDeltaRoute, ...]:
     """Compile exact text/image token gates for every active LoRA.
 
@@ -176,6 +223,7 @@ def compile_lora_delta_routes(
         region.region_id: region for region in (regional_plan.regions if regional_plan else ())
     }
     token_spans = {span.region_id: span for span in (bound_plan.spans if bound_plan else ())}
+    subject_plans = dict(bound_subject_plans or {})
 
     routes: list[LoraDeltaRoute] = []
     for specification in specifications:
@@ -197,6 +245,14 @@ def compile_lora_delta_routes(
             raise ValueError("character identity routing requires a trigger phrase")
         region_ids = tuple(dict.fromkeys(map(str, specification.get("region_ids", ()))))
         if global_scope:
+            subject_masks = {
+                region_id: ConditioningScopeMask(
+                    True,
+                    (1.0,) * subject.text_token_count,
+                    all_image,
+                )
+                for region_id, subject in subject_plans.items()
+            }
             routes.append(
                 LoraDeltaRoute(
                     lora_id=lora_id,
@@ -209,6 +265,10 @@ def compile_lora_delta_routes(
                     image_token_mask=all_image,
                     routing_mode=STANDARD_LORA_ROUTING,
                     trigger_phrase=trigger_phrase,
+                    full_scope_mask=ConditioningScopeMask(
+                        True, all_text, all_image
+                    ),
+                    subject_scope_masks=subject_masks,
                 )
             )
             continue
@@ -252,6 +312,24 @@ def compile_lora_delta_routes(
                 max(current, candidate)
                 for current, candidate in zip(image_mask, strict_box_mask, strict=True)
             ]
+        subject_masks: dict[str, ConditioningScopeMask] = {}
+        for subject_region_id, subject in subject_plans.items():
+            enabled = subject_region_id in region_ids
+            subject_text = [0.0] * subject.text_token_count
+            if enabled:
+                if routing_mode == CHARACTER_IDENTITY_LORA_ROUTING:
+                    for start, end in subject.character_trigger_spans.get(
+                        trigger_phrase, ()
+                    ):
+                        subject_text[start:end] = [1.0] * (end - start)
+                else:
+                    start, end = subject.subject_span
+                    subject_text[start:end] = [1.0] * (end - start)
+            subject_masks[subject_region_id] = ConditioningScopeMask(
+                enabled,
+                tuple(subject_text),
+                all_image if enabled else (0.0,) * geometry.image_lane_count,
+            )
         routes.append(
             LoraDeltaRoute(
                 lora_id=lora_id,
@@ -266,6 +344,10 @@ def compile_lora_delta_routes(
                 trigger_phrase=trigger_phrase,
                 pose_gate_binding=pose_gate_binding,
                 image_token_components=tuple(image_components),
+                full_scope_mask=ConditioningScopeMask(
+                    True, tuple(text_mask), tuple(image_mask)
+                ),
+                subject_scope_masks=subject_masks,
             )
         )
     return tuple(routes)

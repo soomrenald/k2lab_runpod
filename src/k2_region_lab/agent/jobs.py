@@ -499,6 +499,7 @@ class JobManager:
             base.update(
                 {
                     "prompt": state.global_prompt,
+                    "shared_visual_prompt": state.shared_visual_prompt,
                     "width": state.canvas_width,
                     "height": state.canvas_height,
                     "steps": state.steps,
@@ -519,6 +520,7 @@ class JobManager:
                     "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
                     "pose_gating_enabled": state.pose_gating_enabled,
+                    "pose_semantic_mode": state.pose_semantic_mode,
                     "pose_hard_gate_steps": state.pose_hard_gate_steps,
                     "pose_soft_gate_steps": state.pose_soft_gate_steps,
                     "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
@@ -758,6 +760,35 @@ class JobManager:
             raise JobError("project_invalid", "The project document is invalid.") from error
         if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
             raise JobError("project_too_large", "The project document exceeds 2 MiB.", 413)
+        generation = request.project.get("generation", {})
+        regions = request.project.get("regions", [])
+        if (
+            request.kind == JobKind.GENERATE
+            and isinstance(generation, dict)
+            and bool(generation.get("pose_gating_enabled", False))
+            and sum(
+                value
+                for value in (
+                    generation.get("pose_hard_gate_steps", 0),
+                    generation.get("pose_soft_gate_steps", 0),
+                )
+                if isinstance(value, int | float)
+            )
+            > 0
+            and isinstance(regions, list)
+            and not any(
+                isinstance(region, dict)
+                and bool(region.get("enabled", True))
+                and region.get("region_type") == "subject"
+                and isinstance(region.get("pose"), dict)
+                and bool(region["pose"].get("enabled", True))
+                for region in regions
+            )
+        ):
+            raise JobError(
+                "pose_mannequin_required",
+                "Enable at least one subject mannequin before using volumetric pose gating.",
+            )
         try:
             state = project_state(request.project)
         except (KeyError, TypeError, ValueError) as error:

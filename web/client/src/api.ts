@@ -14,9 +14,18 @@ export interface CapabilityManifest {
   api_version: string;
   project_schema: string;
   project_schema_version: number;
+  worker_protocol_version: number;
   minimum_gpu_memory_gb: number;
   workspace_modes: string[];
   development_backend: boolean;
+  pose_semantic_routing?: {
+    version: number;
+    modes: string[];
+    subject_prompt_encoding: boolean;
+    scope_aware_regional_lora: boolean;
+    single_sampler_trajectory: boolean;
+    multigpu_prediction_composite: boolean;
+  };
 }
 
 export interface CredentialStatus {
@@ -286,6 +295,13 @@ export interface JobEventPage {
 export interface UnifiedPromptPreview {
   prompt: string;
   regions: { id: string; name: string; spatial_role: string; clause: string }[];
+  conditioning_prompts: {
+    kind: "full" | "subject";
+    region_id: string | null;
+    region_name: string;
+    prompt: string;
+    text_token_count?: number | null;
+  }[];
 }
 
 export interface DetectedFaceRecord {
