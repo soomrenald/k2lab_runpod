@@ -52,7 +52,10 @@ from k2_region_lab.pose_gating import (
     PoseGateController,
     PoseGatePhases,
     PoseGateRegionBinding,
+    PoseGateRuntimeError,
     PoseGatingSettings,
+    PoseMaskBuildError,
+    SigmaScheduleError,
     resolve_sigma_schedule,
 )
 from k2_region_lab.projector import (
@@ -461,6 +464,26 @@ def validate_model_artifacts(
         for artifact in artifacts.present()
     ]
     return artifacts, results
+
+
+def build_comfy_baseline_sigmas(
+    *,
+    model,
+    steps: int,
+    sampler_name: str,
+    scheduler: str,
+    comfy_samplers,
+):
+    """Use the installed ComfyUI KSampler path, including sampler exceptions."""
+    return comfy_samplers.KSampler(
+        model,
+        steps=steps,
+        device=model.load_device,
+        sampler=sampler_name,
+        scheduler=scheduler,
+        denoise=1.0,
+        model_options=model.model_options,
+    ).sigmas
 
 
 class ComfyBaselineRuntime:
@@ -1573,6 +1596,10 @@ class ComfyBaselineRuntime:
                     "enable at least one subject mannequin before using volumetric "
                     "pose gating"
                 )
+            if not pose_mask_bundle.union_support.any():
+                raise PoseMaskBuildError(
+                    "enabled subject mannequins do not overlap the output canvas"
+                )
         regional_plan = (
             compile_regional_prompt_plan(
                 width,
@@ -1612,6 +1639,11 @@ class ComfyBaselineRuntime:
                 pose_gating=pose_gating,
                 pose_phases=pose_phases,
                 pose_mask_bundle=pose_mask_bundle,
+                pose_subject_region_ids=tuple(
+                    region.region_id
+                    for region in regions
+                    if region.region_type == "subject"
+                ),
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1660,6 +1692,11 @@ class ComfyBaselineRuntime:
             pose_gating=pose_gating,
             pose_phases=pose_phases,
             pose_mask_bundle=pose_mask_bundle,
+            pose_subject_region_ids=tuple(
+                region.region_id
+                for region in regions
+                if region.region_type == "subject"
+            ),
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1694,6 +1731,7 @@ class ComfyBaselineRuntime:
         pose_gating: PoseGatingSettings,
         pose_phases: PoseGatePhases,
         pose_mask_bundle: VolumetricMaskBundle | None,
+        pose_subject_region_ids: tuple[str, ...],
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1786,16 +1824,13 @@ class ComfyBaselineRuntime:
         }
         if pose_mask_bundle is not None:
             effective_steps = pose_phases.effective_steps
-            baseline_sampler = comfy.samplers.KSampler(
-                generation_model,
+            baseline_sigmas_tensor = build_comfy_baseline_sigmas(
+                model=generation_model,
                 steps=effective_steps,
-                device=generation_model.load_device,
-                sampler=sampler,
+                sampler_name=sampler,
                 scheduler=scheduler,
-                denoise=1.0,
-                model_options=generation_model.model_options,
+                comfy_samplers=comfy.samplers,
             )
-            baseline_sigmas_tensor = baseline_sampler.sigmas
             resolved_schedule = resolve_sigma_schedule(
                 baseline_sigmas=tuple(
                     float(value)
@@ -1807,17 +1842,36 @@ class ComfyBaselineRuntime:
             resolved_sigmas_tensor = baseline_sigmas_tensor.new_tensor(
                 resolved_schedule.resolved_sigmas
             )
+            resolved_device_values = [
+                float(value)
+                for value in resolved_sigmas_tensor.detach().to("cpu").tolist()
+            ]
+            if any(
+                left <= right
+                for left, right in zip(
+                    resolved_device_values,
+                    resolved_device_values[1:],
+                )
+            ):
+                raise SigmaScheduleError(
+                    "resolved sigma intervals collapse in the sampler tensor dtype"
+                )
             pose_controller = PoseGateController(
                 phases=pose_phases,
                 soft_schedule=pose_gating.soft_schedule,
                 resolved_sigmas=resolved_schedule,
             )
+            geometry = CanvasGeometry.resolve(width, height)
+            hard_image_fields = ownership_image_token_fields(
+                pose_mask_bundle,
+                geometry,
+            )
+            empty_ownership = (0.0,) * geometry.image_lane_count
+            for region_id in pose_subject_region_ids:
+                hard_image_fields.setdefault(region_id, empty_ownership)
             pose_gate_binding = PoseGateRegionBinding(
                 controller=pose_controller,
-                hard_image_fields=ownership_image_token_fields(
-                    pose_mask_bundle,
-                    CanvasGeometry.resolve(width, height),
-                ),
+                hard_image_fields=hard_image_fields,
             )
             pose_support_tensor = torch.from_numpy(
                 pose_mask_bundle.union_support.copy()
@@ -1841,7 +1895,7 @@ class ComfyBaselineRuntime:
                 "masks": pose_mask_bundle.summary.document(),
             }
             if event is not None:
-                event("Volumetric pose gating prepared", pose_summary_document)
+                event("pose_gating_prepared", pose_summary_document)
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
             loras,
             base_model=generation_model,
@@ -1936,7 +1990,7 @@ class ComfyBaselineRuntime:
                 transformer_options["optimized_attention_override"] = attention_override
             if pose_controller is not None:
                 if previous_denoise_mask_function is not missing:
-                    raise RuntimeError(
+                    raise PoseGateRuntimeError(
                         "a pre-existing denoise-mask callback is incompatible with "
                         "volumetric pose gating"
                     )
@@ -1988,7 +2042,7 @@ class ComfyBaselineRuntime:
                     "volumetric pose gate did not observe every sampler transition"
                 )
             if event is not None:
-                event("Volumetric pose gating completed", pose_summary_document)
+                event("pose_gating_completed", pose_summary_document)
         if attention_override is not None:
             if attention_override.matched_calls == 0:
                 raise RuntimeError(

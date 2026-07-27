@@ -217,14 +217,33 @@ def main() -> int:
                 )
 
                 def progress(step: int, total: int, memory: dict[str, Any]) -> None:
+                    phase = memory.get("pose_gate_phase")
+                    gate = memory.get("pose_gate_strength")
+                    message = f"Denoising step {step}/{total}"
+                    if isinstance(phase, str) and isinstance(gate, (int, float)):
+                        message += f" — {phase} gate, strength {float(gate):.2f}"
                     emit(
                         WorkerState.RUNNING,
-                        f"Denoising step {step}/{total}",
+                        message,
                         command_id=command_id,
                         payload={
                             "step": step,
                             "total_steps": total,
                             "memory": memory,
+                            **(
+                                {
+                                    "phase": phase,
+                                    "gate_strength": float(gate),
+                                    "sigma": memory.get("sigma"),
+                                    "next_sigma": memory.get("next_sigma"),
+                                    "normalized_trajectory_progress": memory.get(
+                                        "normalized_trajectory_progress"
+                                    ),
+                                }
+                                if isinstance(phase, str)
+                                and isinstance(gate, (int, float))
+                                else {}
+                            ),
                         },
                     )
 

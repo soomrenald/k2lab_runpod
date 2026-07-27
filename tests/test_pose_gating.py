@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +20,7 @@ from k2_region_lab.pose_gating import (
     resample_advanced_positions,
     resolve_sigma_schedule,
 )
+from k2_region_lab.worker.runtime import build_comfy_baseline_sigmas
 
 
 @pytest.mark.parametrize("schedule", list(SoftGateSchedule))
@@ -143,3 +146,50 @@ def test_regional_binding_blends_ownership_back_to_normal_field() -> None:
     )
     controller.mark_transition_complete(1)
     assert binding.effective_field("subject", normal) == normal
+
+
+def test_gate_strengths_match_shared_browser_fixtures() -> None:
+    fixtures = json.loads(
+        (Path(__file__).parent / "fixtures" / "pose_gate_strengths.json").read_text()
+    )
+    for fixture in fixtures:
+        phases = PoseGatePhases(
+            fixture["hard"], fixture["soft"], fixture["normal"]
+        )
+        assert gate_strengths(phases, fixture["schedule"]) == pytest.approx(
+            fixture["values"]
+        )
+
+
+def test_comfy_baseline_sigma_helper_uses_installed_ksampler_path() -> None:
+    calls = []
+
+    class FakeModel:
+        load_device = "cuda"
+        model_options = {"example": True}
+
+    class FakeKSampler:
+        def __init__(self, model, **kwargs):
+            calls.append((model, kwargs))
+            self.sigmas = "installed-comfy-sigmas"
+
+    class FakeSamplers:
+        KSampler = FakeKSampler
+
+    result = build_comfy_baseline_sigmas(
+        model=FakeModel(),
+        steps=12,
+        sampler_name="dpm_2",
+        scheduler="simple",
+        comfy_samplers=FakeSamplers,
+    )
+
+    assert result == "installed-comfy-sigmas"
+    assert calls[0][1] == {
+        "steps": 12,
+        "device": "cuda",
+        "sampler": "dpm_2",
+        "scheduler": "simple",
+        "denoise": 1.0,
+        "model_options": {"example": True},
+    }

@@ -1,6 +1,7 @@
 from k2_region_lab.pose import PoseJoint, SubjectPose, default_subject_pose
 from k2_region_lab.pose_control import render_openpose_map
 from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.pose_gating import PoseGateRuntimeError
 from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
 
 
@@ -72,11 +73,23 @@ def test_disabled_subject_does_not_contribute_pose() -> None:
     assert image.getbbox() is None
 
 
-def test_pose_control_errors_are_actionable() -> None:
+def test_pose_gate_errors_are_actionable() -> None:
     code, message = classify_worker_error(
-        RuntimeError("selected file is not a supported ControlNet"),
+        PoseGateRuntimeError("volumetric pose gate callback diverged"),
         CommandKind.GENERATE_BASELINE,
     )
 
-    assert code == "pose_control_failed"
-    assert "Qwen Image ControlNet Union" in message
+    assert code == "pose_gate_runtime_failed"
+    assert "Volumetric pose gating failed" in message
+
+
+def test_pose_gate_hook_conflict_has_distinct_diagnostic() -> None:
+    code, message = classify_worker_error(
+        PoseGateRuntimeError(
+            "a pre-existing denoise-mask callback is incompatible with volumetric pose gating"
+        ),
+        CommandKind.GENERATE_BASELINE,
+    )
+
+    assert code == "pose_gate_hook_incompatible"
+    assert "conflicts" in message

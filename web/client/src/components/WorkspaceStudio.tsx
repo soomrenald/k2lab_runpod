@@ -442,9 +442,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const safeName = name.toLocaleLowerCase().endsWith(".json") ? name : `${name}.k2lab.json`;
     setProjectName(safeName);
     const missing = loaded.loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
-    report(missing.length
+    const openedMessage = missing.length
       ? `Opened ${name}. Upload or select missing cloud LoRA asset(s): ${missing.join(", ")}.`
-      : `Opened ${name}.`);
+      : `Opened ${name}.`;
+    report(
+      loaded.migrationNotices.length
+        ? `${openedMessage} ${loaded.migrationNotices.join(" ")}`
+        : openedMessage,
+      loaded.migrationNotices.length ? "worker" : undefined,
+    );
   }
 
   async function openProject(file: File) {

@@ -11,7 +11,12 @@ from k2_region_lab.pose import (
     subject_pose_document,
     subject_pose_from_document,
 )
-from k2_region_lab.project import ProjectState, project_document, project_state
+from k2_region_lab.project import (
+    LEGACY_POSE_MIGRATION_NOTICE,
+    ProjectState,
+    project_document,
+    project_state,
+)
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
@@ -113,6 +118,58 @@ class SubjectPoseTests(unittest.TestCase):
 
         self.assertEqual(restored.regions[0].region_type, "region")
         self.assertIsNone(restored.regions[0].pose)
+
+    def test_v20_pose_control_migrates_without_silently_enabling_gating(self) -> None:
+        document = project_document(ProjectState(1024, 1024))
+        document["version"] = 20
+        document["generation"].update(
+            {
+                "pose_conditioning_enabled": True,
+                "pose_controlnet_model": "qwen-controlnet.safetensors",
+                "pose_conditioning_strength": 1.0,
+            }
+        )
+        document["regions"] = [{
+            "id": "legacy-subject",
+            "name": "Legacy subject",
+            "box": {"x0": 64, "y0": 64, "x1": 448, "y1": 960},
+            "prompt": "a person",
+            "enabled": True,
+            "priority": 1,
+            "spatial_role": "subject",
+            "region_type": "subject",
+            "pose": subject_pose_document(default_subject_pose()),
+        }]
+
+        restored = project_state(document)
+        canonical = project_document(restored)
+
+        self.assertFalse(restored.pose_gating_enabled)
+        self.assertEqual(restored.regions[0].pose.format, "k2-volumetric-pose-v1")
+        self.assertIn(
+            LEGACY_POSE_MIGRATION_NOTICE,
+            restored.runtime["migration_notices"],
+        )
+        self.assertNotIn("pose_controlnet_model", canonical["generation"])
+        self.assertNotIn("pose_conditioning_enabled", canonical["generation"])
+
+    def test_advanced_sigma_knots_resample_when_step_counts_change(self) -> None:
+        document = project_document(ProjectState(1024, 1024))
+        document["generation"].update(
+            {
+                "steps": 4,
+                "pose_hard_gate_steps": 1,
+                "pose_soft_gate_steps": 1,
+                "pose_sigma_schedule_mode": "advanced",
+                "pose_sigma_knots": [0.0, 0.2, 0.8, 1.0],
+            }
+        )
+
+        restored = project_state(document)
+
+        self.assertEqual(len(restored.pose_sigma_knots), 7)
+        self.assertEqual(restored.pose_sigma_knots[0], 0.0)
+        self.assertEqual(restored.pose_sigma_knots[-1], 1.0)
 
 
 if __name__ == "__main__":

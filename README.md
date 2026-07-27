@@ -25,16 +25,16 @@ Implemented:
 - local PNG/JPEG/WebP loading for interface development;
 - separate image-edit reference and target layers;
 - SVG region drawing, selection, movement, and live eight-direction resizing;
-- complete version-20 prompt, region, phrase-emphasis, character/standard LoRA routing,
+- complete version-21 prompt, region, phrase-emphasis, character/standard LoRA routing,
   seed/batch, regional-guidance, image-edit, face, projector, and post-upscale controls;
-- separate ordinary region boxes and pose-controlled subject boxes, including draggable
-  18-joint mannequins, standing/squatting/mirror presets, a composed full-canvas OpenPose map,
-  and transient Qwen Image ControlNet loading that never enters the retained baseline cache;
+- separate ordinary region boxes and pose-controlled subject boxes, including filled editable
+  13-joint volumetric mannequins, head ellipses, standing/squatting/mirror presets, and
+  scheduler-consistent early denoising/ownership gates that require no pose model;
 - exact front-to-back region priority and subject/background-role serialization plus a unified
   prompt preview compiled by the same Python implementation as the legacy desktop;
 - prompt editors with overflow scrollbars and live state synchronization;
 - responsive desktop/mobile styling with locally bundled fonts;
-- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-20
+- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-21
   browser round trips, persistent cloud project copies, and cloud source restoration;
 - deterministic diffusion-model, text-encoder, VAE, face-detector, LoRA, and upscaler
   selection from persistent workspace inventory, plus a safe configurable output prefix;
@@ -173,7 +173,7 @@ cursors. Raw filesystem paths, prompts, and credentials are excluded from those 
 completed images are returned through authenticated opaque output URLs with HTTP Range
 support.
 
-Every browser run is first parsed as a version-20 project and compiled by the shared Python
+Every browser run is first parsed as a version-21 project and compiled by the shared Python
 unified-prompt implementation. Invalid emphasis matches, LoRA scopes/triggers, duplicate region
 names, or out-of-canvas geometry fail before a GPU job is submitted. **Preview unified prompt**
 shows the exact compiled text and resolved front-to-back subject/background order.
@@ -181,12 +181,10 @@ Generation **Advanced** settings also persist the GPU execution mode and VRAM re
 uses High VRAM on devices with at least 40 GiB and Dynamic VRAM below that threshold; users can
 override the mode and reserve per project.
 
-Subject pose conditioning is documented in
-[`docs/subject_pose_control.md`](docs/subject_pose_control.md). Install the upstream
-`InstantX/Qwen-Image-ControlNet-Union` safetensors file into the persistent **ControlNet
-models** asset kind, draw subject boxes, and select it under **Advanced → Subject pose control**.
-Ordinary region boxes remain mannequin-free and are still appropriate for objects and
-backgrounds.
+Volumetric pose gating is documented in
+[`docs/subject_pose_control.md`](docs/subject_pose_control.md). It uses the mannequin geometry
+already stored in each subject box and requires no ControlNet or other pose-model download.
+Ordinary region boxes remain mannequin-free and are still appropriate for objects and backgrounds.
 
 Migration temporarily bills both source and target compute plus both storage resources.
 Closing the browser does not discard progress: reopen the workspace, choose the migration
