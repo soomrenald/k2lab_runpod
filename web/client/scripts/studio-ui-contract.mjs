@@ -41,6 +41,7 @@ assert.deepEqual(
 );
 
 const inspector = await readFile(new URL("../src/components/Inspector.tsx", import.meta.url), "utf8");
+const poseGatingControls = await readFile(new URL("../src/components/PoseGatingControls.tsx", import.meta.url), "utf8");
 const promptSection = inspector.split('{tab === "prompt"', 2)[1].split('{tab === "regions"', 1)[0];
 const regionsSection = inspector.split('{tab === "regions" && mode !== "face"', 2)[1].split('{tab === "loras"', 1)[0];
 
@@ -86,9 +87,11 @@ assert.ok(
 assert.ok(
   inspector.includes("Subject box · mannequin")
     && inspector.includes("Region box · no mannequin")
-    && inspector.includes("Condition generation from subject mannequins")
-    && inspector.includes("All enabled subject mannequins are composed into one full-canvas pose map"),
-  "The inspector must distinguish pose-controlled subject boxes from ordinary scene regions",
+    && inspector.includes("Volumetric pose gating")
+    && poseGatingControls.includes("Constrain generation to subject mannequins")
+    && poseGatingControls.includes("Hard gate steps")
+    && poseGatingControls.includes("Sigma schedule"),
+  "The inspector must distinguish volumetric subject boxes and expose pose-gating controls",
 );
 
 for (const relativePath of [
@@ -111,10 +114,10 @@ assert.ok(
 );
 assert.ok(
   workspaceStudio.includes('loraFiles = await allFiles("loras")')
-    && workspaceStudio.includes('controlnetFiles = await allFiles("controlnet_models")')
     && workspaceStudio.includes('outputFiles = await allFiles("outputs")')
+    && !workspaceStudio.includes('pose_controlnet_file_id')
     && !workspaceStudio.includes('allFiles("loras"), allFiles("upscale_models")'),
-  "Project restoration must not burst all Pod inventory requests concurrently",
+  "Project restoration must remain sequential and pose submission must not require ControlNet",
 );
 assert.ok(
   setupPanel.includes("for (const { kind } of modelKinds)")

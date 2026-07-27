@@ -3,6 +3,7 @@ import type { DetectedFaceRecord, WorkerMemoryStatus } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
 import { DraftNumberInput } from "./DraftNumberInput";
+import { PoseGatingControls } from "./PoseGatingControls";
 import {
   COMFYUI_SAMPLERS,
   COMFYUI_SCHEDULERS,
@@ -38,7 +39,6 @@ interface Props {
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
   onChooseUpscaleModel: () => void;
-  onChoosePoseModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   faces: DetectedFaceRecord[];
   selectedFaceIndices: number[];
@@ -64,7 +64,6 @@ export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
     onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
-    onChoosePoseModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
@@ -243,7 +242,7 @@ export function Inspector(props: Props) {
               <label className="field-label">Box type</label>
               <div className="box-type-readout">
                 <strong>{selected.regionType === "subject" ? "Subject box · mannequin" : "Region box · no mannequin"}</strong>
-                <small>{selected.regionType === "subject" ? "Contributes pose control when enabled." : "Use for objects, scenery, or background areas."}</small>
+                <small>{selected.regionType === "subject" ? "Contributes volumetric pose gating when enabled." : "Use for objects, scenery, or background areas."}</small>
               </div>
               {selected.regionType === "region" && <>
                 <label className="field-label">Spatial role</label>
@@ -266,7 +265,7 @@ export function Inspector(props: Props) {
                   <button className="tiny-button" onClick={() => updateSelected({ pose: squattingPose() })}>Squatting</button>
                   <button className="tiny-button" onClick={() => updateSelected({ pose: mirrorPose(selected.pose ?? standingPose()) })}>Mirror</button>
                 </div>
-                <p className="field-help">Drag joints directly on the canvas. Arms and legs may extend outside this box to describe interactions with another subject.</p>
+                <p className="field-help">Drag body joints and the three head controls directly on the canvas. The center head control moves it; the right and bottom controls resize it. Limbs may extend outside the subject box.</p>
               </>}
             </> : <div className="empty-inspector"><Icon name="layers" /><span>Select a region to edit its prompt.</span></div>}
           </div>}
@@ -315,7 +314,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onChoosePoseModel={onChoosePoseModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} hasEnabledMannequin={regions.some((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled)} />}
       </div>
     </aside>
   );
@@ -398,20 +397,20 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onChoosePoseModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, hasEnabledMannequin }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   onChooseUpscaleModel: () => void;
-  onChoosePoseModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   workerMemory: WorkerMemoryStatus | null;
   memoryRefreshing: boolean;
   memoryActionsDisabled: boolean;
   onRefreshMemory: () => void;
   onReleaseMemory: () => void;
+  hasEnabledMannequin: boolean;
 }) {
   const generation = settings.generation;
   const edit = settings.edit;
@@ -494,15 +493,13 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
     {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
     {mode === "generation" && <>
-      <SectionTitle text="Subject pose control" />
-      <Check label="Condition generation from subject mannequins" checked={generation.poseConditioning} onChange={(poseConditioning) => updateGeneration({ poseConditioning })} />
-      {generation.poseConditioning && <>
-        <button className="quiet-button full-button" onClick={onChoosePoseModel}>{generation.poseControlnetName || "Choose Qwen Image pose ControlNet…"}</button>
-        <LinkedValue label="Pose strength" value={generation.poseStrength} min={0} max={2} step={0.05} onChange={(poseStrength) => updateGeneration({ poseStrength })} />
-        <LinkedValue label="Pose start" value={generation.poseStart} min={0} max={1} step={0.05} onChange={(poseStart) => updateGeneration({ poseStart: Math.min(poseStart, generation.poseEnd) })} />
-        <LinkedValue label="Pose end" value={generation.poseEnd} min={0} max={1} step={0.05} onChange={(poseEnd) => updateGeneration({ poseEnd: Math.max(poseEnd, generation.poseStart) })} />
-        <p className="field-help">All enabled subject mannequins are composed into one full-canvas pose map. Ordinary region boxes never add pose control, and limbs are not clipped at box edges.</p>
-      </>}
+      <SectionTitle text="Volumetric pose gating" />
+      <PoseGatingControls
+        generation={generation}
+        hasEnabledMannequin={hasEnabledMannequin}
+        onChange={updateGeneration}
+      />
+      <p className="field-help">Filled mannequins define early denoising volumes and subject ownership. Ordinary region boxes remain available for objects and backgrounds and never add mannequin gating.</p>
     </>}
     <Check label="Separate overlapping subject targets" checked={values.subjectCompetition} onChange={(subjectCompetition) => update({ subjectCompetition })} />
     <Check label="Make subjects fill their boxes" checked={values.subjectFill} onChange={(subjectFill) => update({ subjectFill })} />

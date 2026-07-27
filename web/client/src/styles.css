@@ -241,10 +241,33 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .region-label text { fill: #11160e; font-family: "DM Sans"; font-size: 13px; font-weight: 700; pointer-events: none; }
 .region-group.subject .region-label rect { fill: #69d0ff; }
 .pose-mannequin { pointer-events: none; }
-.pose-mannequin line { stroke: rgba(255,255,255,.92); stroke-width: 5; stroke-linecap: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
+.pose-volume { fill: rgba(105,208,255,.38); stroke: rgba(219,247,255,.88); stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 3px rgba(0,0,0,.82)); }
+.pose-mannequin line.pose-volume { fill: none; }
+.pose-torso { stroke-width: 3; vector-effect: non-scaling-stroke; }
+.pose-head { stroke-width: 3; vector-effect: non-scaling-stroke; }
 .pose-joint { fill: #69d0ff; stroke: #071118; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .region-group.selected .pose-joint.editable { pointer-events: all; cursor: grab; }
 .region-group.selected .pose-joint.editable:active { cursor: grabbing; }
+.pose-head-handle { pointer-events: all; fill: #f8fbff; stroke: #071118; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.pose-head-move { cursor: move; }
+.pose-head-resize { fill: #9be1ff; cursor: nwse-resize; }
+.pose-gating-panel { display: grid; gap: 10px; }
+.pose-step-grid, .pose-share-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pose-step-grid label, .pose-share-grid label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.pose-step-grid input, .pose-share-grid input { width: 100%; }
+.phase-equation { margin: 0; color: var(--muted); font-size: 12px; }
+.sigma-weighted, .sigma-editor { display: grid; gap: 10px; }
+.sigma-graph { width: 100%; min-height: 150px; border: 1px solid var(--line); border-radius: 10px; background: rgba(4,10,18,.65); touch-action: none; }
+.sigma-graph .phase-hard { fill: rgba(83,161,255,.14); }
+.sigma-graph .phase-soft { fill: rgba(99,220,190,.12); }
+.sigma-graph .phase-normal { fill: rgba(255,255,255,.035); }
+.sigma-line { fill: none; stroke: #69d0ff; stroke-width: 3; }
+.gate-line { fill: none; stroke: #f6ba68; stroke-width: 2; stroke-dasharray: 7 5; }
+.sigma-knot { fill: #69d0ff; stroke: #071118; stroke-width: 2; cursor: ns-resize; }
+.sigma-knot.locked { fill: #7b8792; cursor: default; }
+.sigma-knot-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; max-height: 240px; overflow: auto; }
+.sigma-knot-table label { display: grid; grid-template-columns: 1fr 80px; gap: 8px; align-items: center; color: var(--muted); font-size: 11px; }
+.sigma-knot-table input { min-width: 0; width: 100%; }
 .resize-handle { fill: rgba(255,255,255,.08); stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .box-type-readout { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 10px; background: rgba(255,255,255,.025); }
 .box-type-readout small { color: var(--text-muted); line-height: 1.35; }

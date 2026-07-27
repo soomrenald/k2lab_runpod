@@ -1,22 +1,19 @@
+export const VOLUMETRIC_POSE_FORMAT = "k2-volumetric-pose-v1" as const;
+
 export const POSE_JOINT_NAMES = [
-  "nose",
   "neck",
-  "right_shoulder",
-  "right_elbow",
-  "right_wrist",
   "left_shoulder",
+  "right_shoulder",
   "left_elbow",
+  "right_elbow",
   "left_wrist",
-  "right_hip",
-  "right_knee",
-  "right_ankle",
+  "right_wrist",
   "left_hip",
+  "right_hip",
   "left_knee",
+  "right_knee",
   "left_ankle",
-  "right_eye",
-  "left_eye",
-  "right_ear",
-  "left_ear",
+  "right_ankle",
 ] as const;
 
 export type PoseJointName = typeof POSE_JOINT_NAMES[number];
@@ -25,139 +22,181 @@ export interface PoseJointState {
   name: PoseJointName;
   x: number;
   y: number;
-  enabled: boolean;
+}
+
+export interface PoseHeadState {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
 }
 
 export interface SubjectPoseState {
+  format: typeof VOLUMETRIC_POSE_FORMAT;
   enabled: boolean;
   joints: PoseJointState[];
+  head: PoseHeadState;
 }
 
 export const POSE_CONNECTIONS: [PoseJointName, PoseJointName][] = [
-  ["neck", "right_shoulder"],
-  ["right_shoulder", "right_elbow"],
-  ["right_elbow", "right_wrist"],
   ["neck", "left_shoulder"],
   ["left_shoulder", "left_elbow"],
   ["left_elbow", "left_wrist"],
-  ["neck", "right_hip"],
-  ["right_hip", "right_knee"],
-  ["right_knee", "right_ankle"],
-  ["neck", "left_hip"],
+  ["neck", "right_shoulder"],
+  ["right_shoulder", "right_elbow"],
+  ["right_elbow", "right_wrist"],
+  ["left_shoulder", "left_hip"],
+  ["right_shoulder", "right_hip"],
+  ["left_hip", "right_hip"],
   ["left_hip", "left_knee"],
   ["left_knee", "left_ankle"],
-  ["neck", "nose"],
-  ["nose", "right_eye"],
-  ["right_eye", "right_ear"],
-  ["nose", "left_eye"],
-  ["left_eye", "left_ear"],
+  ["right_hip", "right_knee"],
+  ["right_knee", "right_ankle"],
 ];
 
 const standingPoints: Record<PoseJointName, [number, number]> = {
-  nose: [0.50, 0.09],
   neck: [0.50, 0.20],
-  right_shoulder: [0.36, 0.23],
-  right_elbow: [0.29, 0.40],
-  right_wrist: [0.28, 0.57],
-  left_shoulder: [0.64, 0.23],
-  left_elbow: [0.71, 0.40],
-  left_wrist: [0.72, 0.57],
-  right_hip: [0.43, 0.51],
-  right_knee: [0.41, 0.72],
-  right_ankle: [0.39, 0.94],
-  left_hip: [0.57, 0.51],
-  left_knee: [0.59, 0.72],
-  left_ankle: [0.61, 0.94],
-  right_eye: [0.46, 0.075],
-  left_eye: [0.54, 0.075],
-  right_ear: [0.42, 0.09],
-  left_ear: [0.58, 0.09],
+  left_shoulder: [0.39, 0.24],
+  right_shoulder: [0.61, 0.24],
+  left_elbow: [0.34, 0.42],
+  right_elbow: [0.66, 0.42],
+  left_wrist: [0.31, 0.60],
+  right_wrist: [0.69, 0.60],
+  left_hip: [0.44, 0.52],
+  right_hip: [0.56, 0.52],
+  left_knee: [0.43, 0.72],
+  right_knee: [0.57, 0.72],
+  left_ankle: [0.42, 0.94],
+  right_ankle: [0.58, 0.94],
 };
 
 const squattingPoints: Record<PoseJointName, [number, number]> = {
-  nose: [0.50, 0.25],
   neck: [0.50, 0.36],
-  right_shoulder: [0.37, 0.38],
-  right_elbow: [0.31, 0.51],
-  right_wrist: [0.24, 0.61],
-  left_shoulder: [0.63, 0.38],
-  left_elbow: [0.69, 0.51],
-  left_wrist: [0.76, 0.61],
-  right_hip: [0.44, 0.60],
-  right_knee: [0.29, 0.71],
-  right_ankle: [0.21, 0.92],
-  left_hip: [0.56, 0.60],
-  left_knee: [0.71, 0.71],
-  left_ankle: [0.79, 0.92],
-  right_eye: [0.46, 0.235],
-  left_eye: [0.54, 0.235],
-  right_ear: [0.42, 0.25],
-  left_ear: [0.58, 0.25],
+  left_shoulder: [0.37, 0.38],
+  right_shoulder: [0.63, 0.38],
+  left_elbow: [0.31, 0.51],
+  right_elbow: [0.69, 0.51],
+  left_wrist: [0.24, 0.61],
+  right_wrist: [0.76, 0.61],
+  left_hip: [0.44, 0.60],
+  right_hip: [0.56, 0.60],
+  left_knee: [0.29, 0.71],
+  right_knee: [0.71, 0.71],
+  left_ankle: [0.21, 0.92],
+  right_ankle: [0.79, 0.92],
 };
 
-function poseFromPoints(points: Record<PoseJointName, [number, number]>): SubjectPoseState {
+function poseFromPoints(
+  points: Record<PoseJointName, [number, number]>,
+  head: PoseHeadState,
+): SubjectPoseState {
   return {
+    format: VOLUMETRIC_POSE_FORMAT,
     enabled: true,
     joints: POSE_JOINT_NAMES.map((name) => ({
       name,
       x: points[name][0],
       y: points[name][1],
-      enabled: true,
     })),
+    head,
   };
 }
 
 export function standingPose(): SubjectPoseState {
-  return poseFromPoints(standingPoints);
+  return poseFromPoints(standingPoints, { cx: 0.50, cy: 0.105, rx: 0.075, ry: 0.105 });
 }
 
 export function squattingPose(): SubjectPoseState {
-  return poseFromPoints(squattingPoints);
+  return poseFromPoints(squattingPoints, { cx: 0.50, cy: 0.265, rx: 0.075, ry: 0.105 });
 }
 
 export function mirrorPose(pose: SubjectPoseState): SubjectPoseState {
-  const mirroredName = (name: PoseJointName): PoseJointName => {
+  const byName = new Map(pose.joints.map((joint) => [joint.name, joint]));
+  const sourceName = (name: PoseJointName): PoseJointName => {
     if (name.startsWith("left_")) return name.replace("left_", "right_") as PoseJointName;
     if (name.startsWith("right_")) return name.replace("right_", "left_") as PoseJointName;
     return name;
   };
-  const byName = new Map(
-    pose.joints.map((joint) => [
-      mirroredName(joint.name),
-      { ...joint, name: mirroredName(joint.name), x: 1 - joint.x },
-    ]),
-  );
   return {
     ...pose,
-    joints: POSE_JOINT_NAMES.map((name) => byName.get(name) ?? {
-      name,
-      x: standingPoints[name][0],
-      y: standingPoints[name][1],
-      enabled: true,
+    joints: POSE_JOINT_NAMES.map((name) => {
+      const source = byName.get(sourceName(name));
+      return {
+        name,
+        x: 1 - (source?.x ?? standingPoints[name][0]),
+        y: source?.y ?? standingPoints[name][1],
+      };
     }),
+    head: { ...pose.head, cx: 1 - pose.head.cx },
   };
+}
+
+function finite(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function legacyHead(
+  values: Map<string, { x: number; y: number }>,
+  neck: PoseJointState,
+): PoseHeadState {
+  const face = ["right_eye", "left_eye", "right_ear", "left_ear"]
+    .map((name) => values.get(name))
+    .filter((point): point is { x: number; y: number } => Boolean(point));
+  const nose = values.get("nose");
+  const cx = nose?.x ?? (face.length
+    ? face.reduce((sum, point) => sum + point.x, 0) / face.length
+    : neck.x);
+  const cy = nose?.y ?? (face.length
+    ? face.reduce((sum, point) => sum + point.y, 0) / face.length
+    : neck.y - 0.095);
+  const rx = Math.max(0.04, Math.min(0.20, ...face.map((point) => Math.abs(point.x - cx)), 0.075));
+  return { cx, cy, rx, ry: Math.max(0.055, Math.min(0.20, Math.abs(neck.y - cy))) };
 }
 
 export function poseFromDocument(value: unknown): SubjectPoseState {
   const fallback = standingPose();
   if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
   const record = value as Record<string, unknown>;
-  if (!Array.isArray(record.joints)) return fallback;
-  const byName = new Map<PoseJointName, PoseJointState>();
-  record.joints.forEach((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return;
-    const joint = item as Record<string, unknown>;
-    const name = joint.name;
-    if (typeof name !== "string" || !POSE_JOINT_NAMES.includes(name as PoseJointName)) return;
-    byName.set(name as PoseJointName, {
-      name: name as PoseJointName,
-      x: typeof joint.x === "number" ? joint.x : 0.5,
-      y: typeof joint.y === "number" ? joint.y : 0.5,
-      enabled: joint.enabled !== false,
+  const values = new Map<string, { x: number; y: number }>();
+  if (Array.isArray(record.joints)) {
+    record.joints.forEach((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      const joint = item as Record<string, unknown>;
+      if (typeof joint.name !== "string") return;
+      values.set(joint.name, {
+        x: finite(joint.x, 0.5),
+        y: finite(joint.y, 0.5),
+      });
     });
-  });
+  } else if (record.joints && typeof record.joints === "object") {
+    Object.entries(record.joints as Record<string, unknown>).forEach(([name, item]) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      const joint = item as Record<string, unknown>;
+      values.set(name, {
+        x: finite(joint.x, 0.5),
+        y: finite(joint.y, 0.5),
+      });
+    });
+  }
+  const joints = fallback.joints.map((joint) => ({
+    ...joint,
+    ...(values.get(joint.name) ?? {}),
+  }));
+  const headValue = record.head && typeof record.head === "object" && !Array.isArray(record.head)
+    ? record.head as Record<string, unknown>
+    : null;
+  const head = record.format === VOLUMETRIC_POSE_FORMAT && headValue
+    ? {
+      cx: finite(headValue.cx, fallback.head.cx),
+      cy: finite(headValue.cy, fallback.head.cy),
+      rx: finite(headValue.rx, fallback.head.rx),
+      ry: finite(headValue.ry, fallback.head.ry),
+    }
+    : legacyHead(values, joints.find((joint) => joint.name === "neck")!);
   return {
+    format: VOLUMETRIC_POSE_FORMAT,
     enabled: record.enabled !== false,
-    joints: fallback.joints.map((joint) => byName.get(joint.name) ?? joint),
+    joints,
+    head,
   };
 }

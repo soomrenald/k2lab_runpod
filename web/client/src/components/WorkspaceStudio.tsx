@@ -67,7 +67,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale" | "pose">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -380,7 +380,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const loaded = loadStudioProjectDocument(document);
     let loraFiles: FileRecord[] = [];
     let upscalerFiles: FileRecord[] = [];
-    let controlnetFiles: FileRecord[] = [];
     let diffusionFiles: FileRecord[] = [];
     let textEncoderFiles: FileRecord[] = [];
     let vaeFiles: FileRecord[] = [];
@@ -392,7 +391,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       // project restore cannot create an eight-connection burst through RunPod's proxy.
       loraFiles = await allFiles("loras");
       upscalerFiles = await allFiles("upscale_models");
-      controlnetFiles = await allFiles("controlnet_models");
       diffusionFiles = await allFiles("diffusion_models");
       textEncoderFiles = await allFiles("text_encoders");
       vaeFiles = await allFiles("vae");
@@ -408,11 +406,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
-    const poseControlnet = byName(
-      controlnetFiles,
-      loaded.settings.generation.poseControlnetName,
-    );
-    if (poseControlnet) loaded.settings.generation.poseControlnetFileId = poseControlnet.id;
     const runtime = loaded.settings.runtime;
     const diffusion = byName(diffusionFiles, runtime.diffusionModelName);
     const textEncoder = byName(textEncoderFiles, runtime.textEncoderName);
@@ -684,6 +677,20 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report("Assign at least one enabled LoRA to a subject region before face refinement.", "error");
       return;
     }
+    if (
+      mode === "generation"
+      && studioSettings.generation.poseGating
+      && studioSettings.generation.poseHardGateSteps + studioSettings.generation.poseSoftGateSteps > 0
+      && !regions.some((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ))
+    ) {
+      report("Add and enable at least one subject mannequin before using volumetric pose gating.", "error");
+      return;
+    }
     setBusy(true);
     setMessage("");
     eventCursor.current = undefined;
@@ -721,7 +728,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             : undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
-          pose_controlnet_file_id: studioSettings.generation.poseControlnetFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
           manual_face_paths: mode === "face" ? manualFacePaths : undefined,
@@ -1137,7 +1143,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onLoras={setLoras}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
-            onChoosePoseModel={() => { setAssetPurpose("pose"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
             selectedFaceIndices={selectedFaceIndices}
@@ -1347,7 +1352,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : assetPurpose === "pose" ? "controlnet_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1359,10 +1364,6 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         }
         if (assetPurpose === "upscale") {
           if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
-          return;
-        }
-        if (assetPurpose === "pose") {
-          if (file.kind === "controlnet_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, poseControlnetFileId: file.id, poseControlnetName: file.display_name } });
           return;
         }
         if (file.kind === "projects") { void openCloudProject(file); return; }
