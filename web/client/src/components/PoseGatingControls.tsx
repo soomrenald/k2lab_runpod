@@ -55,7 +55,11 @@ export function PoseGatingControls({
 
   function updateSteps(key: "poseHardGateSteps" | "poseSoftGateSteps", value: number) {
     const next = Math.max(0, Math.min(100, Math.trunc(value)));
-    onChange({ [key]: next } as Partial<GenerationSettings>);
+    onChange({
+      [key]: next,
+      ...(key === "poseHardGateSteps" && next === 0 ? { poseSigmaHardShare: 0 } : {}),
+      ...(key === "poseSoftGateSteps" && next === 0 ? { poseSigmaSoftShare: 0 } : {}),
+    } as Partial<GenerationSettings>);
   }
 
   function setPreset(hardShare: number, softShare: number) {

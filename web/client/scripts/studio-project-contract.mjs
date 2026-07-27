@@ -9,6 +9,8 @@ import {
   projectDocumentFromPng,
 } from "../src/studioProject.ts";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../src/eventLog.ts";
+import { readFile } from "node:fs/promises";
+import { poseGateStrengths } from "../src/poseGating.ts";
 import {
   promptEmphasisFromSelection,
   promptEmphasisMatches,
@@ -48,6 +50,16 @@ assert.equal(defaultLoraTrigger("folder/character.safetensors"), "character");
 assert.equal(newLora.generation.triggerPhrase, "character");
 assert.equal(newLora.reference.triggerPhrase, "character");
 assert.equal(newLora.targets.triggerPhrase, "character");
+const poseGateFixtures = JSON.parse(await readFile(
+  new URL("../../../tests/fixtures/pose_gate_strengths.json", import.meta.url),
+  "utf8",
+));
+for (const fixture of poseGateFixtures) {
+  assert.deepEqual(
+    poseGateStrengths(fixture.hard, fixture.soft, fixture.normal, fixture.schedule),
+    fixture.values,
+  );
+}
 settings.generation.seed = 8123;
 settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;

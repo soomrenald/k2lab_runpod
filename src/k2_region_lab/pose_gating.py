@@ -72,8 +72,8 @@ class PoseGatePhases:
             raise PoseGateScheduleError("pose gate step counts must be integers")
         if self.hard_steps < 0 or self.soft_steps < 0 or self.normal_steps < 0:
             raise PoseGateScheduleError("pose gate step counts must not be negative")
-        if not 1 <= self.effective_steps <= 100:
-            raise PoseGateScheduleError("effective step count must be between 1 and 100")
+        if self.effective_steps < 1:
+            raise PoseGateScheduleError("effective step count must be positive")
 
     @property
     def effective_steps(self) -> int:

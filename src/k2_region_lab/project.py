@@ -21,6 +21,7 @@ from k2_region_lab.pose_gating import (
     SigmaScheduleRequest,
     SoftGateSchedule,
     phase_weighted_positions,
+    resample_advanced_positions,
     validate_normalized_positions,
 )
 from k2_region_lab.projector import (
@@ -629,11 +630,26 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         if LEGACY_POSE_MIGRATION_NOTICE not in notices:
             notices.append(LEGACY_POSE_MIGRATION_NOTICE)
         runtime["migration_notices"] = notices
+    normal_steps = int(generation.get("steps", 8))
+    hard_steps = int(generation.get("pose_hard_gate_steps", 2))
+    soft_steps = int(generation.get("pose_soft_gate_steps", 2))
+    sigma_mode = str(
+        generation.get("pose_sigma_schedule_mode", SigmaScheduleMode.AUTOMATIC.value)
+    )
+    sigma_knots = tuple(
+        float(value) for value in generation.get("pose_sigma_knots", [])
+    )
+    effective_steps = hard_steps + soft_steps + normal_steps
+    if (
+        sigma_mode == SigmaScheduleMode.ADVANCED.value
+        and len(sigma_knots) != effective_steps + 1
+    ):
+        sigma_knots = resample_advanced_positions(sigma_knots, effective_steps)
     return ProjectState(
         canvas_width=int(canvas["width"]),
         canvas_height=int(canvas["height"]),
         global_prompt=str(generation.get("global_prompt", "")),
-        steps=int(generation.get("steps", 8)),
+        steps=normal_steps,
         sampler=str(generation.get("sampler", DEFAULT_SAMPLER)),
         scheduler=str(generation.get("scheduler", DEFAULT_SCHEDULER)),
         seed=int(generation.get("seed", 0)),
@@ -659,21 +675,15 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             if source_version >= PROJECT_VERSION
             else False
         ),
-        pose_hard_gate_steps=int(generation.get("pose_hard_gate_steps", 2)),
-        pose_soft_gate_steps=int(generation.get("pose_soft_gate_steps", 2)),
+        pose_hard_gate_steps=hard_steps,
+        pose_soft_gate_steps=soft_steps,
         pose_soft_gate_schedule=str(
             generation.get("pose_soft_gate_schedule", SoftGateSchedule.COSINE.value)
         ),
-        pose_sigma_schedule_mode=str(
-            generation.get(
-                "pose_sigma_schedule_mode", SigmaScheduleMode.AUTOMATIC.value
-            )
-        ),
+        pose_sigma_schedule_mode=sigma_mode,
         pose_sigma_hard_share=float(generation.get("pose_sigma_hard_share", 0.20)),
         pose_sigma_soft_share=float(generation.get("pose_sigma_soft_share", 0.30)),
-        pose_sigma_knots=tuple(
-            float(value) for value in generation.get("pose_sigma_knots", [])
-        ),
+        pose_sigma_knots=sigma_knots,
         prompt_emphases=prompt_emphases_from_payload(generation.get("prompt_emphases", [])),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)),

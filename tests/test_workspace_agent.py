@@ -33,7 +33,10 @@ if FASTAPI_AVAILABLE:
     )
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
-    from k2_region_lab.pose import default_subject_pose, subject_pose_document
+    from k2_region_lab.pose import (
+        default_volumetric_subject_pose,
+        volumetric_subject_pose_document,
+    )
     from k2_region_lab.project import PROJECT_VERSION, project_state
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
@@ -199,16 +202,28 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
 
-    async def test_subject_pose_requires_and_resolves_controlnet_model(self) -> None:
+    async def test_subject_pose_gating_requires_mannequin_and_no_model(self) -> None:
         document = self._project_document("two people shaking hands")
         document["generation"].update(
             {
-                "pose_conditioning_enabled": True,
-                "pose_conditioning_strength": 0.8,
-                "pose_conditioning_start": 0.05,
-                "pose_conditioning_end": 0.7,
+                "pose_gating_enabled": True,
+                "pose_hard_gate_steps": 3,
+                "pose_soft_gate_steps": 2,
+                "pose_soft_gate_schedule": "cosine",
+                "pose_sigma_schedule_mode": "automatic",
             }
         )
+        missing = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-missing-mannequin",
+                "kind": "generate",
+                "project_id": "pose-project",
+                "project": document,
+            }
+        )
+        with self.assertRaisesRegex(Exception, "Enable at least one subject mannequin"):
+            self.app.state.job_manager._validate_request(missing)
+
         document["regions"] = [
             {
                 "id": "person",
@@ -217,7 +232,9 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "prompt": "standing person",
                 "spatial_role": "subject",
                 "region_type": "subject",
-                "pose": subject_pose_document(default_subject_pose()),
+                "pose": volumetric_subject_pose_document(
+                    default_volumetric_subject_pose()
+                ),
             },
             {
                 "id": "background",
@@ -229,27 +246,14 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "pose": None,
             },
         ]
-        missing = JobSubmitRequest.model_validate(
+        request = JobSubmitRequest.model_validate(
             {
-                "command_id": "pose-missing-model",
+                "command_id": "pose-gating",
                 "kind": "generate",
                 "project_id": "pose-project",
                 "project": document,
             }
         )
-        with self.assertRaisesRegex(Exception, "Choose a Qwen Image pose ControlNet"):
-            self.app.state.job_manager._validate_request(missing)
-
-        model_path = (
-            self.app.state.layout.destination(FileKind.CONTROLNET_MODELS.value)
-            / "qwen-image-controlnet-union.safetensors"
-        )
-        model_path.write_bytes(b"selected controlnet")
-        model = await self.app.state.transfer_manager.index_existing_file(
-            FileKind.CONTROLNET_MODELS,
-            model_path,
-        )
-        request = missing.model_copy(update={"pose_controlnet_file_id": model.id})
         state, _project = self.app.state.job_manager._validate_request(request)
         payload = await self.app.state.job_manager._job_payload(
             "job-id",
@@ -258,11 +262,10 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             document,
         )
 
-        self.assertTrue(payload["pose_conditioning_enabled"])
-        self.assertEqual(Path(payload["pose_controlnet_path"]).name, model_path.name)
-        self.assertEqual(payload["pose_conditioning_strength"], 0.8)
-        self.assertEqual(payload["pose_conditioning_start"], 0.05)
-        self.assertEqual(payload["pose_conditioning_end"], 0.7)
+        self.assertTrue(payload["pose_gating_enabled"])
+        self.assertEqual(payload["pose_hard_gate_steps"], 3)
+        self.assertEqual(payload["pose_soft_gate_steps"], 2)
+        self.assertNotIn("pose_controlnet_path", payload)
 
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,

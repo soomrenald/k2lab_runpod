@@ -1,5 +1,6 @@
 import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
 import { poseFromDocument } from "./pose.ts";
+import { resamplePoseKnots } from "./poseGating.ts";
 import { reconcilePromptEmphases } from "./promptEmphasis.ts";
 
 export type SeedMode = "fixed" | "random" | "increment";
@@ -363,7 +364,12 @@ export function buildProjectDocument(
       pose_sigma_schedule_mode: generation.poseSigmaMode,
       pose_sigma_hard_share: generation.poseSigmaHardShare,
       pose_sigma_soft_share: generation.poseSigmaSoftShare,
-      pose_sigma_knots: generation.poseSigmaKnots,
+      pose_sigma_knots: generation.poseSigmaMode === "advanced"
+        ? resamplePoseKnots(
+          generation.poseSigmaKnots,
+          generation.poseHardGateSteps + generation.poseSoftGateSteps + generation.steps,
+        )
+        : generation.poseSigmaKnots,
       prompt_emphases: emphasisDocuments(
         generation.promptEmphases,
         prompts.generation,
@@ -527,6 +533,7 @@ export interface LoadedStudioProject {
   settings: StudioSettings;
   loras: StudioLora[];
   sourceName: string;
+  migrationNotices: string[];
 }
 
 type JsonObject = Record<string, unknown>;
@@ -650,6 +657,9 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   return {
     settings,
     sourceName: basename(stringValue(edit.source_image, stringValue(document.background_image, ""))),
+    migrationNotices: Number(document.version) === 20
+      ? ["Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating is available but remains disabled until enabled."]
+      : stringList(objectValue(document.runtime).migration_notices),
     prompts: {
       generation: stringValue(generation.global_prompt, ""),
       reference: stringValue(edit.reference_global_prompt, ""),

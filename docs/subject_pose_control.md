@@ -1,62 +1,67 @@
-# Subject mannequin pose control
+# Volumetric subject pose gating
 
 K2 has two intentionally different box types:
 
 - **Region boxes** have no mannequin. Use them for props, non-person objects, scenery,
-  architecture, or background bands. They continue to control prompt, spatial attention, and
-  regional LoRA routing.
-- **Subject boxes** own an articulated 18-joint mannequin. They retain the same regional prompt,
-  attention, and LoRA behavior, and can additionally contribute pose conditioning.
+  architecture, or background bands. They continue to control prompts, spatial attention,
+  and regional LoRA routing.
+- **Subject boxes** own a filled 13-joint mannequin plus an editable head ellipse. They retain
+  the same regional behavior and can define an early denoising volume and exclusive
+  prompt/LoRA ownership.
 
-Pose conditioning is generation-only. Existing version-19 projects migrate every old box to an
-ordinary region, so loading an older project never silently turns on a new conditioning path.
-
-## Install the pose model
-
-Use **Transfers → Hugging Face**, enter
-`InstantX/Qwen-Image-ControlNet-Union`, select
-`diffusion_pytorch_model.safetensors`, and install it into **ControlNet models**. The upstream
-Apache-2.0 model is approximately 3.54 GB:
-
-<https://huggingface.co/InstantX/Qwen-Image-ControlNet-Union>
-
-The same file can be uploaded through **Assets → ControlNet models**. Model data lives in the
-persistent workspace volume and survives a normal Pod image update.
+No pose ControlNet is installed or loaded. Version-20 projects migrate their old 18-point
+mannequins into the volumetric format, discard incompatible Qwen pose-ControlNet settings, and
+leave global pose gating disabled until the user enables it.
 
 ## Pose a subject
 
-1. Choose **Draw subject** and draw a box that covers the person's intended full-body extent.
+1. Choose **Draw subject** and draw a box around the intended person.
 2. Select the box. Use **Standing**, **Squatting**, or **Mirror** as a starting point.
-3. Drag the visible joints on the canvas. A joint may extend outside its subject box, which is
-   useful for a hand touching another subject or object.
-4. In **Advanced → Subject pose control**, enable conditioning and select the installed model.
-5. Start with strength `0.75`, start `0.0`, and end `0.75`.
+3. Drag the visible body joints. Drag the head’s center control to move it; drag the right and
+   bottom controls to change its horizontal and vertical radii.
+4. A limb may extend outside the subject box for interactions with another subject or object.
+5. Open **Advanced → Volumetric pose gating** and enable
+   **Constrain generation to subject mannequins**.
 
-All enabled subject mannequins are rendered into one full-canvas OpenPose map. K2 sends that one
-map through one ControlNet pass. It does not run a separate pose generation inside each box and
-does not clip limbs at box boundaries. Regional prompts and regional/character LoRAs continue to
-use the existing soft spatial attention and delta-routing paths.
+Ordinary regions never add mannequin gating. Disable **Enable this mannequin** on an individual
+subject to leave that person prompt-directed while other mannequins remain active.
 
-Practical control ranges:
+## Gate phases
 
-- Lower strength (`0.35`–`0.6`) allows more natural deviation from the mannequin.
-- The default (`0.75`) is a balanced starting point.
-- Higher strength (`0.9`–`1.2`) follows joints more strictly but can reduce anatomical
-  naturalness.
-- Ending around `0.65`–`0.8` establishes composition early and lets later denoising restore
-  texture and detail.
-- Ending near `1.0` keeps enforcing pose into the final steps and can look rigid.
+The existing **Steps** value is the number of normal unrestricted transitions. **Hard gate
+steps** and **Soft gate steps** are added before them:
 
-Disable a subject's **Enable this mannequin** checkbox when that person should remain
-prompt-directed while other subject mannequins stay active. Disable the global advanced option
-to run the exact non-ControlNet generation path.
+```text
+Hard 2 + Soft 2 + Normal 8 = 12 total transitions
+```
 
-## Memory behavior
+During hard steps, predicted denoising updates are accepted inside the union of the filled
+mannequin support volumes. Each subject prompt and regional/character LoRA is routed through
+that subject’s exclusive mannequin ownership. During soft steps, the gate opens according to
+the selected cosine, linear, exponential, or stepped release. Normal steps restore the existing
+regional fields exactly.
 
-The ControlNet is loaded only for a generation that has pose conditioning enabled and at least
-one enabled subject mannequin. After sampling, K2 explicitly unloads that ControlNet and clears
-its GPU allocation. The **Keep baseline model loaded between runs** option applies only to the
-baseline model; it does not retain the pose model.
+This is one continuous text-to-image sampler run with one initial noise tensor. There is no
+background pass, decode/re-encode boundary, or re-noising restart.
 
-PNG metadata records the selected model, strength, denoising interval, subject count, joint
-count, and connection count under `pose_conditioning`.
+## Sigma scheduling
+
+- **Scheduler default** uses the selected ComfyUI sampler/scheduler curve for the effective
+  transition count without warping. Start here.
+- **Phase weighted** assigns normalized trajectory shares to hard, soft, and normal phases.
+  Balanced, Pose lock, and Gentle presets are provided.
+- **Advanced curve** exposes every normalized transition boundary in a graph and numeric table.
+  It changes scheduler trajectory allocation, not gate strength.
+
+Nondefault sigma allocation is experimental with Turbo models and can materially affect image
+quality. The completed output records baseline/resolved sigmas, normalized positions, phase
+shares, gate strengths, and mask coverage in `pose_gating` PNG metadata.
+
+## Diagnostics
+
+Job progress identifies the current hard, soft, or normal phase, gate strength, current/next
+sigma, and normalized trajectory progress. Extremely small or large mannequin coverage produces
+a warning. A pose-gated generation is blocked when no enabled subject mannequin exists.
+
+Disabling global pose gating preserves the previous generation path: no dynamic denoise-mask
+hook, no explicit pose sigma schedule, and no additional sampler transitions.
