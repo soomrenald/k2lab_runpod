@@ -131,6 +131,26 @@ assert.ok(second.regions[0].pose.head.rx > 0);
 assert.equal(second.regions[1].region_type, "region");
 assert.equal(second.regions[1].pose, null);
 
+const version20 = structuredClone(first);
+version20.version = 20;
+version20.generation.pose_conditioning_enabled = true;
+version20.generation.pose_controlnet_model = "qwen-controlnet.safetensors";
+delete version20.generation.pose_gating_enabled;
+version20.regions[0].pose = {
+  enabled: true,
+  joints: [
+    ...Object.entries(first.regions[0].pose.joints).map(([name, point]) => ({ name, ...point, enabled: true })),
+    { name: "nose", x: 0.5, y: 0.1, enabled: true },
+    { name: "left_eye", x: 0.54, y: 0.08, enabled: true },
+    { name: "right_eye", x: 0.46, y: 0.08, enabled: true },
+  ],
+};
+const migrated20 = loadStudioProjectDocument(version20);
+assert.equal(migrated20.settings.generation.poseGating, false);
+assert.equal(migrated20.regions[0].pose.joints.length, 13);
+assert.ok(migrated20.regions[0].pose.head.rx > 0);
+assert.ok(migrated20.migrationNotices[0].includes("Qwen pose-ControlNet settings were removed"));
+
 const sanitizedProject = structuredClone(first);
 sanitizedProject.loras[0].path = "opaque:opaque-cloud-id";
 sanitizedProject.loras[0].display_name = "character.safetensors";

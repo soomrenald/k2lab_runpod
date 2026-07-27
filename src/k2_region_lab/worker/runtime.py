@@ -7,6 +7,7 @@ import os
 import platform
 import sys
 import traceback
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -52,10 +53,10 @@ from k2_region_lab.pose_gating import (
     PoseGateController,
     PoseGatePhases,
     PoseGateRegionBinding,
-    PoseGateRuntimeError,
     PoseGatingSettings,
     PoseMaskBuildError,
     SigmaScheduleError,
+    installed_pose_gate_hook,
     resolve_sigma_schedule,
 )
 from k2_region_lab.projector import (
@@ -1978,9 +1979,6 @@ class ComfyBaselineRuntime:
         previous_override = transformer_options.get(
             "optimized_attention_override", missing
         )
-        previous_denoise_mask_function = generation_model.model_options.get(
-            "denoise_mask_function", missing
-        )
         try:
             if attention_override is not None:
                 if previous_override is not missing:
@@ -1988,38 +1986,32 @@ class ComfyBaselineRuntime:
                         "another optimized-attention override is already installed"
                     )
                 transformer_options["optimized_attention_override"] = attention_override
-            if pose_controller is not None:
-                if previous_denoise_mask_function is not missing:
-                    raise PoseGateRuntimeError(
-                        "a pre-existing denoise-mask callback is incompatible with "
-                        "volumetric pose gating"
-                    )
-
-                def dynamic_denoise_mask(sigma, prepared_support_mask, extra_options):
-                    del extra_options
-                    pose_controller.observe_sigma(sigma)
-                    return pose_controller.denoise_mask(prepared_support_mask)
-
-                generation_model.model_options[
-                    "denoise_mask_function"
-                ] = dynamic_denoise_mask
-            samples = comfy.sample.sample(
-                generation_model,
-                noise,
-                effective_steps,
-                1.0,
-                sampler,
-                scheduler,
-                positive,
-                negative,
-                latent,
-                denoise=1.0,
-                noise_mask=pose_support_tensor,
-                sigmas=resolved_sigmas_tensor,
-                callback=callback,
-                disable_pbar=True,
-                seed=seed,
+            hook_context = (
+                installed_pose_gate_hook(
+                    generation_model.model_options,
+                    pose_controller,
+                )
+                if pose_controller is not None
+                else nullcontext()
             )
+            with hook_context:
+                samples = comfy.sample.sample(
+                    generation_model,
+                    noise,
+                    effective_steps,
+                    1.0,
+                    sampler,
+                    scheduler,
+                    positive,
+                    negative,
+                    latent,
+                    denoise=1.0,
+                    noise_mask=pose_support_tensor,
+                    sigmas=resolved_sigmas_tensor,
+                    callback=callback,
+                    disable_pbar=True,
+                    seed=seed,
+                )
         finally:
             if attention_override is not None:
                 attention_override.clear()
@@ -2027,15 +2019,6 @@ class ComfyBaselineRuntime:
                     transformer_options.pop("optimized_attention_override", None)
                 else:
                     transformer_options["optimized_attention_override"] = previous_override
-            if pose_controller is not None:
-                if previous_denoise_mask_function is missing:
-                    generation_model.model_options.pop(
-                        "denoise_mask_function", None
-                    )
-                else:
-                    generation_model.model_options[
-                        "denoise_mask_function"
-                    ] = previous_denoise_mask_function
         if pose_controller is not None:
             if pose_controller.current_transition != effective_steps:
                 raise RuntimeError(

@@ -42,6 +42,8 @@ assert.deepEqual(
 
 const inspector = await readFile(new URL("../src/components/Inspector.tsx", import.meta.url), "utf8");
 const poseGatingControls = await readFile(new URL("../src/components/PoseGatingControls.tsx", import.meta.url), "utf8");
+const poseSource = await readFile(new URL("../src/pose.ts", import.meta.url), "utf8");
+const canonicalPoseJoints = poseSource.split("POSE_JOINT_NAMES = [", 2)[1].split("] as const", 1)[0];
 const promptSection = inspector.split('{tab === "prompt"', 2)[1].split('{tab === "regions"', 1)[0];
 const regionsSection = inspector.split('{tab === "regions" && mode !== "face"', 2)[1].split('{tab === "loras"', 1)[0];
 
@@ -92,6 +94,13 @@ assert.ok(
     && poseGatingControls.includes("Hard gate steps")
     && poseGatingControls.includes("Sigma schedule"),
   "The inspector must distinguish volumetric subject boxes and expose pose-gating controls",
+);
+assert.ok(
+  canonicalPoseJoints.includes('"left_ankle"')
+    && poseSource.includes("PoseHeadState")
+    && !canonicalPoseJoints.includes('"nose"')
+    && !canonicalPoseJoints.includes('"left_eye"'),
+  "The canonical browser mannequin must use 13 body joints plus a head ellipse and no face handles",
 );
 
 for (const relativePath of [
