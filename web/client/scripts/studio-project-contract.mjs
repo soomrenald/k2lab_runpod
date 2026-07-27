@@ -52,6 +52,10 @@ settings.generation.seed = 8123;
 settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;
 settings.generation.batchCount = 4;
+settings.generation.poseGating = true;
+settings.generation.poseHardGateSteps = 3;
+settings.generation.poseSoftGateSteps = 2;
+settings.generation.poseSigmaMode = "phase_weighted";
 settings.generation.promptEmphases = [{
   id: "not-persisted", scopeId: "person", phrase: "red coat", strength: 1.2, occurrence: 7,
 }, {
@@ -106,7 +110,12 @@ assert.deepEqual(second.regions.map((region) => [region.id, region.priority, reg
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
 assert.equal(second.regions[0].region_type, "subject");
-assert.equal(second.regions[0].pose.joints.length, 18);
+assert.equal(second.version, 21);
+assert.equal(second.generation.pose_gating_enabled, true);
+assert.equal(second.generation.pose_hard_gate_steps, 3);
+assert.equal(second.regions[0].pose.format, "k2-volumetric-pose-v1");
+assert.equal(Object.keys(second.regions[0].pose.joints).length, 13);
+assert.ok(second.regions[0].pose.head.rx > 0);
 assert.equal(second.regions[1].region_type, "region");
 assert.equal(second.regions[1].pose, null);
 

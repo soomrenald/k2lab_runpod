@@ -32,7 +32,7 @@ export interface RegionBox {
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 interface DragState {
-  kind: "draw" | "move" | "resize" | "lasso" | "joint";
+  kind: "draw" | "move" | "resize" | "lasso" | "joint" | "head-move" | "head-resize-x" | "head-resize-y";
   regionId?: string;
   jointName?: PoseJointName;
   edge?: ResizeEdge;
@@ -223,6 +223,18 @@ export function RegionCanvas({
     });
   }
 
+  function beginHead(
+    event: React.PointerEvent<SVGElement>,
+    region: RegionBox,
+    kind: "head-move" | "head-resize-x" | "head-resize-y",
+  ) {
+    if (drawMode || selectedId !== region.id || !region.pose) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const start = point(event);
+    setDrag({ kind, regionId: region.id, startX: start.x, startY: start.y, initial: region });
+  }
+
   function movePointer(event: React.PointerEvent<SVGSVGElement>) {
     if (!drag) return;
     const current = point(event);
@@ -247,6 +259,42 @@ export function RegionCanvas({
             joints: region.pose.joints.map((joint) => (
               joint.name === drag.jointName ? { ...joint, x, y } : joint
             )),
+          },
+        };
+      }
+      if (
+        region.pose
+        && (drag.kind === "head-move" || drag.kind === "head-resize-x" || drag.kind === "head-resize-y")
+      ) {
+        const head = region.pose.head;
+        const cx = region.x + head.cx * region.width;
+        const cy = region.y + head.cy * region.height;
+        if (drag.kind === "head-move") {
+          return {
+            ...region,
+            pose: {
+              ...region.pose,
+              head: {
+                ...head,
+                cx: Math.max(-2, Math.min(3, (current.x - region.x) / region.width)),
+                cy: Math.max(-2, Math.min(3, (current.y - region.y) / region.height)),
+              },
+            },
+          };
+        }
+        return {
+          ...region,
+          pose: {
+            ...region.pose,
+            head: {
+              ...head,
+              rx: drag.kind === "head-resize-x"
+                ? Math.max(0.005, Math.min(1.5, Math.abs(current.x - cx) / region.width))
+                : head.rx,
+              ry: drag.kind === "head-resize-y"
+                ? Math.max(0.005, Math.min(1.5, Math.abs(current.y - cy) / region.height))
+                : head.ry,
+            },
           },
         };
       }
@@ -380,21 +428,45 @@ export function RegionCanvas({
                 </g>
                 {region.regionType === "subject" && region.pose?.enabled && (
                   <g className="pose-mannequin">
-                    {POSE_CONNECTIONS.map(([from, to]) => {
+                    {POSE_CONNECTIONS.filter(([from, to]) => !(
+                      (from === "left_shoulder" && to === "left_hip")
+                      || (from === "right_shoulder" && to === "right_hip")
+                      || (from === "left_hip" && to === "right_hip")
+                    )).map(([from, to]) => {
                       const first = region.pose!.joints.find((joint) => joint.name === from);
                       const second = region.pose!.joints.find((joint) => joint.name === to);
-                      if (!first?.enabled || !second?.enabled) return null;
+                      if (!first || !second) return null;
+                      const lowerLimb = from.includes("hip") || from.includes("knee");
+                      const width = Math.max(8, Math.min(region.width, region.height) * (lowerLimb ? 0.07 : 0.05));
                       return (
                         <line
+                          className="pose-volume"
                           key={`${from}-${to}`}
                           x1={region.x + first.x * region.width}
                           y1={region.y + first.y * region.height}
                           x2={region.x + second.x * region.width}
                           y2={region.y + second.y * region.height}
+                          strokeWidth={width}
                         />
                       );
                     })}
-                    {region.pose.joints.filter((joint) => joint.enabled).map((joint) => (
+                    <polygon
+                      className="pose-volume pose-torso"
+                      points={[
+                        "left_shoulder", "right_shoulder", "right_hip", "left_hip",
+                      ].map((name) => {
+                        const joint = region.pose!.joints.find((item) => item.name === name)!;
+                        return `${region.x + joint.x * region.width},${region.y + joint.y * region.height}`;
+                      }).join(" ")}
+                    />
+                    <ellipse
+                      className="pose-volume pose-head"
+                      cx={region.x + region.pose.head.cx * region.width}
+                      cy={region.y + region.pose.head.cy * region.height}
+                      rx={region.pose.head.rx * region.width}
+                      ry={region.pose.head.ry * region.height}
+                    />
+                    {region.id === selectedId && region.pose.joints.map((joint) => (
                       <circle
                         key={joint.name}
                         className={region.id === selectedId ? "pose-joint editable" : "pose-joint"}
@@ -408,6 +480,29 @@ export function RegionCanvas({
                         }
                       />
                     ))}
+                    {region.id === selectedId && <>
+                      <circle
+                        className="pose-head-handle pose-head-move"
+                        cx={region.x + region.pose.head.cx * region.width}
+                        cy={region.y + region.pose.head.cy * region.height}
+                        r={8}
+                        onPointerDown={(event) => beginHead(event, region, "head-move")}
+                      />
+                      <circle
+                        className="pose-head-handle pose-head-resize"
+                        cx={region.x + (region.pose.head.cx + region.pose.head.rx) * region.width}
+                        cy={region.y + region.pose.head.cy * region.height}
+                        r={7}
+                        onPointerDown={(event) => beginHead(event, region, "head-resize-x")}
+                      />
+                      <circle
+                        className="pose-head-handle pose-head-resize"
+                        cx={region.x + region.pose.head.cx * region.width}
+                        cy={region.y + (region.pose.head.cy + region.pose.head.ry) * region.height}
+                        r={7}
+                        onPointerDown={(event) => beginHead(event, region, "head-resize-y")}
+                      />
+                    </>}
                   </g>
                 )}
                 {region.id === selectedId && resizeHandles(region).map((handle) => (
