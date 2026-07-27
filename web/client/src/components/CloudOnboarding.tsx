@@ -19,6 +19,7 @@ interface Props {
   gpus: GpuOption[];
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
+  existingWorkspaces: WorkspaceRecord[];
   onCredential: (
     credential: CredentialStatus,
     gpus: GpuOption[],
@@ -48,6 +49,7 @@ export function CloudOnboarding({
   gpus,
   datacenters,
   networkVolumes,
+  existingWorkspaces,
   onCredential,
   onWorkspace,
 }: Props) {
@@ -60,6 +62,7 @@ export function CloudOnboarding({
   const [workspaceName, setWorkspaceName] = useState("My K2 workspace");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [workspaceError, setWorkspaceError] = useState("");
 
   const selectedGpus = useMemo(
     () => request.gpu_priority_ids
@@ -83,6 +86,16 @@ export function CloudOnboarding({
           !["", "none", "unavailable"].includes(item.stock_status.toLowerCase()),
       )
       .map((item) => item.gpu_type_id) ?? [],
+  );
+  const reconnectableWorkspaces = useMemo(
+    () => [...existingWorkspaces]
+      .filter((workspace) => workspace.state !== "deleted")
+      .sort(
+        (left, right) =>
+          new Date(right.updated_at).getTime()
+          - new Date(left.updated_at).getTime(),
+      ),
+    [existingWorkspaces],
   );
 
   async function connect() {
@@ -153,6 +166,26 @@ export function CloudOnboarding({
       onWorkspace(await controlPlane.createWorkspace(plan.id, workspaceName));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create workspace");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectWorkspace(workspace: WorkspaceRecord) {
+    setBusy(true);
+    setWorkspaceError("");
+    try {
+      onWorkspace(
+        capabilities.development_backend
+          ? workspace
+          : await controlPlane.workspace(workspace.id),
+      );
+    } catch (caught) {
+      setWorkspaceError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not connect to the existing workspace",
+      );
     } finally {
       setBusy(false);
     }
@@ -229,6 +262,67 @@ export function CloudOnboarding({
         </div>
         <span className="account-chip"><span className="status-dot online" /> RunPod {credential.key_hint}</span>
       </header>
+
+      {reconnectableWorkspaces.length > 0 && (
+        <section className="existing-workspaces glass-card">
+          <div className="existing-workspaces-heading">
+            <div>
+              <p className="kicker">Existing cloud workspaces</p>
+              <h2>Reconnect without recreating</h2>
+              <p>
+                Opening a workspace does not start stopped compute. You can review it
+                first and start the GPU from the Studio workspace menu.
+              </p>
+            </div>
+            <span>{reconnectableWorkspaces.length} saved</span>
+          </div>
+          <div className="existing-workspace-list">
+            {reconnectableWorkspaces.map((workspace) => {
+              const computeActive = [
+                "provisioning",
+                "starting",
+                "ready",
+                "stopping",
+              ].includes(workspace.state);
+              return (
+                <article className="existing-workspace-row" key={workspace.id}>
+                  <span
+                    className={`status-dot ${computeActive ? "online" : "stopped"}`}
+                  />
+                  <div className="existing-workspace-identity">
+                    <strong>{workspace.name}</strong>
+                    <small>
+                      {workspace.provider_resource_id
+                        ? `Pod ${workspace.provider_resource_id}`
+                        : workspace.network_volume_id
+                          ? `Volume ${workspace.network_volume_id}`
+                          : "No active Pod"}
+                    </small>
+                  </div>
+                  <div className="existing-workspace-details">
+                    <span>{workspace.gpu.display_name}</span>
+                    <small>
+                      {workspace.mode === "portable_workspace"
+                        ? "Portable"
+                        : "Persistent Pod"}
+                      {" · "}
+                      {workspace.state}
+                    </small>
+                  </div>
+                  <button
+                    className="quiet-button"
+                    disabled={busy}
+                    onClick={() => void connectWorkspace(workspace)}
+                  >
+                    <Icon name="cloud" /> Connect
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+          {workspaceError && <div className="error-banner">{workspaceError}</div>}
+        </section>
+      )}
 
       <div className="provision-grid">
         <section className="config-column">
