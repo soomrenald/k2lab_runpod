@@ -18,6 +18,23 @@ export const POSE_JOINT_NAMES = [
 
 export type PoseJointName = typeof POSE_JOINT_NAMES[number];
 
+export const POSE_TORSO_JOINTS: PoseJointName[] = [
+  "neck",
+  "left_shoulder",
+  "right_shoulder",
+  "left_hip",
+  "right_hip",
+];
+
+export const POSE_LIMB_GROUPS = {
+  left_arm: ["left_shoulder", "left_elbow", "left_wrist"],
+  right_arm: ["right_shoulder", "right_elbow", "right_wrist"],
+  left_leg: ["left_hip", "left_knee", "left_ankle"],
+  right_leg: ["right_hip", "right_knee", "right_ankle"],
+} as const satisfies Record<string, readonly PoseJointName[]>;
+
+export type PoseLimbName = keyof typeof POSE_LIMB_GROUPS;
+
 export interface PoseJointState {
   name: PoseJointName;
   x: number;
@@ -36,6 +53,82 @@ export interface SubjectPoseState {
   enabled: boolean;
   joints: PoseJointState[];
   head: PoseHeadState;
+}
+
+export function poseGroupCenter(
+  pose: SubjectPoseState,
+  names: readonly PoseJointName[],
+): { x: number; y: number } {
+  const selected = new Set<PoseJointName>(names);
+  const joints = pose.joints.filter((joint) => selected.has(joint.name));
+  if (joints.length === 0) return { x: 0.5, y: 0.5 };
+  return {
+    x: joints.reduce((sum, joint) => sum + joint.x, 0) / joints.length,
+    y: joints.reduce((sum, joint) => sum + joint.y, 0) / joints.length,
+  };
+}
+
+export function translatePoseGroup(
+  pose: SubjectPoseState,
+  names: readonly PoseJointName[],
+  dx: number,
+  dy: number,
+  moveHead = false,
+): SubjectPoseState {
+  const selected = new Set<PoseJointName>(names);
+  const points = pose.joints.filter((joint) => selected.has(joint.name));
+  if (moveHead) points.push({ name: "neck", x: pose.head.cx, y: pose.head.cy });
+  const boundedDx = Math.max(
+    Math.max(...points.map((point) => -2 - point.x)),
+    Math.min(Math.min(...points.map((point) => 3 - point.x)), dx),
+  );
+  const boundedDy = Math.max(
+    Math.max(...points.map((point) => -2 - point.y)),
+    Math.min(Math.min(...points.map((point) => 3 - point.y)), dy),
+  );
+  return {
+    ...pose,
+    joints: pose.joints.map((joint) => (
+      selected.has(joint.name)
+        ? { ...joint, x: joint.x + boundedDx, y: joint.y + boundedDy }
+        : joint
+    )),
+    head: moveHead
+      ? { ...pose.head, cx: pose.head.cx + boundedDx, cy: pose.head.cy + boundedDy }
+      : pose.head,
+  };
+}
+
+export function rotatePoseGroup(
+  pose: SubjectPoseState,
+  names: readonly PoseJointName[],
+  center: { x: number; y: number },
+  radians: number,
+  scaleX: number,
+  scaleY: number,
+  moveHead = false,
+): SubjectPoseState {
+  const selected = new Set<PoseJointName>(names);
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const rotate = (x: number, y: number) => {
+    const offsetX = (x - center.x) * scaleX;
+    const offsetY = (y - center.y) * scaleY;
+    return {
+      x: center.x + (offsetX * cosine - offsetY * sine) / scaleX,
+      y: center.y + (offsetX * sine + offsetY * cosine) / scaleY,
+    };
+  };
+  const rotatedHead = rotate(pose.head.cx, pose.head.cy);
+  return {
+    ...pose,
+    joints: pose.joints.map((joint) => (
+      selected.has(joint.name) ? { ...joint, ...rotate(joint.x, joint.y) } : joint
+    )),
+    head: moveHead
+      ? { ...pose.head, cx: rotatedHead.x, cy: rotatedHead.y }
+      : pose.head,
+  };
 }
 
 export const POSE_CONNECTIONS: [PoseJointName, PoseJointName][] = [

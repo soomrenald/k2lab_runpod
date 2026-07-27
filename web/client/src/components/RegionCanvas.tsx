@@ -1,8 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
 import {
+  POSE_LIMB_GROUPS,
   POSE_CONNECTIONS,
+  POSE_JOINT_NAMES,
+  POSE_TORSO_JOINTS,
+  poseGroupCenter,
+  rotatePoseGroup,
   standingPose,
+  translatePoseGroup,
+  type PoseLimbName,
   type PoseJointName,
   type SubjectPoseState,
 } from "../pose.ts";
@@ -32,9 +39,10 @@ export interface RegionBox {
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 interface DragState {
-  kind: "draw" | "move" | "resize" | "lasso" | "joint" | "head-move" | "head-resize-x" | "head-resize-y";
+  kind: "draw" | "move" | "resize" | "lasso" | "joint" | "head-move" | "head-resize-x" | "head-resize-y" | "pose-group-move" | "torso-rotate";
   regionId?: string;
   jointName?: PoseJointName;
+  poseGroup?: PoseLimbName | "torso";
   edge?: ResizeEdge;
   startX: number;
   startY: number;
@@ -235,6 +243,26 @@ export function RegionCanvas({
     setDrag({ kind, regionId: region.id, startX: start.x, startY: start.y, initial: region });
   }
 
+  function beginPoseGroup(
+    event: React.PointerEvent<SVGElement>,
+    region: RegionBox,
+    poseGroup: PoseLimbName | "torso",
+    kind: "pose-group-move" | "torso-rotate" = "pose-group-move",
+  ) {
+    if (drawMode || selectedId !== region.id || !region.pose) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const start = point(event);
+    setDrag({
+      kind,
+      regionId: region.id,
+      poseGroup,
+      startX: start.x,
+      startY: start.y,
+      initial: region,
+    });
+  }
+
   function movePointer(event: React.PointerEvent<SVGSVGElement>) {
     if (!drag) return;
     const current = point(event);
@@ -249,6 +277,51 @@ export function RegionCanvas({
     if (!drag.regionId) return;
     onRegions(regions.map((region) => {
       if (region.id !== drag.regionId) return region;
+      if (
+        region.pose
+        && drag.initial?.pose
+        && drag.kind === "pose-group-move"
+        && drag.poseGroup
+      ) {
+        const names = drag.poseGroup === "torso"
+          ? POSE_TORSO_JOINTS
+          : POSE_LIMB_GROUPS[drag.poseGroup];
+        return {
+          ...region,
+          pose: translatePoseGroup(
+            drag.initial.pose,
+            names,
+            (current.x - drag.startX) / region.width,
+            (current.y - drag.startY) / region.height,
+            drag.poseGroup === "torso",
+          ),
+        };
+      }
+      if (
+        region.pose
+        && drag.initial?.pose
+        && drag.kind === "torso-rotate"
+      ) {
+        const center = poseGroupCenter(drag.initial.pose, [
+          "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+        ]);
+        const centerX = region.x + center.x * region.width;
+        const centerY = region.y + center.y * region.height;
+        const startAngle = Math.atan2(drag.startY - centerY, drag.startX - centerX);
+        const currentAngle = Math.atan2(current.y - centerY, current.x - centerX);
+        return {
+          ...region,
+          pose: rotatePoseGroup(
+            drag.initial.pose,
+            POSE_JOINT_NAMES,
+            center,
+            currentAngle - startAngle,
+            region.width,
+            region.height,
+            true,
+          ),
+        };
+      }
       if (drag.kind === "joint" && drag.jointName && region.pose) {
         const x = Math.max(-2, Math.min(3, (current.x - region.x) / region.width));
         const y = Math.max(-2, Math.min(3, (current.y - region.y) / region.height));
@@ -428,6 +501,19 @@ export function RegionCanvas({
                 </g>
                 {region.regionType === "subject" && region.pose?.enabled && (
                   <g className="pose-mannequin">
+                    {(() => {
+                      const neck = region.pose!.joints.find((joint) => joint.name === "neck")!;
+                      return (
+                        <line
+                          className="pose-volume pose-neck"
+                          x1={region.x + region.pose!.head.cx * region.width}
+                          y1={region.y + region.pose!.head.cy * region.height}
+                          x2={region.x + neck.x * region.width}
+                          y2={region.y + neck.y * region.height}
+                          strokeWidth={Math.max(8, Math.min(region.width, region.height) * 0.045)}
+                        />
+                      );
+                    })()}
                     {POSE_CONNECTIONS.filter(([from, to]) => !(
                       (from === "left_shoulder" && to === "left_hip")
                       || (from === "right_shoulder" && to === "right_hip")
@@ -481,6 +567,66 @@ export function RegionCanvas({
                       />
                     ))}
                     {region.id === selectedId && <>
+                      {(() => {
+                        const torsoCenter = poseGroupCenter(region.pose!, [
+                          "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+                        ]);
+                        const shoulderCenter = poseGroupCenter(region.pose!, [
+                          "left_shoulder", "right_shoulder",
+                        ]);
+                        const hipCenter = poseGroupCenter(region.pose!, [
+                          "left_hip", "right_hip",
+                        ]);
+                        const directionX = (shoulderCenter.x - hipCenter.x) * region.width;
+                        const directionY = (shoulderCenter.y - hipCenter.y) * region.height;
+                        const directionLength = Math.max(1, Math.hypot(directionX, directionY));
+                        const rotateX = region.x + shoulderCenter.x * region.width + directionX / directionLength * 34;
+                        const rotateY = region.y + shoulderCenter.y * region.height + directionY / directionLength * 34;
+                        const centerX = region.x + torsoCenter.x * region.width;
+                        const centerY = region.y + torsoCenter.y * region.height;
+                        return <>
+                          <line className="pose-control-leader" x1={centerX} y1={centerY} x2={rotateX} y2={rotateY} />
+                          <circle
+                            className="pose-group-handle pose-torso-move"
+                            cx={centerX}
+                            cy={centerY}
+                            r={11}
+                            onPointerDown={(event) => beginPoseGroup(event, region, "torso")}
+                          >
+                            <title>Move torso and attached head as one unit</title>
+                          </circle>
+                          <circle
+                            className="pose-rotate-handle"
+                            cx={rotateX}
+                            cy={rotateY}
+                            r={9}
+                            onPointerDown={(event) => beginPoseGroup(event, region, "torso", "torso-rotate")}
+                          >
+                            <title>Rotate the entire figure around the torso center</title>
+                          </circle>
+                        </>;
+                      })()}
+                      {(Object.entries(POSE_LIMB_GROUPS) as [PoseLimbName, readonly PoseJointName[]][]).map(([limb, names]) => {
+                        const center = poseGroupCenter(region.pose!, names);
+                        const side = limb.startsWith("left_") ? -1 : 1;
+                        const cx = region.x + center.x * region.width + side * 19;
+                        const cy = region.y + center.y * region.height;
+                        return (
+                          <rect
+                            key={limb}
+                            className="pose-group-handle pose-limb-move"
+                            x={cx - 8}
+                            y={cy - 8}
+                            width={16}
+                            height={16}
+                            rx={4}
+                            transform={`rotate(45 ${cx} ${cy})`}
+                            onPointerDown={(event) => beginPoseGroup(event, region, limb)}
+                          >
+                            <title>{`Move ${limb.replace("_", " ")} as one unit`}</title>
+                          </rect>
+                        );
+                      })}
                       <circle
                         className="pose-head-handle pose-head-move"
                         cx={region.x + region.pose.head.cx * region.width}

@@ -251,6 +251,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .pose-head-handle { pointer-events: all; fill: #f8fbff; stroke: #071118; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .pose-head-move { cursor: move; }
 .pose-head-resize { fill: #9be1ff; cursor: nwse-resize; }
+.pose-neck { fill: none; }
+.pose-control-leader { stroke: rgba(246,203,112,.9); stroke-width: 2; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.pose-group-handle, .pose-rotate-handle { pointer-events: all; stroke: #071118; stroke-width: 3; vector-effect: non-scaling-stroke; cursor: move; }
+.pose-torso-move { fill: #f6cb70; }
+.pose-limb-move { fill: #ff91c8; }
+.pose-rotate-handle { fill: #fff5d7; cursor: grab; }
+.pose-group-handle:active, .pose-rotate-handle:active { cursor: grabbing; }
 .pose-gating-panel { display: grid; gap: 10px; }
 .pose-step-grid, .pose-share-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pose-step-grid label, .pose-share-grid label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
@@ -382,6 +389,12 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .danger-icon { width: 42px; height: 42px; display: grid; place-items: center; margin-bottom: 16px; color: var(--danger); background: rgba(255,112,111,.09); border-radius: 11px; }
 .danger-icon svg { width: 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.submission-recovery-modal { width: min(560px, 100%); }
+.submission-recovery-icon { color: #f0bc62; background: rgba(240,188,98,.12); border-color: rgba(240,188,98,.28); }
+.submission-command-id { display: grid; gap: 5px; margin: 18px 0 13px; padding: 12px 14px; border: 1px solid #313947; border-radius: 10px; background: #0d1118; }
+.submission-command-id span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.submission-command-id code { overflow-wrap: anywhere; color: #dfe7f3; font-size: 11px; }
+.submission-recovery-actions { justify-content: space-between; }
 
 .loading-shell, .fatal-shell { min-height: 100vh; display: grid; place-items: center; align-content: center; gap: 15px; padding: 30px; text-align: center; background: var(--bg); }
 .loading-mark { width: 54px; height: 54px; display: grid; place-items: center; color: #11160e; background: var(--accent); border-radius: 15px; font-family: "Manrope"; font-weight: 800; }

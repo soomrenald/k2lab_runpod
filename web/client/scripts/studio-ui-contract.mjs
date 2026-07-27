@@ -3,7 +3,23 @@ import { readFile } from "node:fs/promises";
 import { committedNumber } from "../src/numericDraft.ts";
 import { sortOutputFiles } from "../src/outputSort.ts";
 import { SerialRequestLane } from "../src/requestQueue.ts";
+import {
+  clearPendingJobSubmission,
+  isAmbiguousJobSubmissionError,
+  loadPendingJobSubmission,
+  savePendingJobSubmission,
+  uniqueJobs,
+} from "../src/submissionRecovery.ts";
 import { COMFYUI_SCHEDULERS } from "../src/studioProject.ts";
+import {
+  POSE_LIMB_GROUPS,
+  POSE_JOINT_NAMES,
+  POSE_TORSO_JOINTS,
+  poseGroupCenter,
+  rotatePoseGroup,
+  standingPose,
+  translatePoseGroup,
+} from "../src/pose.ts";
 
 assert.equal(committedNumber("", 1, 100), null, "an empty editing draft must remain transient");
 assert.equal(committedNumber("-", -10, 10), null, "an incomplete signed draft must remain transient");
@@ -32,6 +48,90 @@ const urgentRequest = queuedRequest("urgent", 0, 0);
 assert.deepEqual(
   await Promise.all([firstRequest, lowPriorityRequest, urgentRequest]),
   ["first", "low", "urgent"],
+);
+
+const recoveryStorage = new Map();
+const storageAdapter = {
+  getItem: (key) => recoveryStorage.get(key) ?? null,
+  setItem: (key, value) => recoveryStorage.set(key, value),
+  removeItem: (key) => recoveryStorage.delete(key),
+};
+const pendingRecovery = {
+  version: 1,
+  workspaceId: "workspace-1",
+  payloads: [{
+    command_id: "stable-command-id",
+    kind: "generate",
+    project_id: "studio-workspace-1",
+    project: { schema: "k2-region-lab-project" },
+    filename_prefix: "k2lab",
+  }],
+  acknowledgedJobs: [],
+  createdAt: "2026-07-27T00:00:00Z",
+  lastError: "The workspace agent did not finish before its network timeout.",
+};
+savePendingJobSubmission(storageAdapter, pendingRecovery);
+assert.deepEqual(
+  loadPendingJobSubmission(storageAdapter, "workspace-1"),
+  pendingRecovery,
+  "A timed-out POST must retain its exact idempotent payload across a page refresh",
+);
+assert.equal(isAmbiguousJobSubmissionError({ status: 504, code: "agent_read_timeout" }), true);
+assert.equal(isAmbiguousJobSubmissionError({ status: 400, code: "invalid_job" }), false);
+assert.deepEqual(
+  uniqueJobs([
+    { id: "same", command_id: "one", state: "queued" },
+    { id: "same", command_id: "one", state: "running" },
+  ]).map((item) => item.state),
+  ["running"],
+  "Recovered job receipts must replace, rather than duplicate, an existing tracked job",
+);
+clearPendingJobSubmission(storageAdapter, "workspace-1");
+assert.equal(loadPendingJobSubmission(storageAdapter, "workspace-1"), null);
+
+const standing = standingPose();
+const movedArm = translatePoseGroup(standing, POSE_LIMB_GROUPS.left_arm, 0.1, -0.05);
+for (const name of POSE_LIMB_GROUPS.left_arm) {
+  const before = standing.joints.find((joint) => joint.name === name);
+  const after = movedArm.joints.find((joint) => joint.name === name);
+  assert.ok(Math.abs(after.x - before.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(after.y - before.y + 0.05) < 1e-9);
+}
+assert.deepEqual(
+  movedArm.joints.find((joint) => joint.name === "right_elbow"),
+  standing.joints.find((joint) => joint.name === "right_elbow"),
+  "A limb group handle must not move the opposite limb",
+);
+const movedTorso = translatePoseGroup(standing, POSE_TORSO_JOINTS, 0.08, 0.03, true);
+assert.ok(Math.abs(movedTorso.head.cx - standing.head.cx - 0.08) < 1e-9);
+assert.ok(Math.abs(movedTorso.head.cy - standing.head.cy - 0.03) < 1e-9);
+const torsoCenter = poseGroupCenter(standing, [
+  "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+]);
+const rotatedTorso = rotatePoseGroup(
+  standing,
+  POSE_JOINT_NAMES,
+  torsoCenter,
+  Math.PI / 3,
+  400,
+  900,
+  true,
+);
+const beforeShoulder = standing.joints.find((joint) => joint.name === "left_shoulder");
+const afterShoulder = rotatedTorso.joints.find((joint) => joint.name === "left_shoulder");
+assert.ok(Math.abs(
+  Math.hypot(
+    (beforeShoulder.x - torsoCenter.x) * 400,
+    (beforeShoulder.y - torsoCenter.y) * 900,
+  ) - Math.hypot(
+    (afterShoulder.x - torsoCenter.x) * 400,
+    (afterShoulder.y - torsoCenter.y) * 900,
+  ),
+) < 1e-8, "Torso rotation must preserve joint distance in canvas space");
+assert.notDeepEqual(
+  rotatedTorso.joints.find((joint) => joint.name === "right_ankle"),
+  standing.joints.find((joint) => joint.name === "right_ankle"),
+  "The torso rotation handle must rotate the entire figure, including distal limbs",
 );
 assert.equal(peakRequests, 1, "Each browser request lane must remain strictly serialized");
 assert.deepEqual(
@@ -232,6 +332,15 @@ assert.ok(
   "Starting a new job must retain the current output until its replacement completes",
 );
 assert.ok(
+  runRemoteJob.includes("isAmbiguousJobSubmissionError")
+    && runRemoteJob.includes("rememberSubmissionRecovery(recovery)")
+    && workspaceStudio.includes("recoverTimedOutSubmission")
+    && workspaceStudio.includes("Recover submission")
+    && workspaceStudio.includes("Cancel all remote work")
+    && workspaceStudio.includes("submissionRecovery.payloads[0].command_id"),
+  "An ambiguous job POST must retain its command ID and present safe recovery and cancel-all remedies",
+);
+assert.ok(
   runRemoteJob.includes('...(mode === "face"')
     && runRemoteJob.includes('face_detector_file_id: mode === "face"'),
   "Generation and image editing must not require or submit a face detector",
@@ -293,6 +402,15 @@ assert.ok(
     && regionCanvas.includes("availableHeight / canvasHeight")
     && regionCanvas.includes('aspectRatio: `${canvasWidth} / ${canvasHeight}`'),
   "The canvas frame must scale uniformly against both available axes when the event dock is resized",
+);
+assert.ok(
+  regionCanvas.includes("pose-torso-move")
+    && regionCanvas.includes("pose-rotate-handle")
+    && regionCanvas.includes("POSE_LIMB_GROUPS")
+    && regionCanvas.includes("translatePoseGroup")
+    && regionCanvas.includes("rotatePoseGroup")
+    && regionCanvas.includes("pose-volume pose-neck"),
+  "The volumetric mannequin must expose attached torso translation/rotation and whole-limb controls",
 );
 const uploadQueue = await readFile(new URL("../src/useUploadQueue.ts", import.meta.url), "utf8");
 assert.ok(
