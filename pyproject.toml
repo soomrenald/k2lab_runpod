@@ -45,6 +45,14 @@ k2lab-runpod = "k2_region_lab.web.local_runpod:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/k2_region_lab"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/docs/advanced_controls.md",
+    "/docs/lface_*.md",
+    "/k2lab_volumetric_pose_gating_spec.md",
+    "/my-bash.*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

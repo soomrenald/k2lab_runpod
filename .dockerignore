@@ -12,3 +12,7 @@ logs
 dist
 build
 *.egg-info
+docs/advanced_controls.md
+docs/lface_*.md
+k2lab_volumetric_pose_gating_spec.md
+my-bash.*

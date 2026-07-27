@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping, Sequence
@@ -23,6 +24,10 @@ class SigmaScheduleError(PoseGatingError):
 
 
 class PoseGateRuntimeError(PoseGatingError):
+    pass
+
+
+class PoseGateHookIncompatibleError(PoseGateRuntimeError):
     pass
 
 
@@ -407,3 +412,28 @@ class PoseGateRegionBinding:
             (1.0 - gate) * normal + gate * owned
             for normal, owned in zip(normal_field, hard, strict=True)
         )
+
+
+@contextmanager
+def installed_pose_gate_hook(
+    model_options: dict[str, Any],
+    controller: PoseGateController,
+):
+    """Install the ComfyUI denoise-mask hook and restore exact prior state."""
+    key = "denoise_mask_function"
+    if key in model_options:
+        raise PoseGateHookIncompatibleError(
+            "a pre-existing denoise-mask callback is incompatible with "
+            "volumetric pose gating"
+        )
+
+    def dynamic_denoise_mask(sigma, prepared_support_mask, extra_options):
+        del extra_options
+        controller.observe_sigma(sigma)
+        return controller.denoise_mask(prepared_support_mask)
+
+    model_options[key] = dynamic_denoise_mask
+    try:
+        yield dynamic_denoise_mask
+    finally:
+        model_options.pop(key, None)

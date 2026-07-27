@@ -72,8 +72,8 @@ WORKER_ERROR_MESSAGES = {
         "Another sampling mask hook conflicts with volumetric pose gating."
     ),
     "generation_failed": (
-        "Generation failed while applying the selected LoRA or sampling settings. "
-        "Verify that the LoRA targets Krea 2 and try again."
+        "Generation failed during sampling. Review the detailed worker diagnostic "
+        "and verify the selected generation settings."
     ),
     "image_edit_failed": (
         "Image editing failed while applying the selected models or edit settings."
@@ -107,7 +107,8 @@ def classify_worker_error(
     ):
         code = "pose_gate_schedule_invalid"
     elif command_kind == CommandKind.GENERATE_BASELINE and (
-        "pre-existing denoise-mask" in combined or "posegatehook" in combined
+        "pre-existing denoise-mask" in combined
+        or "posegatehookincompatible" in combined
     ):
         code = "pose_gate_hook_incompatible"
     elif command_kind == CommandKind.GENERATE_BASELINE and (

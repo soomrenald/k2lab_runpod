@@ -1,7 +1,12 @@
 from k2_region_lab.pose import PoseJoint, SubjectPose, default_subject_pose
 from k2_region_lab.pose_control import render_openpose_map
 from k2_region_lab.regions import PixelBox, RegionDefinition
-from k2_region_lab.pose_gating import PoseGateRuntimeError
+from k2_region_lab.pose_gating import (
+    PoseGateHookIncompatibleError,
+    PoseGateRuntimeError,
+    PoseGateScheduleError,
+    PoseMaskBuildError,
+)
 from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
 
 
@@ -85,7 +90,7 @@ def test_pose_gate_errors_are_actionable() -> None:
 
 def test_pose_gate_hook_conflict_has_distinct_diagnostic() -> None:
     code, message = classify_worker_error(
-        PoseGateRuntimeError(
+        PoseGateHookIncompatibleError(
             "a pre-existing denoise-mask callback is incompatible with volumetric pose gating"
         ),
         CommandKind.GENERATE_BASELINE,
@@ -93,3 +98,27 @@ def test_pose_gate_hook_conflict_has_distinct_diagnostic() -> None:
 
     assert code == "pose_gate_hook_incompatible"
     assert "conflicts" in message
+
+
+def test_unrelated_sampling_error_does_not_blame_lora() -> None:
+    code, message = classify_worker_error(
+        RuntimeError("sampler produced a non-finite tensor"),
+        CommandKind.GENERATE_BASELINE,
+    )
+
+    assert code == "generation_failed"
+    assert "LoRA" not in message
+
+
+def test_pose_mask_and_schedule_errors_have_distinct_codes() -> None:
+    mask_code, _ = classify_worker_error(
+        PoseMaskBuildError("empty mask"),
+        CommandKind.GENERATE_BASELINE,
+    )
+    schedule_code, _ = classify_worker_error(
+        PoseGateScheduleError("invalid phases"),
+        CommandKind.GENERATE_BASELINE,
+    )
+
+    assert mask_code == "pose_mask_build_failed"
+    assert schedule_code == "pose_gate_schedule_invalid"
