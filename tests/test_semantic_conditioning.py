@@ -19,6 +19,7 @@ from k2_region_lab.semantic_conditioning import (
     PoseSemanticMode,
     PoseSemanticPlan,
     PoseSemanticRuntime,
+    SemanticMaskCache,
     SemanticSamplerHookError,
     SubjectSemanticConditioning,
     annotate_conditioning,
@@ -189,6 +190,28 @@ def test_prediction_fusion_hard_soft_and_normal_math() -> None:
     assert torch.equal(normal, full)
 
 
+def test_semantic_masks_and_fusion_support_krea_spatiotemporal_latents() -> None:
+    torch = pytest.importorskip("torch")
+    full = torch.ones((1, 16, 1, 2, 3))
+    subject_prediction = torch.full_like(full, 7.0)
+    ownership = torch.tensor([[1.0, 0.5, 0.0], [0.0, 1.0, 0.0]])
+
+    masks = SemanticMaskCache().for_prediction(
+        full,
+        {"subject": ownership},
+    )
+    fused = fuse_subject_predictions(
+        full=full,
+        subjects={"subject": subject_prediction},
+        ownership_masks=masks,
+        gate_strength=1.0,
+    )
+
+    assert masks["subject"].shape == (1, 1, 1, 2, 3)
+    assert fused.shape == full.shape
+    assert fused[0, 0, 0].tolist() == [[7.0, 4.0, 1.0], [1.0, 7.0, 1.0]]
+
+
 def _bound_subject(region_id: str, token_count: int) -> BoundSubjectPrompt:
     return BoundSubjectPrompt(
         region_id=region_id,
@@ -204,7 +227,10 @@ def _bound_subject(region_id: str, token_count: int) -> BoundSubjectPrompt:
     )
 
 
-def test_semantic_hook_evaluates_scopes_without_advancing_transition() -> None:
+@pytest.mark.parametrize("latent_shape", [(1, 4, 2, 2), (1, 16, 1, 2, 2)])
+def test_semantic_hook_evaluates_scopes_without_advancing_transition(
+    latent_shape: tuple[int, ...],
+) -> None:
     torch = pytest.importorskip("torch")
     controller = SimpleNamespace(
         gate_strength=1.0,
@@ -255,7 +281,7 @@ def test_semantic_hook_evaluates_scopes_without_advancing_transition() -> None:
         "k2_conditioning_prompt_sha256": "a" * 64,
         "k2_conditioning_text_token_count": 7,
     }
-    x = torch.zeros((1, 4, 2, 2))
+    x = torch.zeros(latent_shape)
 
     with installed_semantic_prediction_hook(options, runtime, comfy) as hook:
         result = hook(

@@ -281,9 +281,10 @@ class SemanticMaskCache:
         import torch
         import torch.nn.functional as functional
 
-        if prediction.ndim != 4:
+        if prediction.ndim not in {4, 5}:
             raise SemanticPredictionShapeError(
-                f"semantic prediction must be [B,C,H,W], got {tuple(prediction.shape)}"
+                "semantic prediction must be [B,C,H,W] or [B,C,T,H,W], "
+                f"got {tuple(prediction.shape)}"
             )
         selected = tuple(region_ids or ownership_masks.keys())
         prepared: dict[str, Any] = {}
@@ -297,6 +298,7 @@ class SemanticMaskCache:
                 prediction.device.type,
                 prediction.device.index,
                 str(prediction.dtype),
+                int(prediction.ndim),
                 int(prediction.shape[-2]),
                 int(prediction.shape[-1]),
             )
@@ -325,6 +327,11 @@ class SemanticMaskCache:
                         mode="bilinear",
                         align_corners=False,
                     )
+                if prediction.ndim == 5:
+                    # Krea 2 uses Wan's spatiotemporal latent layout even for a
+                    # still image, so its prediction is [B,C,1,H,W]. Ownership
+                    # is spatial and intentionally broadcasts across that axis.
+                    mask = mask.unsqueeze(2)
                 mask = mask.clamp(0.0, 1.0)
                 self._cache[key] = mask
             prepared[region_id] = mask
@@ -375,10 +382,17 @@ def fuse_subject_predictions(
                 f"subject {region_id!r} has no ownership mask"
             ) from error
         if (
-            mask.ndim != 4
+            mask.ndim != full.ndim
             or mask.shape[0] not in {1, full.shape[0]}
             or mask.shape[1] != 1
-            or tuple(mask.shape[-2:]) != tuple(full.shape[-2:])
+            or any(
+                mask_size not in {1, prediction_size}
+                for mask_size, prediction_size in zip(
+                    mask.shape[2:],
+                    full.shape[2:],
+                    strict=True,
+                )
+            )
             or mask.dtype != full.dtype
             or mask.device != full.device
         ):
