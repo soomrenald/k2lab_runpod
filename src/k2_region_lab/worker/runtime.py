@@ -77,9 +77,25 @@ from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     PromptEmphasis,
     RegionalPromptPlan,
+    SubjectConditioningPromptPlan,
     character_identity_prompt,
     compile_regional_prompt_plan,
+    compile_subject_conditioning_prompt,
     krea_prompt_token_count,
+)
+from k2_region_lab.semantic_conditioning import (
+    CURRENT_CONDITIONING_CONTEXT,
+    BoundSubjectPrompt,
+    ConditioningScope,
+    PoseSemanticMode,
+    PoseSemanticPlan,
+    PoseSemanticRuntime,
+    SEMANTIC_ATTENTION_PENALTY,
+    SemanticAttentionError,
+    SubjectSemanticConditioning,
+    annotate_conditioning,
+    installed_semantic_prediction_hook,
+    prompt_sha256,
 )
 from k2_region_lab.regions import CanvasGeometry, RegionDefinition
 from k2_region_lab.sampling import (
@@ -118,6 +134,8 @@ class LoraDeltaStatistics:
                 "step_image_count": 0,
                 "delta_reference": None,
                 "calls": 0,
+                "scope_calls": {},
+                "disabled_scope_count": 0,
             }
             for route in routes
         }
@@ -129,9 +147,25 @@ class LoraDeltaStatistics:
     def observe(self, route: LoraDeltaRoute, token_norms, *, route_kind: str) -> None:
         state = self.values[route.lora_id]
         state["calls"] += 1
+        scoped = route.current_scope_mask()
+        context = CURRENT_CONDITIONING_CONTEXT.get()
+        scope_name = (
+            "unscoped"
+            if context is None
+            else (
+                "full"
+                if context.scope.region_id is None
+                else f"subject:{context.scope.region_id}"
+            )
+        )
+        state["scope_calls"][scope_name] = (
+            state["scope_calls"].get(scope_name, 0) + 1
+        )
+        if not scoped.enabled:
+            state["disabled_scope_count"] += 1
         batch = int(token_norms.shape[0])
-        text_count = len(route.text_token_mask)
-        enabled_text = sum(value > 0.0 for value in route.text_token_mask)
+        text_count = len(scoped.text_token_mask)
+        enabled_text = sum(value > 0.0 for value in scoped.text_token_mask)
         if route_kind == "text_layerwise":
             text_norms = token_norms
             image_norms = None
@@ -157,7 +191,7 @@ class LoraDeltaStatistics:
                 state["step_text_energy"], text_energy
             )
             state["step_text_count"] += text_observations
-        enabled_image = sum(value > 0.0 for value in route.image_token_mask)
+        enabled_image = sum(value > 0.0 for value in scoped.image_token_mask)
         if image_norms is not None and enabled_image:
             image_energy = image_norms.square().sum()
             state["image_energy"] = self._add(state["image_energy"], image_energy)
@@ -176,6 +210,8 @@ class LoraDeltaStatistics:
         state = self.values[lora_id]
         return {
             "observed_forward_calls": state["calls"],
+            "scope_forward_calls": dict(state["scope_calls"]),
+            "disabled_scope_count": state["disabled_scope_count"],
             "text_delta_rms": self._rms(state["text_energy"], state["text_count"]),
             "image_delta_rms": self._rms(state["image_energy"], state["image_count"]),
             "outside_gate_delta_rms": 0.0,
@@ -687,6 +723,7 @@ class ComfyBaselineRuntime:
         regional_plan: RegionalPromptPlan | None,
         bound_plan: BoundRegionalPromptPlan | None,
         pose_gate_binding: PoseGateRegionBinding | None = None,
+        bound_subject_plans: dict[str, BoundSubjectPrompt] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         routes = compile_lora_delta_routes(
@@ -697,6 +734,7 @@ class ComfyBaselineRuntime:
             regional_plan=regional_plan,
             bound_plan=bound_plan,
             pose_gate_binding=pose_gate_binding,
+            bound_subject_plans=bound_subject_plans,
         )
         routes_by_id = {route.lora_id: route for route in routes}
         reports: list[dict[str, Any]] = []
@@ -976,14 +1014,27 @@ class ComfyBaselineRuntime:
                 self._prepared.add(identity)
 
             def _mask(self, route, x):
+                scoped = route.current_scope_mask()
+                context = CURRENT_CONDITIONING_CONTEXT.get()
+                scope_key = (
+                    None
+                    if context is None
+                    else context.scope.cache_key
+                )
                 key = (
                     route.lora_id,
                     self.route_kind,
+                    scope_key,
                     tuple(x.shape),
                     x.device,
                     x.dtype,
                 )
                 dynamic = (
+                    (
+                        context is None
+                        or context.scope.kind.value == "full"
+                    )
+                    and
                     route.pose_gate_binding is not None
                     and self.route_kind not in {
                         "text_layerwise",
@@ -994,20 +1045,37 @@ class ComfyBaselineRuntime:
                 )
                 mask = None if dynamic else self._mask_cache.get(key)
                 if mask is None:
-                    if route.global_scope:
+                    if not scoped.enabled:
+                        mask = torch.zeros((), device=x.device, dtype=x.dtype)
+                    elif route.global_scope:
                         mask = torch.ones((), device=x.device, dtype=x.dtype)
                     elif self.route_kind == "text_layerwise":
-                        values = route.layerwise_text_batch_mask(int(x.shape[0]))
+                        text_count = len(scoped.text_token_mask)
+                        if int(x.shape[0]) <= 0 or int(x.shape[0]) % text_count:
+                            raise ValueError(
+                                f"LoRA route {route.display_name!r} expected a "
+                                f"folded text batch divisible by {text_count}, "
+                                f"received {int(x.shape[0])}"
+                            )
+                        values = scoped.text_token_mask * (
+                            int(x.shape[0]) // text_count
+                        )
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(-1, 1, 1)
                     elif self.route_kind == "text_projector":
-                        values = route.sequence_mask(int(x.shape[1]), text_fusion=True)
+                        if int(x.shape[1]) != len(scoped.text_token_mask):
+                            raise ValueError(
+                                f"LoRA route {route.display_name!r} expected "
+                                f"{len(scoped.text_token_mask)} text tokens, "
+                                f"received {int(x.shape[1])}"
+                            )
+                        values = scoped.text_token_mask
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(
                             1, -1, 1, 1
                         )
                     else:
                         text_fusion = self.route_kind == "text_refiner"
-                        text_count = len(route.text_token_mask)
-                        image_count = len(route.image_token_mask)
+                        text_count = len(scoped.text_token_mask)
+                        image_count = len(scoped.image_token_mask)
                         expected_counts = (
                             {text_count}
                             if text_fusion
@@ -1039,12 +1107,12 @@ class ComfyBaselineRuntime:
                                 )
                                 for normal, hard in route.image_token_components:
                                     normal_values = (
-                                        route.text_token_mask + normal
+                                        scoped.text_token_mask + normal
                                         if combined
                                         else normal
                                     )
                                     hard_values = (
-                                        route.text_token_mask + hard
+                                        scoped.text_token_mask + hard
                                         if combined
                                         else hard
                                     )
@@ -1070,9 +1138,26 @@ class ComfyBaselineRuntime:
                             )
                             mask = values.amax(dim=0).view(*mask_shape)
                         else:
-                            values = route.sequence_mask(
-                                int(x.shape[token_axis]), text_fusion=text_fusion
-                            )
+                            sequence_length = int(x.shape[token_axis])
+                            if text_fusion and sequence_length == text_count:
+                                values = scoped.text_token_mask
+                            elif not text_fusion and sequence_length == image_count:
+                                values = scoped.image_token_mask
+                            elif (
+                                not text_fusion
+                                and sequence_length == text_count + image_count
+                            ):
+                                values = (
+                                    scoped.text_token_mask
+                                    + scoped.image_token_mask
+                                )
+                            else:
+                                raise ValueError(
+                                    f"LoRA route {route.display_name!r} expected "
+                                    f"{text_count} text, {image_count} image, or "
+                                    f"{text_count + image_count} combined tokens, "
+                                    f"received {sequence_length}"
+                                )
                             mask = torch.tensor(
                                 values, device=x.device, dtype=x.dtype
                             ).view(*mask_shape)
@@ -1532,6 +1617,7 @@ class ComfyBaselineRuntime:
         self,
         *,
         prompt: str,
+        shared_visual_prompt: str = "",
         width: int,
         height: int,
         steps: int,
@@ -1552,6 +1638,7 @@ class ComfyBaselineRuntime:
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
         pose_gating: PoseGatingSettings | None = None,
+        pose_semantic_mode: PoseSemanticMode | str = PoseSemanticMode.PREDICTION_COMPOSITE,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1584,6 +1671,7 @@ class ComfyBaselineRuntime:
         filename_prefix = validate_filename_prefix(filename_prefix)
         lora_specifications = list(loras or [])
         pose_gating = pose_gating or PoseGatingSettings()
+        semantic_mode = PoseSemanticMode(pose_semantic_mode)
         pose_phases = pose_gating.phases(steps)
         pose_mask_bundle: VolumetricMaskBundle | None = None
         if pose_gating.enabled and pose_gating.hard_steps + pose_gating.soft_steps > 0:
@@ -1601,12 +1689,17 @@ class ComfyBaselineRuntime:
                 raise PoseMaskBuildError(
                     "enabled subject mannequins do not overlap the output canvas"
                 )
+        semantic_regional_plan_required = (
+            pose_mask_bundle is not None
+            and semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+        )
         regional_plan = (
             compile_regional_prompt_plan(
                 width,
                 height,
                 prompt,
                 regions,
+                shared_visual_prompt=shared_visual_prompt,
                 strength=regional_prompt_strength,
                 outside_penalty=regional_outside_penalty,
                 falloff_pixels=regional_feather_pixels,
@@ -1618,14 +1711,52 @@ class ComfyBaselineRuntime:
                     lora_specifications
                 ),
             )
-            if regional_prompting and (regions or emphases)
+            if (
+                regional_prompting
+                and (regions or emphases or shared_visual_prompt.strip())
+            )
+            or semantic_regional_plan_required
             else None
         )
+        if regional_plan is None and shared_visual_prompt.strip():
+            regional_plan = compile_regional_prompt_plan(
+                width,
+                height,
+                prompt,
+                (),
+                shared_visual_prompt=shared_visual_prompt,
+                strength=regional_prompt_strength,
+                outside_penalty=regional_outside_penalty,
+                falloff_pixels=regional_feather_pixels,
+                subject_competition=regional_subject_competition,
+                subject_fill=regional_subject_fill,
+                late_step_scale=regional_late_step_scale,
+            )
+        triggers_by_region = character_identity_triggers(lora_specifications)
+        subject_prompt_plans: tuple[SubjectConditioningPromptPlan, ...] = ()
+        if (
+            pose_mask_bundle is not None
+            and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+        ):
+            owned_ids = {
+                subject.region_id for subject in pose_mask_bundle.subjects
+            }
+            subject_prompt_plans = tuple(
+                compile_subject_conditioning_prompt(
+                    shared_visual_prompt=shared_visual_prompt,
+                    region=region,
+                    identity_triggers=triggers_by_region.get(region.region_id, ()),
+                    emphases=emphases,
+                )
+                for region in regions
+                if region.region_id in owned_ids
+            )
 
         oom_message: str | None = None
         try:
             return self._generate_once(
                 prompt=prompt,
+                shared_visual_prompt=shared_visual_prompt,
                 width=width,
                 height=height,
                 steps=steps,
@@ -1635,6 +1766,8 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                subject_prompt_plans=subject_prompt_plans,
+                semantic_mode=semantic_mode,
                 regional_lora_delta_adaptation=regional_lora_delta_adaptation,
                 regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
                 pose_gating=pose_gating,
@@ -1679,6 +1812,7 @@ class ComfyBaselineRuntime:
         self._recover_from_oom(event)
         return self._generate_once(
             prompt=prompt,
+            shared_visual_prompt=shared_visual_prompt,
             width=width,
             height=height,
             steps=steps,
@@ -1688,6 +1822,8 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            subject_prompt_plans=subject_prompt_plans,
+            semantic_mode=semantic_mode,
             regional_lora_delta_adaptation=regional_lora_delta_adaptation,
             regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
             pose_gating=pose_gating,
@@ -1718,6 +1854,7 @@ class ComfyBaselineRuntime:
         self,
         *,
         prompt: str,
+        shared_visual_prompt: str,
         width: int,
         height: int,
         steps: int,
@@ -1727,6 +1864,8 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        subject_prompt_plans: tuple[SubjectConditioningPromptPlan, ...],
+        semantic_mode: PoseSemanticMode,
         regional_lora_delta_adaptation: bool,
         regional_lora_delta_adaptation_gain: float,
         pose_gating: PoseGatingSettings,
@@ -1770,7 +1909,6 @@ class ComfyBaselineRuntime:
         conditioned_prompt = (
             regional_plan.prompt
             if regional_plan is not None
-            and (regional_plan.regions or regional_plan.emphases)
             else prompt
         )
         positive = self.clip.encode_from_tokens_scheduled(
@@ -1784,15 +1922,117 @@ class ComfyBaselineRuntime:
             raise RuntimeError("Krea conditioning must use one text sequence length")
         conditioning_text_token_count = text_token_counts.pop()
         bound_regional_plan: BoundRegionalPromptPlan | None = None
-        if regional_plan is not None and (
-            regional_plan.regions or regional_plan.emphases
-        ):
+        if regional_plan is not None:
             bound_regional_plan = regional_plan.bind_tokens(
                 lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
                 conditioning_text_token_count=conditioning_text_token_count,
             )
             if event is not None:
                 event("Unified spatial prompt prepared", bound_regional_plan.summary())
+        semantic_plan: PoseSemanticPlan | None = None
+        bound_subject_plans: dict[str, BoundSubjectPrompt] = {}
+        if (
+            pose_mask_bundle is not None
+            and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+        ):
+            full_scope = ConditioningScope.full()
+            full_hash = prompt_sha256(conditioned_prompt)
+            full_conditioning = annotate_conditioning(
+                positive,
+                scope=full_scope,
+                prompt_hash=full_hash,
+                text_token_count=conditioning_text_token_count,
+            )
+            mask_by_region = {
+                subject.region_id: subject for subject in pose_mask_bundle.subjects
+            }
+            subject_conditionings: list[SubjectSemanticConditioning] = []
+            combined_positive: list[list[Any]] = list(full_conditioning)
+            for subject_plan in subject_prompt_plans:
+                encoded = self.clip.encode_from_tokens_scheduled(
+                    self.clip.tokenize(subject_plan.prompt)
+                )
+                if not encoded:
+                    raise RuntimeError(
+                        f"Krea text encoder returned no conditioning for "
+                        f"subject {subject_plan.region_name!r}"
+                    )
+                token_counts = {
+                    int(condition[0].shape[1]) for condition in encoded
+                }
+                if len(token_counts) != 1:
+                    raise RuntimeError(
+                        "subject conditioning must use one text sequence length"
+                    )
+                subject_token_count = token_counts.pop()
+                bound_subject = subject_plan.bind_tokens(
+                    lambda prefix: krea_prompt_token_count(
+                        self.clip.tokenize(prefix)
+                    ),
+                    conditioning_text_token_count=subject_token_count,
+                )
+                bound_subject_plans[bound_subject.region_id] = bound_subject
+                scope = ConditioningScope.subject(bound_subject.region_id)
+                annotated = annotate_conditioning(
+                    encoded,
+                    scope=scope,
+                    prompt_hash=bound_subject.prompt_sha256,
+                    text_token_count=subject_token_count,
+                )
+                combined_positive.extend(annotated)
+                try:
+                    masks = mask_by_region[bound_subject.region_id]
+                except KeyError as error:
+                    raise RuntimeError(
+                        f"subject conditioning {bound_subject.region_id!r} "
+                        "has no volumetric ownership mask"
+                    ) from error
+                subject_conditionings.append(
+                    SubjectSemanticConditioning(
+                        scope=scope,
+                        bound_prompt=bound_subject,
+                        conditioning=tuple(annotated),
+                        ownership_mask=masks.ownership,
+                        ownership_coverage=float(masks.ownership.mean()),
+                    )
+                )
+            if len(subject_conditionings) != len(pose_mask_bundle.subjects):
+                raise RuntimeError(
+                    "every volumetric ownership mask requires subject conditioning"
+                )
+            positive = combined_positive
+            semantic_plan = PoseSemanticPlan(
+                mode=semantic_mode,
+                full_scope=full_scope,
+                full_conditioning=tuple(full_conditioning),
+                subjects=tuple(subject_conditionings),
+                shared_visual_prompt_sha256=prompt_sha256(shared_visual_prompt),
+                estimated_forwards_per_gated_evaluation=(
+                    1 + len(subject_conditionings)
+                ),
+            )
+            if event is not None:
+                event(
+                    "pose_semantic_conditioning_prepared",
+                    {
+                        "version": 1,
+                        "mode": semantic_mode.value,
+                        "full_prompt_sha256": full_hash,
+                        "subjects": [
+                            {
+                                "region_id": subject.bound_prompt.region_id,
+                                "region_name": subject.bound_prompt.region_name,
+                                "prompt_sha256": (
+                                    subject.bound_prompt.prompt_sha256
+                                ),
+                                "text_token_count": (
+                                    subject.bound_prompt.text_token_count
+                                ),
+                            }
+                            for subject in subject_conditionings
+                        ],
+                    },
+                )
         self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
@@ -1906,6 +2146,7 @@ class ComfyBaselineRuntime:
             regional_plan=regional_plan,
             bound_plan=bound_regional_plan,
             pose_gate_binding=pose_gate_binding,
+            bound_subject_plans=bound_subject_plans,
             event=event,
         )
 
@@ -1962,9 +2203,28 @@ class ComfyBaselineRuntime:
                 lora_delta_adaptation=regional_lora_delta_adaptation,
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
                 pose_gate_binding=pose_gate_binding,
+                semantic_mode=semantic_mode,
             )
             if bound_regional_plan is not None
             and (bound_regional_plan.spans or bound_regional_plan.emphases)
+            else None
+        )
+        semantic_runtime = (
+            PoseSemanticRuntime(
+                mode=semantic_mode,
+                pose_controller=pose_controller,
+                plan=semantic_plan,
+                progress=(
+                    (
+                        lambda payload: event(
+                            "Pose semantic prediction progress", payload
+                        )
+                    )
+                    if event is not None
+                    else None
+                ),
+            )
+            if semantic_plan is not None and pose_controller is not None
             else None
         )
         if regional_lora_delta_adaptation and attention_override is not None and event is not None:
@@ -1994,7 +2254,16 @@ class ComfyBaselineRuntime:
                 if pose_controller is not None
                 else nullcontext()
             )
-            with hook_context:
+            semantic_hook_context = (
+                installed_semantic_prediction_hook(
+                    generation_model.model_options,
+                    semantic_runtime,
+                    comfy.samplers,
+                )
+                if semantic_runtime is not None
+                else nullcontext()
+            )
+            with hook_context, semantic_hook_context:
                 samples = comfy.sample.sample(
                     generation_model,
                     noise,
@@ -2026,13 +2295,57 @@ class ComfyBaselineRuntime:
                 )
             if event is not None:
                 event("pose_gating_completed", pose_summary_document)
+        semantic_summary_document: dict[str, Any] = {
+            "version": 1,
+            "mode": semantic_mode.value,
+            "enabled": (
+                pose_controller is not None
+                and semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+            ),
+        }
+        if semantic_runtime is not None:
+            semantic_summary_document = semantic_runtime.diagnostics.document(
+                semantic_runtime.plan
+            )
+            semantic_summary_document["enabled"] = True
+            semantic_summary_document["full_prompt_sha256"] = prompt_sha256(
+                conditioned_prompt
+            )
+            expected_full = effective_steps
+            expected_subject = (
+                (pose_phases.hard_steps + pose_phases.soft_steps)
+                * len(semantic_runtime.plan.subjects)
+            )
+            if (
+                sampler == "euler"
+                and (
+                    semantic_runtime.diagnostics.full_forward_calls
+                    != expected_full
+                    or semantic_runtime.diagnostics.subject_forward_calls
+                    != expected_subject
+                )
+            ):
+                raise RuntimeError(
+                    "Prediction composite forward counts diverged from the Euler "
+                    "transition schedule"
+                )
         if attention_override is not None:
             if attention_override.matched_calls == 0:
-                raise RuntimeError(
+                error_type = (
+                    SemanticAttentionError
+                    if semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                    else RuntimeError
+                )
+                raise error_type(
                     "Krea main-stream attention was not reached by the spatial override"
                 )
             if attention_override.text_refiner_calls == 0:
-                raise RuntimeError(
+                error_type = (
+                    SemanticAttentionError
+                    if semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                    else RuntimeError
+                )
+                raise error_type(
                     "Krea text-refiner attention was not reached by the regional "
                     "text partition"
                 )
@@ -2049,16 +2362,45 @@ class ComfyBaselineRuntime:
                         "LoRA delta-adaptive spatial guidance finalized",
                         attention_override.summary(),
                     )
+        lora_scope_summary: dict[str, dict[str, Any]] = {}
         for report in lora_reports:
             if report.get("status") not in {"applied_global", "applied_regional"}:
                 continue
             delta_summary = lora_statistics.summary(str(report["id"]))
+            lora_scope_summary[str(report["id"])] = delta_summary
             report["delta_statistics"] = delta_summary
             if event is not None:
                 event(
                     f"LoRA delta measured for {report['display_name']}",
                     {"lora_id": report["id"], **delta_summary},
                 )
+        semantic_summary_document["semantic_isolation"] = {
+            "hard_blocks": (
+                attention_override.semantic_hard_blocks
+                if attention_override is not None
+                else 0
+            ),
+            "soft_blocks": (
+                attention_override.semantic_soft_blocks
+                if attention_override is not None
+                else 0
+            ),
+            "soft_penalty": SEMANTIC_ATTENTION_PENALTY,
+            "image_to_image_isolation": (
+                semantic_summary_document["enabled"]
+                and semantic_mode
+                in {
+                    PoseSemanticMode.ATTENTION_ISOLATION,
+                    PoseSemanticMode.PREDICTION_COMPOSITE,
+                }
+            ),
+        }
+        semantic_summary_document["lora_scope_summary"] = lora_scope_summary
+        if semantic_summary_document["enabled"] and event is not None:
+            event(
+                "pose_semantic_conditioning_completed",
+                semantic_summary_document,
+            )
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -2122,6 +2464,10 @@ class ComfyBaselineRuntime:
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
         metadata.add_text("pose_gating", json.dumps(pose_summary_document))
+        metadata.add_text(
+            "pose_semantic_runtime",
+            json.dumps(semantic_summary_document),
+        )
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
@@ -2148,6 +2494,7 @@ class ComfyBaselineRuntime:
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
             "pose_gating": pose_summary_document,
+            "pose_semantic_runtime": semantic_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,

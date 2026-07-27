@@ -259,6 +259,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .pose-rotate-handle { fill: #fff5d7; cursor: grab; }
 .pose-group-handle:active, .pose-rotate-handle:active { cursor: grabbing; }
 .pose-gating-panel { display: grid; gap: 10px; }
+.semantic-forward-estimate { display: grid; gap: 4px; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 8px; overflow-wrap: anywhere; }
+.semantic-forward-estimate small { color: var(--muted); }
 .pose-step-grid, .pose-share-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pose-step-grid label, .pose-share-grid label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .pose-step-grid input, .pose-share-grid input { width: 100%; }
@@ -383,6 +385,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .confirm-modal > p:not(.kicker) { color: var(--muted-bright); font-size: 11px; line-height: 1.6; }
 .prompt-preview-modal { width: min(760px, 100%); }
 .prompt-preview-text { min-height: 300px; resize: vertical; }
+.conditioning-preview-list { display: grid; gap: 12px; max-height: min(62vh, 720px); overflow: auto; }
+.conditioning-preview-list section { min-width: 0; }
+.conditioning-preview-list .prompt-preview-text { min-height: 180px; }
 .preview-region-order { display: grid; gap: 6px; max-height: 150px; margin-top: 12px; overflow-y: auto; }
 .preview-region-order > div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; color: var(--muted-bright); background: #0d1016; border: 1px solid #282e38; border-radius: 7px; font-size: 9px; }
 .preview-region-order span { color: var(--accent); text-transform: capitalize; }

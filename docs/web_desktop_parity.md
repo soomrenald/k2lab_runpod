@@ -24,12 +24,13 @@ These are the only approved desktop omissions. Explicit worker-memory release re
 
 | Workflow | Required browser behavior | Acceptance evidence |
 | --- | --- | --- |
-| Project lifecycle | New, Open project JSON, Import application PNG metadata, Save, and Save As | Round-trip a version-21 project without losing any field; import `k2lab_project` from a generated PNG |
+| Project lifecycle | New, Open project JSON, Import application PNG metadata, Save, and Save As | Round-trip a version-22 project without losing any field; import `k2lab_project` from a generated PNG |
 | Project recovery | Restore prompts, regions, roles/order, emphasis, LoRAs and routing, sampling, edit, face, projector, and upscale settings | Golden complex-project hydration/serialization test |
 | Canvas source | Load/upload, replace, and clear a generation reference; choose a cloud input or output for edit/face work | UI test plus submitted opaque input file ID |
 | Comparison | Source, Result, and adjustable comparison view | Component behavior test |
 | Regions | Create, select, move, eight-direction resize, delete, rename, enable, reorder front/back, and choose Auto/Subject/Background | Version-19 serialized geometry, priority, and role assertions |
-| Volumetric pose gating | Distinct region/subject boxes; filled 13-joint mannequin and head ellipse editing; hard/soft/normal phases; all release and sigma modes; no pose-model asset | Version-21 round trip, v20 migration, browser contracts, and worker payload/runtime tests |
+| Volumetric pose gating | Distinct region/subject boxes; filled 13-joint mannequin and head ellipse editing; hard/soft/normal phases; all release and sigma modes; no pose-model asset | Version-22 round trip, v21 Spatial-only migration, v20 pose migration, browser contracts, and worker payload/runtime tests |
+| Subject-semantic routing | Scene/shared prompt separation; Spatial only, Attention isolation, and Prediction composite; scope-aware subject LoRAs; forward estimate and conditioning preview | Prompt isolation, scope context, schema migration, browser contracts, and live RunPod GPU acceptance |
 | Prompt editing | Global, regional, reference, edit-target, and face-identity prompts with overflow scrollbars | Live-state and serializer assertions |
 | Unified prompt | Exact shared compiler, subject/background organization, subject fill, relationship text, character triggers, and preview | Server golden test against `compile_regional_prompt_plan` |
 | Phrase emphasis | Select exact global/regional phrase, occurrence, strength, validation, removal, save, and restore | Round-trip and invalid-match tests |
@@ -45,7 +46,8 @@ These are the only approved desktop omissions. Explicit worker-memory release re
 
 ## Shared-authority rules
 
-- The canonical project schema is `k2-region-lab-project` version 21. The browser imports
+- The canonical project schema is `k2-region-lab-project` version 22. Version-21 projects
+  migrate to Spatial only so output semantics remain unchanged. The browser imports
   version-20 projects by converting legacy pose geometry, removing incompatible Qwen
   pose-ControlNet settings, and leaving volumetric gating disabled until explicitly enabled.
 - The Python project parser validates every browser run before submission.

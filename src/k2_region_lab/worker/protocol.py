@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from k2_region_lab.semantic_conditioning import PoseSemanticError
+
 
 class CommandKind(StrEnum):
     PROBE = "probe"
@@ -71,6 +73,27 @@ WORKER_ERROR_MESSAGES = {
     "pose_gate_hook_incompatible": (
         "Another sampling mask hook conflicts with volumetric pose gating."
     ),
+    "subject_conditioning_compile_failed": (
+        "A subject-only conditioning prompt could not be compiled."
+    ),
+    "conditioning_scope_mismatch": (
+        "Semantic conditioning scopes did not match the posed subjects."
+    ),
+    "semantic_sampler_hook_incompatible": (
+        "Another sampler hook conflicts with Prediction composite."
+    ),
+    "semantic_prediction_shape_invalid": (
+        "Semantic prediction tensors or ownership masks have incompatible shapes."
+    ),
+    "semantic_attention_failed": (
+        "Subject-semantic attention isolation failed."
+    ),
+    "semantic_lora_routing_failed": (
+        "A regional LoRA could not be routed to its subject conditioning scope."
+    ),
+    "semantic_prediction_composite_multigpu_unsupported": (
+        "Prediction composite currently supports one GPU only."
+    ),
     "generation_failed": (
         "Generation failed during sampling. Review the detailed worker diagnostic "
         "and verify the selected generation settings."
@@ -92,6 +115,8 @@ def classify_worker_error(
     combined = f"{type(error).__name__} {error}".casefold()
     if "outofmemory" in combined or "out_of_memory" in combined or "out of memory" in combined:
         code = "worker_oom"
+    elif isinstance(error, PoseSemanticError):
+        code = error.code
     elif isinstance(error, MemoryError):
         code = "worker_ram_low"
     elif command_kind == CommandKind.PROBE:

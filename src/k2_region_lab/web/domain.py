@@ -7,6 +7,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from k2_region_lab.agent import WORKER_PROTOCOL_VERSION
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
@@ -274,11 +275,26 @@ class CapabilityManifest(BaseModel):
     api_version: str = "v1"
     project_schema: str = PROJECT_SCHEMA
     project_schema_version: int = PROJECT_VERSION
+    worker_protocol_version: int = WORKER_PROTOCOL_VERSION
     minimum_gpu_memory_gb: int = 24
     workspace_modes: list[WorkspaceMode] = Field(
         default_factory=lambda: [WorkspaceMode.PERSISTENT_POD]
     )
     development_backend: bool = False
+    pose_semantic_routing: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "modes": [
+                "spatial_only",
+                "attention_isolation",
+                "prediction_composite",
+            ],
+            "subject_prompt_encoding": True,
+            "scope_aware_regional_lora": True,
+            "single_sampler_trajectory": True,
+            "multigpu_prediction_composite": False,
+        }
+    )
 
 
 class WorkspaceError(RuntimeError):

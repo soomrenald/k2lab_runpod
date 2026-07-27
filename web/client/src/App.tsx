@@ -117,6 +117,12 @@ export function App() {
     <WorkspaceStudio
       workspace={state.workspace}
       developmentBackend={state.capabilities.development_backend}
+      poseSemanticRoutingAvailable={
+        state.capabilities.project_schema_version >= 22
+        && state.capabilities.worker_protocol_version >= 3
+        && state.capabilities.pose_semantic_routing?.version === 1
+        && state.capabilities.pose_semantic_routing.modes.includes("prediction_composite")
+      }
       datacenters={state.datacenters}
       networkVolumes={state.networkVolumes}
       onWorkspace={(workspace) => setState({ ...state, workspace })}

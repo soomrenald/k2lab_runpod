@@ -257,6 +257,9 @@ def main() -> int:
 
                 generated = runtime.generate(
                     prompt=str(payload.get("prompt", "")),
+                    shared_visual_prompt=str(
+                        payload.get("shared_visual_prompt", "")
+                    ),
                     width=int(payload.get("width", 1024)),
                     height=int(payload.get("height", 1024)),
                     steps=int(payload.get("steps", 8)),
@@ -316,6 +319,9 @@ def main() -> int:
                                 for value in payload.get("pose_sigma_knots", ())
                             ),
                         ),
+                    ),
+                    pose_semantic_mode=str(
+                        payload.get("pose_semantic_mode", "prediction_composite")
                     ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(

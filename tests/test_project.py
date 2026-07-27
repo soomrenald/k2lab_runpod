@@ -20,11 +20,38 @@ from k2_region_lab.project import (
     project_document,
     project_state,
 )
+from k2_region_lab.semantic_conditioning import PoseSemanticMode
 from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 class ProjectStateTests(unittest.TestCase):
+    def test_version_twenty_one_migrates_to_spatial_only(self) -> None:
+        document = project_document(
+            ProjectState(
+                canvas_width=1024,
+                canvas_height=1024,
+                shared_visual_prompt="35 mm cinematic photography",
+            )
+        )
+        document["version"] = 21
+        document["generation"].pop("shared_visual_prompt")
+        document["generation"].pop("pose_semantic_mode")
+
+        restored = project_state(document)
+
+        self.assertEqual(restored.shared_visual_prompt, "")
+        self.assertEqual(
+            restored.pose_semantic_mode,
+            PoseSemanticMode.SPATIAL_ONLY.value,
+        )
+        self.assertTrue(
+            any(
+                "subject-semantic pose routing" in notice
+                for notice in restored.runtime["migration_notices"]
+            )
+        )
+
     def test_project_image_metadata_loads_and_uses_imported_png_as_background(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "generated.png"
@@ -58,6 +85,8 @@ class ProjectStateTests(unittest.TestCase):
         state = ProjectState(
             canvas_width=1024,
             canvas_height=1024,
+            shared_visual_prompt="cinematic 35 mm photography",
+            pose_semantic_mode=PoseSemanticMode.ATTENTION_ISOLATION.value,
             sampler="dpmpp_2m",
             scheduler="karras",
             regional_late_step_scale=0.8,
@@ -96,6 +125,14 @@ class ProjectStateTests(unittest.TestCase):
         )
         self.assertEqual(project_state(document).prompt_emphases[0].phrase, "two distinct people")
         restored = project_state(document)
+        self.assertEqual(
+            restored.shared_visual_prompt,
+            "cinematic 35 mm photography",
+        )
+        self.assertEqual(
+            restored.pose_semantic_mode,
+            PoseSemanticMode.ATTENTION_ISOLATION.value,
+        )
         self.assertEqual(restored.sampler, "dpmpp_2m")
         self.assertEqual(restored.scheduler, "karras")
         self.assertEqual(restored.face_detail_seed, 123)

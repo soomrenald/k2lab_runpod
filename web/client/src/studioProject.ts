@@ -8,6 +8,7 @@ export type LoraRoutingMode = "standard" | "character_identity";
 export type VramMode = "auto" | "high_vram" | "dynamic" | "low_vram";
 export type PoseSoftRelease = "cosine" | "linear" | "exponential" | "stepped";
 export type PoseSigmaMode = "automatic" | "phase_weighted" | "advanced";
+export type PoseSemanticMode = "spatial_only" | "attention_isolation" | "prediction_composite";
 
 export const COMFYUI_SAMPLERS = [
   "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun",
@@ -51,6 +52,7 @@ export interface ProjectorSettings {
 }
 
 export interface GenerationSettings {
+  sharedVisualPrompt: string;
   width: number;
   height: number;
   steps: number;
@@ -71,6 +73,7 @@ export interface GenerationSettings {
   loraAdaptation: boolean;
   loraResponse: number;
   poseGating: boolean;
+  poseSemanticMode: PoseSemanticMode;
   poseHardGateSteps: number;
   poseSoftGateSteps: number;
   poseSoftRelease: PoseSoftRelease;
@@ -187,6 +190,7 @@ function defaultProjector(): ProjectorSettings {
 export function createStudioSettings(): StudioSettings {
   return {
     generation: {
+      sharedVisualPrompt: "",
       width: 1024,
       height: 1024,
       steps: 8,
@@ -207,6 +211,7 @@ export function createStudioSettings(): StudioSettings {
       loraAdaptation: false,
       loraResponse: 0.35,
       poseGating: false,
+      poseSemanticMode: "prediction_composite",
       poseHardGateSteps: 2,
       poseSoftGateSteps: 2,
       poseSoftRelease: "cosine",
@@ -336,10 +341,11 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 21,
+    version: 22,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
+      shared_visual_prompt: generation.sharedVisualPrompt,
       steps: generation.steps,
       sampler: generation.sampler,
       scheduler: generation.scheduler,
@@ -358,6 +364,7 @@ export function buildProjectDocument(
       regional_lora_delta_adaptation: generation.loraAdaptation,
       regional_lora_delta_adaptation_gain: generation.loraResponse,
       pose_gating_enabled: generation.poseGating,
+      pose_semantic_mode: generation.poseSemanticMode,
       pose_hard_gate_steps: generation.poseHardGateSteps,
       pose_soft_gate_steps: generation.poseSoftGateSteps,
       pose_soft_gate_schedule: generation.poseSoftRelease,
@@ -541,7 +548,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (![18, 19, 20, 21].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (![18, 19, 20, 21, 22].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -555,6 +562,7 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     ...settings.generation,
     width,
     height,
+    sharedVisualPrompt: stringValue(generation.shared_visual_prompt, ""),
     steps: integerValue(generation.steps, settings.generation.steps),
     sampler: stringValue(generation.sampler, settings.generation.sampler),
     scheduler: stringValue(generation.scheduler, settings.generation.scheduler),
@@ -575,6 +583,9 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     poseGating: Number(document.version) >= 21
       ? booleanValue(generation.pose_gating_enabled, settings.generation.poseGating)
       : false,
+    poseSemanticMode: Number(document.version) >= 22
+      ? poseSemanticModeValue(generation.pose_semantic_mode)
+      : "spatial_only",
     poseHardGateSteps: integerValue(generation.pose_hard_gate_steps, settings.generation.poseHardGateSteps),
     poseSoftGateSteps: integerValue(generation.pose_soft_gate_steps, settings.generation.poseSoftGateSteps),
     poseSoftRelease: poseSoftReleaseValue(generation.pose_soft_gate_schedule),
@@ -659,7 +670,9 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     sourceName: basename(stringValue(edit.source_image, stringValue(document.background_image, ""))),
     migrationNotices: Number(document.version) === 20
       ? ["Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating is available but remains disabled until enabled."]
-      : stringList(objectValue(document.runtime).migration_notices),
+      : Number(document.version) === 21
+        ? ["This project was created before subject-semantic pose routing. It was opened in Spatial only mode to preserve its previous behavior. Select Prediction composite to bind gated mannequin cells to each subject's own prompt and LoRAs."]
+        : stringList(objectValue(document.runtime).migration_notices),
     prompts: {
       generation: stringValue(generation.global_prompt, ""),
       reference: stringValue(edit.reference_global_prompt, ""),
@@ -845,4 +858,5 @@ function detectorProviderValue(value: unknown): FaceSettings["detectorProvider"]
 function vramModeValue(value: unknown): VramMode { return value === "high_vram" || value === "dynamic" || value === "low_vram" ? value : "auto"; }
 function poseSoftReleaseValue(value: unknown): PoseSoftRelease { return value === "linear" || value === "exponential" || value === "stepped" ? value : "cosine"; }
 function poseSigmaModeValue(value: unknown): PoseSigmaMode { return value === "phase_weighted" || value === "advanced" ? value : "automatic"; }
+function poseSemanticModeValue(value: unknown): PoseSemanticMode { return value === "spatial_only" || value === "attention_isolation" ? value : "prediction_composite"; }
 function numericList(value: unknown): number[] { return arrayValue(value).filter((item): item is number => typeof item === "number" && Number.isFinite(item)); }

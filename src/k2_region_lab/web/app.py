@@ -41,7 +41,11 @@ from k2_region_lab.agent.domain import (
 )
 from k2_region_lab.project import project_state
 from k2_region_lab.regional_lora import character_identity_triggers
-from k2_region_lab.regional_prompting import compile_regional_prompt_plan
+from k2_region_lab.regional_prompting import (
+    compile_regional_prompt_plan,
+    compile_subject_conditioning_prompt,
+)
+from k2_region_lab.semantic_conditioning import PoseSemanticError
 
 from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
 from k2_region_lab.web.domain import (
@@ -130,6 +134,7 @@ class UnifiedPromptPreviewRegion(BaseModel):
 class UnifiedPromptPreview(BaseModel):
     prompt: str
     regions: list[UnifiedPromptPreviewRegion]
+    conditioning_prompts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def create_app(
@@ -242,6 +247,7 @@ def create_app(
                 state.canvas_height,
                 state.global_prompt,
                 state.regions,
+                shared_visual_prompt=state.shared_visual_prompt,
                 strength=state.regional_prompt_strength,
                 outside_penalty=state.regional_outside_penalty,
                 falloff_pixels=state.regional_feather_pixels,
@@ -255,7 +261,23 @@ def create_app(
                     list(request.project.get("loras", []))
                 ),
             )
-        except (KeyError, TypeError, ValueError) as error:
+            triggers = character_identity_triggers(
+                list(request.project.get("loras", []))
+            )
+            subject_plans = [
+                compile_subject_conditioning_prompt(
+                    shared_visual_prompt=state.shared_visual_prompt,
+                    region=region,
+                    identity_triggers=triggers.get(region.region_id, ()),
+                    emphases=state.prompt_emphases,
+                )
+                for region in state.regions
+                if region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+            ]
+        except (KeyError, TypeError, ValueError, PoseSemanticError) as error:
             raise WorkspaceError(
                 "invalid_project",
                 f"The project cannot be compiled: {error}",
@@ -271,6 +293,23 @@ def create_app(
                     clause=region.clause,
                 )
                 for region in plan.regions
+            ],
+            conditioning_prompts=[
+                {
+                    "kind": "full",
+                    "region_id": None,
+                    "region_name": "Full scene",
+                    "prompt": plan.prompt,
+                },
+                *[
+                    {
+                        "kind": "subject",
+                        "region_id": subject.region_id,
+                        "region_name": subject.region_name,
+                        "prompt": subject.prompt,
+                    }
+                    for subject in subject_plans
+                ],
             ],
         )
 

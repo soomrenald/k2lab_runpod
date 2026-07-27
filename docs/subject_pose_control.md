@@ -1,67 +1,57 @@
-# Volumetric subject pose gating
+# Subject-semantic pose conditioning
 
-K2 has two intentionally different box types:
+K2Lab project schema 22 separates two independent controls:
 
-- **Region boxes** have no mannequin. Use them for props, non-person objects, scenery,
-  architecture, or background bands. They continue to control prompts, spatial attention,
-  and regional LoRA routing.
-- **Subject boxes** own a filled 13-joint mannequin plus an editable head ellipse. They retain
-  the same regional behavior and can define an early denoising volume and exclusive
-  prompt/LoRA ownership.
+- volumetric pose gating decides where a denoising update may be accepted;
+- subject-semantic routing decides which conditioning produces the update accepted by each
+  mannequin.
 
-No pose ControlNet is installed or loaded. Version-20 projects migrate their old 18-point
-mannequins into the volumetric format, discard incompatible Qwen pose-ControlNet settings, and
-leave global pose gating disabled until the user enables it.
+The Generation inspector calls the ordinary global field **Scene prompt**. Put environments,
+furniture, landscape, weather, relationships, and background content there. **Shared visual
+context** is copied into the full-scene and subject-only prompts; use it only for medium,
+lighting, lens, palette, film treatment, and other visual style shared safely by every branch.
 
-## Pose a subject
+## Routing modes
 
-1. Choose **Draw subject** and draw a box around the intended person.
-2. Select the box. Use **Standing**, **Squatting**, or **Mirror** as a starting point.
-3. Drag the visible body joints. Drag the head’s center control to move it; drag the right and
-   bottom controls to change its horizontal and vertical radii.
-4. A limb may extend outside the subject box for interactions with another subject or object.
-5. Open **Advanced → Volumetric pose gating** and enable
-   **Constrain generation to subject mannequins**.
+**Prediction composite** is the default for new schema-22 projects. During hard and soft
+steps, K2 evaluates one full-scene prediction and one separately encoded prediction for each
+enabled posed subject at the same latent and sigma. Exclusive mannequin ownership masks fuse
+the predictions. Hard cores use the subject branch, soft steps blend back toward the scene,
+and normal steps evaluate only the full scene. Regional LoRAs are scope-aware: a subject
+branch receives global LoRAs plus LoRAs assigned to that subject, never another subject's
+regional LoRA.
 
-Ordinary regions never add mannequin gating. Disable **Enable this mannequin** on an individual
-subject to leave that person prompt-directed while other mannequins remain active.
+**Attention isolation** uses one unified prediction. During gated phases it prevents scene,
+relationship, other-subject, and outside-image attention from entering each subject island.
+It is faster, but the external text encoder has already contextualized the unified prompt, so
+it is not as isolated as Prediction composite.
 
-## Gate phases
+**Spatial only** preserves schema-21 behavior for regression comparisons. It crops acceptance
+spatially but does not bind the accepted prediction to a subject prompt. Schema-21 projects
+migrate into this mode intentionally.
 
-The existing **Steps** value is the number of normal unrestricted transitions. **Hard gate
-steps** and **Soft gate steps** are added before them:
+All three modes retain one seeded noise tensor, one latent canvas, one decreasing sigma
+trajectory, one sampler call, and one final VAE decode. Prediction composite adds internal
+model evaluations; it does not start another sample.
+
+For Euler with `S` posed subjects:
 
 ```text
-Hard 2 + Soft 2 + Normal 8 = 12 total transitions
+estimated forwards = normal + (hard + soft) × (1 + S)
 ```
 
-During hard steps, predicted denoising updates are accepted inside the union of the filled
-mannequin support volumes. Each subject prompt and regional/character LoRA is routed through
-that subject’s exclusive mannequin ownership. During soft steps, the gate opens according to
-the selected cosine, linear, exponential, or stepped release. Normal steps restore the existing
-regional fields exactly.
+The GUI shows this estimate and keeps its main progress display in sampler transitions.
+Output PNG metadata contains `pose_semantic_runtime` with prompt hashes, token counts,
+ownership coverage, full/subject forward counts, and subject-vs-full prediction delta RMS.
+Authored prompt text is not added to public progress events.
 
-This is one continuous text-to-image sampler run with one initial noise tensor. There is no
-background pass, decode/re-encode boundary, or re-noising restart.
+## Same-seed comparison
 
-## Sigma scheduling
+Keep the model, LoRAs, seed, canvas, mannequin geometry, phase counts, release schedule, and
+sigma schedule unchanged. Generate in Spatial only, Attention isolation, and Prediction
+composite. For the strongest diagnostic, use a scene containing a dominant object and a
+subject prompt describing a visibly different category, then confirm the Prediction
+composite metadata reports the expected Euler forward count and a nonzero subject delta.
 
-- **Scheduler default** uses the selected ComfyUI sampler/scheduler curve for the effective
-  transition count without warping. Start here.
-- **Phase weighted** assigns normalized trajectory shares to hard, soft, and normal phases.
-  Balanced, Pose lock, and Gentle presets are provided.
-- **Advanced curve** exposes every normalized transition boundary in a graph and numeric table.
-  It changes scheduler trajectory allocation, not gate strength.
-
-Nondefault sigma allocation is experimental with Turbo models and can materially affect image
-quality. The completed output records baseline/resolved sigmas, normalized positions, phase
-shares, gate strengths, and mask coverage in `pose_gating` PNG metadata.
-
-## Diagnostics
-
-Job progress identifies the current hard, soft, or normal phase, gate strength, current/next
-sigma, and normalized trajectory progress. Extremely small or large mannequin coverage produces
-a warning. A pose-gated generation is blocked when no enabled subject mannequin exists.
-
-Disabling global pose gating preserves the previous generation path: no dynamic denoise-mask
-hook, no explicit pose sigma schedule, and no additional sampler transitions.
+Prediction composite currently targets one GPU. If ComfyUI multi-GPU clones are active, the
+worker fails explicitly instead of falling back to Spatial only.
