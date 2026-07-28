@@ -7,6 +7,7 @@ const destinations: { value: FileKind; label: string }[] = [
   { value: "text_encoders", label: "Text encoders" },
   { value: "vae", label: "VAE" },
   { value: "loras", label: "LoRAs" },
+  { value: "krea_control_loras", label: "Krea pose adapters" },
   { value: "upscale_models", label: "Upscalers" },
   { value: "controlnet_models", label: "ControlNet models" },
   { value: "face_detection", label: "Face detection" },

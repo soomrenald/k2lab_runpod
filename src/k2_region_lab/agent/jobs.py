@@ -496,6 +496,18 @@ class JobManager:
             }
         )
         if request.kind == JobKind.GENERATE:
+            pose_control_lora_file: str | None = None
+            if state.pose_control_lora_enabled:
+                if not request.pose_control_lora_file_id:
+                    raise JobError(
+                        "krea_control_checkpoint_invalid",
+                        "Select a Krea volumetric pose adapter checkpoint.",
+                        409,
+                    )
+                pose_control_lora_file = await self._optional_file_path(
+                    request.pose_control_lora_file_id,
+                    FileKind.KREA_CONTROL_LORAS,
+                )
             base.update(
                 {
                     "prompt": state.global_prompt,
@@ -521,6 +533,18 @@ class JobManager:
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
                     "pose_gating_enabled": state.pose_gating_enabled,
                     "pose_semantic_mode": state.pose_semantic_mode,
+                    "pose_control_lora_enabled": state.pose_control_lora_enabled,
+                    "pose_control_lora_strength": state.pose_control_lora_strength,
+                    "pose_control_format": state.pose_control_format,
+                    "pose_control_lora_file": pose_control_lora_file,
+                    "pose_control_lora_file_id": (
+                        request.pose_control_lora_file_id
+                        if state.pose_control_lora_enabled
+                        else None
+                    ),
+                    "pose_control_allow_unverified_legacy": (
+                        request.pose_control_allow_unverified_legacy
+                    ),
                     "pose_hard_gate_steps": state.pose_hard_gate_steps,
                     "pose_soft_gate_steps": state.pose_soft_gate_steps,
                     "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
@@ -641,6 +665,9 @@ class JobManager:
             "text_encoders": str(self._layout.destination(FileKind.TEXT_ENCODERS.value)),
             "vae": str(self._layout.destination(FileKind.VAE.value)),
             "lora_directory": str(self._layout.destination(FileKind.LORAS.value)),
+            "krea_control_lora_directory": str(
+                self._layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            ),
             "upscale_models": str(self._layout.destination(FileKind.UPSCALE_MODELS.value)),
             "controlnet_models": str(
                 self._layout.destination(FileKind.CONTROLNET_MODELS.value)

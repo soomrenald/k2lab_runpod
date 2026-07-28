@@ -288,6 +288,85 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["pose_semantic_mode"], "prediction_composite")
         self.assertNotIn("pose_controlnet_path", payload)
 
+    async def test_pose_adapter_uses_dedicated_opaque_asset_kind(self) -> None:
+        document = self._project_document("standing portrait")
+        document["generation"].update(
+            {
+                "pose_control_lora_enabled": True,
+                "pose_control_lora_model": "krea-pose-r64.safetensors",
+                "pose_control_lora_strength": 0.85,
+                "pose_control_format": "k2-volumetric-pose-control-v1",
+            }
+        )
+        document["regions"] = [
+            {
+                "id": "person",
+                "name": "Person",
+                "box": {"x0": 100, "y0": 100, "x1": 500, "y1": 900},
+                "prompt": "standing person",
+                "spatial_role": "subject",
+                "region_type": "subject",
+                "pose": volumetric_subject_pose_document(
+                    default_volumetric_subject_pose()
+                ),
+            }
+        ]
+        checkpoint_path = (
+            self.app.state.layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            / "krea-pose-r64.safetensors"
+        )
+        checkpoint_path.write_bytes(self._safetensors_payload())
+        checkpoint = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.KREA_CONTROL_LORAS,
+            checkpoint_path,
+        )
+        inspection = await self.client.get(
+            f"/v1/krea-control-checkpoints/{checkpoint.id}",
+            headers=self.headers,
+        )
+        self.assertEqual(inspection.status_code, 200, inspection.text)
+        self.assertFalse(inspection.json()["compatible"])
+        self.assertFalse(inspection.json()["verified"])
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-adapter",
+                "kind": "generate",
+                "project_id": "pose-adapter-project",
+                "project": document,
+                "pose_control_lora_file_id": checkpoint.id,
+            }
+        )
+
+        state, sanitized = self.app.state.job_manager._validate_request(request)
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id",
+            request,
+            state,
+            sanitized,
+        )
+
+        self.assertTrue(payload["pose_control_lora_enabled"])
+        self.assertEqual(payload["pose_control_lora_strength"], 0.85)
+        self.assertEqual(
+            Path(payload["pose_control_lora_file"]),
+            checkpoint_path,
+        )
+        self.assertEqual(payload["loras"], [])
+
+        wrong_path = self.app.state.layout.destination(FileKind.LORAS.value) / "wrong.safetensors"
+        wrong_path.write_bytes(self._safetensors_payload())
+        wrong = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.LORAS,
+            wrong_path,
+        )
+        with self.assertRaises(Exception):
+            await self.app.state.job_manager._job_payload(
+                "job-id",
+                request.model_copy(update={"pose_control_lora_file_id": wrong.id}),
+                state,
+                sanitized,
+            )
+
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,
     ) -> None:

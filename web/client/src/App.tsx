@@ -147,6 +147,14 @@ export function App() {
         && state.capabilities.pose_semantic_routing?.version === 1
         && state.capabilities.pose_semantic_routing.modes.includes("prediction_composite")
       }
+      poseControlLoraAvailable={
+        state.capabilities.project_schema_version >= 23
+        && state.capabilities.worker_protocol_version >= 4
+        && state.capabilities.krea_volumetric_pose_control_lora?.version === 1
+        && state.capabilities.krea_volumetric_pose_control_lora.control_formats.includes(
+          "k2-volumetric-pose-control-v1",
+        )
+      }
       datacenters={state.datacenters}
       networkVolumes={state.networkVolumes}
       onWorkspace={rememberWorkspace}

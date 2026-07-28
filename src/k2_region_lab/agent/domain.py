@@ -59,6 +59,15 @@ class AgentCapabilities(BaseModel):
             "multigpu_prediction_composite": False,
         }
     )
+    krea_volumetric_pose_control_lora: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "control_formats": ["k2-volumetric-pose-control-v1"],
+            "scope_aware": True,
+            "single_gpu_prediction_composite": True,
+            "strength_schedule": "constant_all_steps",
+        }
+    )
 
 
 class StorageStatus(BaseModel):
@@ -97,6 +106,7 @@ class FileKind(StrEnum):
     TEXT_ENCODERS = "text_encoders"
     VAE = "vae"
     LORAS = "loras"
+    KREA_CONTROL_LORAS = "krea_control_loras"
     UPSCALE_MODELS = "upscale_models"
     CONTROLNET_MODELS = "controlnet_models"
     FACE_DETECTION = "face_detection"
@@ -117,6 +127,14 @@ class FileRecord(BaseModel):
 class FilePage(BaseModel):
     items: list[FileRecord]
     next_cursor: str | None = None
+
+
+class KreaControlCheckpointInspection(BaseModel):
+    compatible: bool
+    verified: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    checkpoint: dict[str, object] | None = None
 
 
 class UploadCreateRequest(BaseModel):
@@ -282,6 +300,8 @@ class JobSubmitRequest(BaseModel):
     vae_file_id: str | None = Field(default=None, max_length=64)
     face_detector_file_id: str | None = Field(default=None, max_length=64)
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
+    pose_control_lora_file_id: str | None = Field(default=None, max_length=64)
+    pose_control_allow_unverified_legacy: bool = False
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
     filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)

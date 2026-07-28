@@ -26,6 +26,13 @@ export interface CapabilityManifest {
     single_sampler_trajectory: boolean;
     multigpu_prediction_composite: boolean;
   };
+  krea_volumetric_pose_control_lora?: {
+    version: number;
+    control_formats: string[];
+    scope_aware: boolean;
+    single_gpu_prediction_composite: boolean;
+    strength_schedule: string;
+  };
 }
 
 export interface CredentialStatus {
@@ -124,6 +131,15 @@ export interface WorkspaceRecord {
   storage_tier: "pod_volume" | "network_volume";
   workspace_layout_version: number;
   retained_original_provider_resource_id: string | null;
+  provider_freshness?: {
+    stale: boolean;
+    refresh_in_flight: boolean;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    last_error_code: string | null;
+    last_error_message: string | null;
+    next_retry_at: string | null;
+  };
 }
 
 export type MigrationState = "preparing" | "copying" | "verifying" | "awaiting_confirmation" | "completed" | "failed";
@@ -160,7 +176,7 @@ export interface BrowserSession {
   expires_at: string;
 }
 
-export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "upscale_models" | "controlnet_models" | "face_detection" | "projects" | "inputs" | "outputs";
+export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "krea_control_loras" | "upscale_models" | "controlnet_models" | "face_detection" | "projects" | "inputs" | "outputs";
 
 export interface FileRecord {
   id: string;
@@ -174,6 +190,23 @@ export interface FileRecord {
 export interface FilePage {
   items: FileRecord[];
   next_cursor: string | null;
+}
+
+export interface KreaControlCheckpointInspection {
+  compatible: boolean;
+  verified: boolean;
+  errors: string[];
+  warnings: string[];
+  checkpoint: {
+    path: string;
+    sha256: string;
+    metadata: Record<string, string>;
+    rank: number;
+    expanded_projection_key: string;
+    compatible_block_pairs: number;
+    format_id: string;
+    verified: boolean;
+  } | null;
 }
 
 export interface UploadSession {
@@ -274,6 +307,8 @@ export interface JobSubmitPayload {
   face_detector_file_id?: string;
   filename_prefix: string;
   lora_file_ids?: string[];
+  pose_control_lora_file_id?: string;
+  pose_control_allow_unverified_legacy?: boolean;
   upscale_model_file_id?: string;
   selected_face_indices?: number[];
   manual_face_paths?: number[][][];
@@ -302,6 +337,15 @@ export interface UnifiedPromptPreview {
     prompt: string;
     text_token_count?: number | null;
   }[];
+}
+
+export interface VolumetricControlPreview {
+  blob: Blob;
+  format: string;
+  sha256: string;
+  coverage: number;
+  width: number;
+  height: number;
 }
 
 export interface DetectedFaceRecord {
@@ -382,6 +426,42 @@ async function request<T>(
   }, options.priority);
 }
 
+async function requestControlPreview(
+  project: Record<string, unknown>,
+  subjectRegionId: string | null,
+): Promise<VolumetricControlPreview> {
+  const csrfToken = document.cookie
+    .split("; ")
+    .find((item) => item.startsWith("k2lab-csrf="))
+    ?.slice("k2lab-csrf=".length);
+  return controlRequestLane.run(async () => {
+    const response = await fetch("/api/v1/projects/volumetric-control-preview", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? { "X-CSRF-Token": decodeURIComponent(csrfToken) } : {}),
+      },
+      body: JSON.stringify({
+        project,
+        subject_region_id: subjectRegionId,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.json() as ApiErrorBody;
+      throw new ApiError(response.status, body);
+    }
+    return {
+      blob: await response.blob(),
+      format: response.headers.get("X-K2-Control-Format") ?? "",
+      sha256: response.headers.get("X-K2-Control-SHA256") ?? "",
+      coverage: Number(response.headers.get("X-K2-Control-Coverage") ?? 0),
+      width: Number(response.headers.get("X-K2-Control-Width") ?? 0),
+      height: Number(response.headers.get("X-K2-Control-Height") ?? 0),
+    };
+  });
+}
+
 export async function queuedFileBlob(
   path: string,
   options: { priority?: number; signal?: AbortSignal } = {},
@@ -416,6 +496,10 @@ export const controlPlane = {
       method: "POST",
       body: JSON.stringify({ project }),
     }),
+  previewVolumetricControl: (
+    project: Record<string, unknown>,
+    subjectRegionId: string | null = null,
+  ) => requestControlPreview(project, subjectRegionId),
   credentialStatus: () =>
     request<CredentialStatus>("/api/v1/credentials/runpod"),
   connectRunPod: (apiKey: string) =>
@@ -483,6 +567,13 @@ export const controlPlane = {
     request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   deleteFile: (workspaceId: string, fileId: string) =>
     request<FileRecord>(`/api/v1/workspaces/${workspaceId}/files/${fileId}`, { method: "DELETE" }),
+  inspectKreaControlCheckpoint: (
+    workspaceId: string,
+    fileId: string,
+    allowUnverifiedLegacy = false,
+  ) => request<KreaControlCheckpointInspection>(
+    `/api/v1/workspaces/${workspaceId}/krea-control-checkpoints/${fileId}?allow_unverified_legacy=${allowUnverifiedLegacy}`,
+  ),
   saveProject: (workspaceId: string, filename: string, project: Record<string, unknown>) =>
     request<FileRecord>(`/api/v1/workspaces/${workspaceId}/projects/${encodeURIComponent(filename)}`, {
       method: "PUT", body: JSON.stringify({ project }),

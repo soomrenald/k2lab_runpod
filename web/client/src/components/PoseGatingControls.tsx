@@ -5,6 +5,7 @@ import type {
   PoseSigmaMode,
   PoseSoftRelease,
 } from "../studioProject";
+import type { KreaControlCheckpointInspection } from "../api";
 import {
   poseGateStrengths,
   poseKnotPhase,
@@ -16,6 +17,11 @@ interface Props {
   generation: GenerationSettings;
   hasEnabledMannequin: boolean;
   subjectCount: number;
+  onChooseControlLora: () => void;
+  onPreviewControl: () => void;
+  controlLoraAvailable: boolean;
+  compatibility: KreaControlCheckpointInspection | null;
+  onInspectLegacy: (allow: boolean) => void;
   onChange: (patch: Partial<GenerationSettings>) => void;
 }
 
@@ -23,6 +29,11 @@ export function PoseGatingControls({
   generation,
   hasEnabledMannequin,
   subjectCount,
+  onChooseControlLora,
+  onPreviewControl,
+  controlLoraAvailable,
+  compatibility,
+  onInspectLegacy,
   onChange,
 }: Props) {
   const hard = generation.poseHardGateSteps;
@@ -87,6 +98,69 @@ export function PoseGatingControls({
   }
 
   return <div className="pose-gating-panel">
+    <div className="pose-control-adapter">
+      <label className="check-row">
+        <input
+          type="checkbox"
+          disabled={!controlLoraAvailable}
+          checked={generation.poseControlLoraEnabled}
+          onChange={(event) => onChange({ poseControlLoraEnabled: event.target.checked })}
+        />
+        <span><strong>Enable trained pose adapter</strong></span>
+      </label>
+      {!controlLoraAvailable && <div className="memory-warning">
+        Update the workspace image to worker protocol 4 before enabling the trained adapter.
+      </div>}
+      {generation.poseControlLoraEnabled && <>
+        {!hasEnabledMannequin && <div className="memory-warning">
+          Add and enable at least one subject mannequin before generating.
+        </div>}
+        <button className="quiet-button full-button" onClick={onChooseControlLora}>
+          {generation.poseControlLoraModel || "Choose Krea pose adapter checkpoint…"}
+        </button>
+        {!generation.poseControlLoraFileId && <div className="memory-warning">
+          Select a verified Krea volumetric pose adapter checkpoint.
+        </div>}
+        <label className="field-label">Adapter strength</label>
+        <DraftNumberInput
+          min={0}
+          max={2}
+          step={0.05}
+          value={generation.poseControlLoraStrength}
+          onCommit={(poseControlLoraStrength) => onChange({ poseControlLoraStrength })}
+        />
+        <p className="field-help">
+          The trained Krea Control-LoRA teaches the model that the hidden head, torso,
+          and left/right limb colors represent a human pose. It complements Prediction
+          composite and the hard/soft spatial gate.
+        </p>
+        <button className="quiet-button full-button" onClick={onPreviewControl}>
+          Preview control image…
+        </button>
+        <div className="semantic-forward-estimate">
+          <strong>{compatibility?.compatible ? "Compatible" : compatibility ? "Incompatible" : "Not inspected"}</strong>
+          <small>{generation.poseControlFormat}</small>
+          {compatibility?.checkpoint && <>
+            <small>Rank {compatibility.checkpoint.rank} · {compatibility.checkpoint.metadata.k2lab_base_model || "unverified base"}</small>
+            <small>{compatibility.checkpoint.compatible_block_pairs} block targets · SHA-256 {compatibility.checkpoint.sha256}</small>
+            <small>Renderer {compatibility.checkpoint.metadata.k2lab_renderer_version || "unverified"} · palette {compatibility.checkpoint.metadata.k2lab_control_format_sha256 || "unverified"}</small>
+          </>}
+        </div>
+        {compatibility?.errors.map((error) => <div className="memory-warning" key={error}>{error}</div>)}
+        {compatibility?.warnings.map((warning) => <div className="memory-warning" key={warning}>{warning}</div>)}
+        {compatibility && !compatibility.verified && <label className="check-row warning-check">
+          <input
+            type="checkbox"
+            checked={generation.poseControlLegacyAcknowledged}
+            onChange={(event) => {
+              onChange({ poseControlLegacyAcknowledged: event.target.checked });
+              onInspectLegacy(event.target.checked);
+            }}
+          />
+          <span><strong>Acknowledge unverified legacy checkpoint</strong><small>Only compatible tensor structure is accepted; metadata cannot be verified.</small></span>
+        </label>}
+      </>}
+    </div>
     <label className="check-row">
       <input
         type="checkbox"

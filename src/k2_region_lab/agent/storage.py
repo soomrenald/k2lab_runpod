@@ -13,6 +13,7 @@ MODEL_KINDS: Final = {
     "text_encoders",
     "vae",
     "loras",
+    "krea_control_loras",
     "upscale_models",
     "controlnet_models",
     "face_detection",

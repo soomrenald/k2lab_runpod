@@ -70,6 +70,10 @@ settings.generation.sharedVisualPrompt = "cinematic 35 mm photography";
 settings.generation.poseHardGateSteps = 3;
 settings.generation.poseSoftGateSteps = 2;
 settings.generation.poseSigmaMode = "phase_weighted";
+settings.generation.poseControlLoraEnabled = true;
+settings.generation.poseControlLoraFileId = "opaque-pose-adapter";
+settings.generation.poseControlLoraModel = "krea-volumetric-pose-r64.safetensors";
+settings.generation.poseControlLoraStrength = 0.85;
 settings.generation.promptEmphases = [{
   id: "not-persisted", scopeId: "person", phrase: "red coat", strength: 1.2, occurrence: 7,
 }, {
@@ -124,16 +128,34 @@ assert.deepEqual(second.regions.map((region) => [region.id, region.priority, reg
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
 assert.equal(second.regions[0].region_type, "subject");
-assert.equal(second.version, 22);
+assert.equal(second.version, 23);
 assert.equal(second.generation.pose_gating_enabled, true);
 assert.equal(second.generation.pose_semantic_mode, "attention_isolation");
 assert.equal(second.generation.shared_visual_prompt, "cinematic 35 mm photography");
 assert.equal(second.generation.pose_hard_gate_steps, 3);
+assert.equal(second.generation.pose_control_lora_enabled, true);
+assert.equal(second.generation.pose_control_lora_model, "krea-volumetric-pose-r64.safetensors");
+assert.equal(second.generation.pose_control_lora_strength, 0.85);
+assert.equal(second.generation.pose_control_format, "k2-volumetric-pose-control-v1");
+assert.equal("pose_control_lora_file_id" in second.generation, false);
 assert.equal(second.regions[0].pose.format, "k2-volumetric-pose-v1");
 assert.equal(Object.keys(second.regions[0].pose.joints).length, 13);
 assert.ok(second.regions[0].pose.head.rx > 0);
 assert.equal(second.regions[1].region_type, "region");
 assert.equal(second.regions[1].pose, null);
+
+const version22 = structuredClone(first);
+version22.version = 22;
+delete version22.generation.pose_control_lora_enabled;
+delete version22.generation.pose_control_lora_model;
+delete version22.generation.pose_control_lora_strength;
+delete version22.generation.pose_control_format;
+const migrated22 = loadStudioProjectDocument(version22);
+assert.equal(migrated22.settings.generation.poseControlLoraEnabled, false);
+assert.equal(migrated22.settings.generation.poseControlLoraFileId, "");
+assert.equal(migrated22.settings.generation.poseControlLoraModel, "");
+assert.equal(migrated22.settings.generation.poseControlLoraStrength, 1);
+assert.equal(migrated22.settings.generation.poseSemanticMode, "attention_isolation");
 
 const version21 = structuredClone(first);
 version21.version = 21;

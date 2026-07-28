@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,6 +25,7 @@ from k2_region_lab.agent.domain import (
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    KreaControlCheckpointInspection,
     ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
@@ -179,6 +180,16 @@ class WorkspaceTerminateRequest(BaseModel):
     confirmation: str = Field(min_length=1, max_length=80)
 
 
+class ProviderStatusFreshness(BaseModel):
+    stale: bool = False
+    refresh_in_flight: bool = False
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    next_retry_at: datetime | None = None
+
+
 class WorkspaceMigrationCreateRequest(BaseModel):
     network_volume_id: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$"
@@ -228,6 +239,9 @@ class WorkspaceRecord(BaseModel):
     storage_tier: StorageTier = StorageTier.POD_VOLUME
     workspace_layout_version: int = Field(default=1, ge=1)
     retained_original_provider_resource_id: str | None = None
+    provider_freshness: ProviderStatusFreshness = Field(
+        default_factory=ProviderStatusFreshness
+    )
 
 
 class WorkspaceMigrationRecord(BaseModel):
@@ -295,14 +309,31 @@ class CapabilityManifest(BaseModel):
             "multigpu_prediction_composite": False,
         }
     )
+    krea_volumetric_pose_control_lora: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "control_formats": ["k2-volumetric-pose-control-v1"],
+            "scope_aware": True,
+            "single_gpu_prediction_composite": True,
+            "strength_schedule": "constant_all_steps",
+        }
+    )
 
 
 class WorkspaceError(RuntimeError):
-    def __init__(self, code: str, message: str, *, status_code: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 400,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.diagnostics = dict(diagnostics or {})
 
 
 class WorkspaceBackend(Protocol):
@@ -385,6 +416,14 @@ class WorkspaceBackend(Protocol):
     ) -> FilePage: ...
 
     async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord: ...
+
+    async def inspect_krea_control_checkpoint(
+        self,
+        workspace_id: str,
+        file_id: str,
+        *,
+        allow_unverified_legacy: bool = False,
+    ) -> KreaControlCheckpointInspection: ...
 
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest

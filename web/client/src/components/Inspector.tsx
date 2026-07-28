@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { DetectedFaceRecord, WorkerMemoryStatus } from "../api";
+import type { DetectedFaceRecord, KreaControlCheckpointInspection, WorkerMemoryStatus } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
 import { DraftNumberInput } from "./DraftNumberInput";
@@ -38,6 +38,11 @@ interface Props {
   onSettings: (settings: StudioSettings) => void;
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
+  onChoosePoseControlLora: () => void;
+  onPreviewPoseControl: () => void;
+  poseControlLoraAvailable: boolean;
+  poseControlCompatibility: KreaControlCheckpointInspection | null;
+  onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   faces: DetectedFaceRecord[];
@@ -63,7 +68,11 @@ interface Props {
 export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
-    onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
+    onGlobalPrompt, onSettings, onLoras, onChooseLora, onChoosePoseControlLora,
+    onPreviewPoseControl,
+    poseControlLoraAvailable,
+    poseControlCompatibility, onInspectPoseControlLegacy,
+    onChooseUpscaleModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
@@ -325,7 +334,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChoosePoseControlLora={onChoosePoseControlLora} onPreviewPoseControl={onPreviewPoseControl} poseControlLoraAvailable={poseControlLoraAvailable} poseControlCompatibility={poseControlCompatibility} onInspectPoseControlLegacy={onInspectPoseControlLegacy} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
       </div>
     </aside>
   );
@@ -408,12 +417,17 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChoosePoseControlLora, onPreviewPoseControl, poseControlLoraAvailable, poseControlCompatibility, onInspectPoseControlLegacy, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
+  onChoosePoseControlLora: () => void;
+  onPreviewPoseControl: () => void;
+  poseControlLoraAvailable: boolean;
+  poseControlCompatibility: KreaControlCheckpointInspection | null;
+  onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   workerMemory: WorkerMemoryStatus | null;
@@ -509,6 +523,11 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
         generation={generation}
         hasEnabledMannequin={enabledMannequinCount > 0}
         subjectCount={enabledMannequinCount}
+        onChooseControlLora={onChoosePoseControlLora}
+        onPreviewControl={onPreviewPoseControl}
+        controlLoraAvailable={poseControlLoraAvailable}
+        compatibility={poseControlCompatibility}
+        onInspectLegacy={onInspectPoseControlLegacy}
         onChange={updateGeneration}
       />
       <p className="field-help">Filled mannequins define early denoising volumes and subject ownership. Ordinary region boxes remain available for objects and backgrounds and never add mannequin gating.</p>
