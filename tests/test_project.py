@@ -26,6 +26,32 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 class ProjectStateTests(unittest.TestCase):
+    def test_version_twenty_two_preserves_semantics_and_disables_new_adapter(self) -> None:
+        document = project_document(
+            ProjectState(
+                canvas_width=1024,
+                canvas_height=1024,
+                pose_gating_enabled=False,
+                pose_semantic_mode=PoseSemanticMode.ATTENTION_ISOLATION.value,
+            )
+        )
+        document["version"] = 22
+        document["generation"].pop("pose_control_lora_enabled")
+        document["generation"].pop("pose_control_lora_model")
+        document["generation"].pop("pose_control_lora_strength")
+        document["generation"].pop("pose_control_format")
+
+        restored = project_state(document)
+
+        self.assertFalse(restored.pose_gating_enabled)
+        self.assertEqual(
+            restored.pose_semantic_mode,
+            PoseSemanticMode.ATTENTION_ISOLATION.value,
+        )
+        self.assertFalse(restored.pose_control_lora_enabled)
+        self.assertIsNone(restored.pose_control_lora_model)
+        self.assertEqual(restored.pose_control_lora_strength, 1.0)
+
     def test_version_twenty_one_migrates_to_spatial_only(self) -> None:
         document = project_document(
             ProjectState(
@@ -107,6 +133,8 @@ class ProjectStateTests(unittest.TestCase):
             reserve_vram_gb=1.5,
             keep_model_loaded=True,
             system_ram_guard_enabled=False,
+            pose_control_lora_model=Path("krea-pose-r64.safetensors"),
+            pose_control_lora_strength=0.85,
             prompt_emphases=(
                 PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "two distinct people", 0.5),
             ),
@@ -118,6 +146,12 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(document["generation"]["regional_late_step_scale"], 0.8)
         self.assertEqual(document["generation"]["sampler"], "dpmpp_2m")
         self.assertEqual(document["generation"]["scheduler"], "karras")
+        self.assertFalse(document["generation"]["pose_control_lora_enabled"])
+        self.assertEqual(
+            document["generation"]["pose_control_lora_model"],
+            "krea-pose-r64.safetensors",
+        )
+        self.assertEqual(document["generation"]["pose_control_lora_strength"], 0.85)
         self.assertEqual(project_state(document).regional_late_step_scale, 0.8)
         self.assertTrue(project_state(document).regional_lora_delta_adaptation)
         self.assertEqual(

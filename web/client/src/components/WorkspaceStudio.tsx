@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, JobSubmitPayload, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, JobSubmitPayload, KreaControlCheckpointInspection, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, VolumetricControlPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -11,6 +11,11 @@ import { DraftNumberInput } from "./DraftNumberInput";
 import { uploadWorkspaceFile } from "../uploads";
 import { useUploadQueue } from "../useUploadQueue";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
+import {
+  isPassiveProviderTransient,
+  providerFreshnessEvent,
+  scheduleProviderPoll,
+} from "../providerFreshness";
 import {
   clearPendingJobSubmission,
   isAmbiguousJobSubmissionError,
@@ -40,6 +45,7 @@ interface Props {
   workspace: WorkspaceRecord;
   developmentBackend: boolean;
   poseSemanticRoutingAvailable: boolean;
+  poseControlLoraAvailable: boolean;
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
@@ -49,16 +55,18 @@ interface Props {
 
 const starterRegions: RegionBox[] = [];
 const FACE_DETECTOR_SOURCE = "https://huggingface.co/acvlab/FantasyPortrait/resolve/14df15cac6721a1cabdb9ecbdc0fbd6d3e49154b/face_det.onnx";
-type StudioEventKind = "info" | "error" | "worker";
+type StudioEventKind = "info" | "warning" | "error" | "worker";
+type StudioEventSource = "job" | "workspace" | "provider" | "transfer";
 
 interface StudioEvent {
   id: string;
   createdAt: string;
   kind: StudioEventKind;
+  source?: StudioEventSource;
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, poseControlLoraAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -77,7 +85,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "pose-control" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -103,6 +111,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
     () => loadPendingJobSubmission(window.localStorage, workspace.id),
   );
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
+  const [controlPreview, setControlPreview] = useState<(VolumetricControlPreview & {
+    url: string;
+    subjectRegionId: string | null;
+  }) | null>(null);
+  const [poseControlCompatibility, setPoseControlCompatibility] = useState<KreaControlCheckpointInspection | null>(null);
   const [projectName, setProjectName] = useState("untitled.k2lab.json");
   const [faceDetections, setFaceDetections] = useState<DetectedFaceRecord[]>([]);
   const [selectedFaceIndices, setSelectedFaceIndices] = useState<number[]>([]);
@@ -117,24 +130,26 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
   const [workerMemory, setWorkerMemory] = useState<WorkerMemoryStatus | null>(null);
   const [memoryRefreshing, setMemoryRefreshing] = useState(false);
   const eventCursor = useRef<string | undefined>(undefined);
+  const providerStale = useRef(Boolean(workspace.provider_freshness?.stale));
   const eventListRef = useRef<HTMLDivElement>(null);
   const eventResize = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const openProjectInput = useRef<HTMLInputElement>(null);
   const importPngInput = useRef<HTMLInputElement>(null);
 
-  function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString()) {
+  function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString(), source?: StudioEventSource) {
     if (!messageText) return;
     setEventLog((current) => appendBoundedEvents(current, [{
       id: crypto.randomUUID(),
       createdAt,
       kind,
+      source,
       message: messageText,
     }]));
   }
 
-  function report(messageText: string, kind: StudioEventKind = "info") {
+  function report(messageText: string, kind: StudioEventKind = "info", source?: StudioEventSource) {
     setMessage(messageText);
-    appendEvent(messageText, kind);
+    appendEvent(messageText, kind, new Date().toISOString(), source);
   }
 
   function rememberSubmissionRecovery(next: PendingJobSubmission | null) {
@@ -191,16 +206,46 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
     async function refresh() {
       try {
         const refreshed = await controlPlane.workspace(workspace.id);
-        if (!cancelled) onWorkspace(refreshed);
+        if (!cancelled) {
+          const stale = Boolean(refreshed.provider_freshness?.stale);
+          const transition = providerFreshnessEvent(providerStale.current, stale);
+          if (transition) {
+            appendEvent(
+              transition.message,
+              transition.kind,
+              new Date().toISOString(),
+              transition.source,
+            );
+          }
+          providerStale.current = stale;
+          onWorkspace(refreshed);
+        }
       } catch (caught) {
         if (!cancelled) {
-          report(caught instanceof Error ? caught.message : "Could not refresh workspace status", "error");
+          if (isPassiveProviderTransient(caught)) {
+            const transition = providerFreshnessEvent(providerStale.current, true);
+            if (transition) {
+              appendEvent(
+                transition.message,
+                transition.kind,
+                new Date().toISOString(),
+                transition.source,
+              );
+            }
+            providerStale.current = true;
+          } else {
+            report(
+              caught instanceof Error ? caught.message : "Could not refresh workspace status",
+              "error",
+              "workspace",
+            );
+          }
         }
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void refresh(), 5_000);
+        if (!cancelled) timer = scheduleProviderPoll(window.setTimeout, () => void refresh());
       }
     }
-    timer = window.setTimeout(() => void refresh(), 5_000);
+    timer = scheduleProviderPoll(window.setTimeout, () => void refresh());
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -256,6 +301,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             id: `${jobId}-${event.sequence}`,
             createdAt: event.created_at,
             kind: "worker" as const,
+            source: "job" as const,
             message: event.message,
           }))));
         }
@@ -386,6 +432,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
     setResultName("");
     setGlobalPrompts({ generation: "", reference: "", targets: "" });
     setStudioSettings(createStudioSettings());
+    setPoseControlCompatibility(null);
     setLoras([]);
     setProjectName("untitled.k2lab.json");
     setFaceDetections([]);
@@ -409,6 +456,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
   async function restoreProject(document: unknown, name: string, source?: File) {
     const loaded = loadStudioProjectDocument(document);
     let loraFiles: FileRecord[] = [];
+    let poseControlFiles: FileRecord[] = [];
     let upscalerFiles: FileRecord[] = [];
     let diffusionFiles: FileRecord[] = [];
     let textEncoderFiles: FileRecord[] = [];
@@ -420,6 +468,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
       // The Pod inventory is one persistent index. Load its sections sequentially so a
       // project restore cannot create an eight-connection burst through RunPod's proxy.
       loraFiles = await allFiles("loras");
+      poseControlFiles = await allFiles("krea_control_loras");
       upscalerFiles = await allFiles("upscale_models");
       diffusionFiles = await allFiles("diffusion_models");
       textEncoderFiles = await allFiles("text_encoders");
@@ -434,6 +483,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
       (file) => file.display_name.toLocaleLowerCase() === target.toLocaleLowerCase(),
     );
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
+    const poseControl = byName(
+      poseControlFiles,
+      loaded.settings.generation.poseControlLoraModel,
+    );
+    if (poseControl) {
+      loaded.settings.generation.poseControlLoraFileId = poseControl.id;
+      void inspectPoseControlCheckpoint(poseControl.id, false);
+    } else {
+      setPoseControlCompatibility(null);
+    }
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
     const runtime = loaded.settings.runtime;
@@ -727,6 +786,38 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
       report("Add and enable at least one subject mannequin before using volumetric pose gating.", "error");
       return;
     }
+    if (mode === "generation" && studioSettings.generation.poseControlLoraEnabled) {
+      if (!poseControlLoraAvailable) {
+        report("This control plane or workspace protocol does not support Krea volumetric pose adapters. Update the workspace image; the adapter will not be silently disabled.", "error");
+        return;
+      }
+      if (!studioSettings.generation.poseControlLoraFileId) {
+        report("Select a verified Krea volumetric pose adapter checkpoint before generating.", "error");
+        setAssetPurpose("pose-control");
+        setUtilityPanel("assets");
+        return;
+      }
+      if (!poseControlCompatibility?.compatible) {
+        report("The selected Krea pose adapter is not verified as compatible. Review its checkpoint diagnostics before generating.", "error");
+        return;
+      }
+      if (
+        !poseControlCompatibility.verified
+        && !studioSettings.generation.poseControlLegacyAcknowledged
+      ) {
+        report("Explicitly acknowledge the compatible unverified legacy checkpoint before generating.", "error");
+        return;
+      }
+      if (!regions.some((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ))) {
+        report("Add and enable at least one subject mannequin before using the trained pose adapter.", "error");
+        return;
+      }
+    }
     if (
       mode === "generation"
       && studioSettings.generation.poseGating
@@ -786,6 +877,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             ? studioSettings.runtime.faceDetectorFileId || undefined
             : undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
+          pose_control_lora_file_id: studioSettings.generation.poseControlLoraEnabled
+            ? studioSettings.generation.poseControlLoraFileId
+            : undefined,
+          pose_control_allow_unverified_legacy: (
+            studioSettings.generation.poseControlLoraEnabled
+            && studioSettings.generation.poseControlLegacyAcknowledged
+          ),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
@@ -941,6 +1039,56 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
     } finally {
       setBusy(false);
     }
+  }
+
+  async function previewPoseControl(subjectRegionId: string | null = null) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const preview = await controlPlane.previewVolumetricControl(
+        buildProjectDocument(
+          regions,
+          globalPrompts,
+          studioSettings,
+          loras,
+          cloudSource?.display_name ?? null,
+        ),
+        subjectRegionId,
+      );
+      if (controlPreview) URL.revokeObjectURL(controlPreview.url);
+      setControlPreview({
+        ...preview,
+        url: URL.createObjectURL(preview.blob),
+        subjectRegionId,
+      });
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not render the control preview", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function inspectPoseControlCheckpoint(fileId: string, allowLegacy: boolean) {
+    setBusy(true);
+    try {
+      setPoseControlCompatibility(
+        await controlPlane.inspectKreaControlCheckpoint(
+          workspace.id,
+          fileId,
+          allowLegacy,
+        ),
+      );
+    } catch (caught) {
+      setPoseControlCompatibility(null);
+      report(caught instanceof Error ? caught.message : "Could not inspect the Krea pose adapter", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function closeControlPreview() {
+    if (controlPreview) URL.revokeObjectURL(controlPreview.url);
+    setControlPreview(null);
   }
 
   async function runFaceDetection(faceDetectorFileId: string) {
@@ -1281,6 +1429,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             onSettings={setStudioSettings}
             onLoras={setLoras}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
+            onChoosePoseControlLora={() => { setAssetPurpose("pose-control"); setUtilityPanel("assets"); }}
+            onPreviewPoseControl={() => void previewPoseControl()}
+            poseControlLoraAvailable={poseControlLoraAvailable}
+            poseControlCompatibility={poseControlCompatibility}
+            onInspectPoseControlLegacy={(allow) => {
+              const fileId = studioSettings.generation.poseControlLoraFileId;
+              if (fileId) void inspectPoseControlCheckpoint(fileId, allow);
+            }}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
@@ -1339,13 +1495,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
           <div ref={eventListRef} className="event-list event-dock-list" role="log" aria-live="polite">
             {eventLog.length === 0
               ? <p className="field-help">Events from generation, transfers, saves, and face tools will appear here.</p>
-              : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.kind}</span><p>{entry.message}</p></article>)}
+              : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.source ?? entry.kind}</span><p>{entry.message}</p></article>)}
           </div>
         </section>
       )}
 
       <footer className="action-bar">
-        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
+        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{workspace.provider_freshness?.stale ? "RunPod provider status stale · runtime and outputs use last known status" : message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
         <div className="memory-meter"><span>Job</span><div><i style={{ width: job?.progress_total ? `${Math.min(100, job.progress_current / job.progress_total * 100)}%` : "0%" }} /></div><small>{job?.progress_total ? `${job.progress_current}/${job.progress_total}` : running ? "Idle" : "Released"}</small></div>
         <button className="run-button" disabled={!running || developmentBackend || busy} title={developmentBackend ? "Remote generation jobs are disabled in preview mode" : undefined} onClick={() => void (job && !["completed", "failed", "cancelled"].includes(job.state) ? cancelRemoteJob() : runRemoteJob())}>
           <Icon name={job && !["completed", "failed", "cancelled"].includes(job.state) ? "stop" : mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />
@@ -1409,6 +1565,50 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
               {promptPreview.regions.map((region, index) => <div key={region.id}><strong>{index + 1}. {region.name}</strong><span>{region.spatial_role}</span></div>)}
             </div>
             <div className="modal-actions"><button className="primary-button" onClick={() => setPromptPreview(null)}>Close</button></div>
+          </section>
+        </div>
+      )}
+      {controlPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal prompt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="control-preview-title">
+            <p className="kicker">Canonical backend raster</p>
+            <h2 id="control-preview-title">Volumetric pose control</h2>
+            <div className="inline-actions">
+              <button
+                className={`tiny-button ${controlPreview.subjectRegionId === null ? "active" : ""}`}
+                onClick={() => void previewPoseControl(null)}
+              >
+                All subjects
+              </button>
+              {regions.filter((region) => (
+                region.layer === "generation"
+                && region.enabled
+                && region.regionType === "subject"
+                && region.pose?.enabled
+              )).map((region) => (
+                <button
+                  key={region.id}
+                  className={`tiny-button ${controlPreview.subjectRegionId === region.id ? "active" : ""}`}
+                  onClick={() => void previewPoseControl(region.id)}
+                >
+                  {region.name}
+                </button>
+              ))}
+            </div>
+            <img
+              className="control-preview-image"
+              src={controlPreview.url}
+              alt="Canonical Krea volumetric pose control"
+            />
+            <div className="preview-region-order">
+              <div><strong>Format</strong><span>{controlPreview.format}</span></div>
+              <div><strong>Dimensions</strong><span>{controlPreview.width} × {controlPreview.height}</span></div>
+              <div><strong>Coverage</strong><span>{(controlPreview.coverage * 100).toFixed(2)}%</span></div>
+              <div><strong>SHA-256</strong><span><code>{controlPreview.sha256}</code></span></div>
+            </div>
+            <div className="modal-actions">
+              <button className="primary-button" onClick={closeControlPreview}>Close</button>
+            </div>
           </section>
         </div>
       )}
@@ -1520,7 +1720,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "pose-control" ? "krea_control_loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1532,6 +1732,21 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
         }
         if (assetPurpose === "upscale") {
           if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
+          return;
+        }
+        if (assetPurpose === "pose-control") {
+          if (file.kind === "krea_control_loras") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                poseControlLoraFileId: file.id,
+                poseControlLoraModel: file.display_name,
+                poseControlLegacyAcknowledged: false,
+              },
+            });
+            void inspectPoseControlCheckpoint(file.id, false);
+          }
           return;
         }
         if (file.kind === "projects") { void openCloudProject(file); return; }

@@ -12,6 +12,10 @@ import {
 } from "../src/submissionRecovery.ts";
 import { COMFYUI_SCHEDULERS } from "../src/studioProject.ts";
 import {
+  providerFreshnessEvent,
+  scheduleProviderPoll,
+} from "../src/providerFreshness.ts";
+import {
   POSE_LIMB_GROUPS,
   POSE_JOINT_NAMES,
   POSE_TORSO_JOINTS,
@@ -29,6 +33,24 @@ assert.ok(
   COMFYUI_SCHEDULERS.includes("bong_tangent"),
   "The scheduler selector must expose the worker's bong_tangent implementation",
 );
+
+const fakeTimers = [];
+const timerId = scheduleProviderPoll((callback, delay) => {
+  fakeTimers.push({ callback, delay });
+  return fakeTimers.length;
+}, () => fakeTimers.push({ fired: true }));
+assert.equal(timerId, 1);
+assert.equal(fakeTimers[0].delay, 5_000);
+fakeTimers[0].callback();
+assert.equal(fakeTimers[1].fired, true);
+const staleWarning = providerFreshnessEvent(false, true);
+assert.equal(staleWarning.kind, "warning");
+assert.equal(staleWarning.source, "provider");
+assert.match(staleWarning.message, /completed jobs and cloud outputs are unaffected/);
+assert.equal(providerFreshnessEvent(true, true), null, "repeated stale polls must dedupe");
+const recoveredProvider = providerFreshnessEvent(true, false);
+assert.equal(recoveredProvider.kind, "info");
+assert.match(recoveredProvider.message, /reachable again/);
 
 const requestLane = new SerialRequestLane();
 let activeRequests = 0;

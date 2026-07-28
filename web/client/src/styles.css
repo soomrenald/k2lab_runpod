@@ -515,7 +515,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .event-entry time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .event-entry > span { color: var(--accent); text-transform: uppercase; font-size: 7px; font-weight: 800; }
 .event-entry.error > span { color: var(--danger); }
+.event-entry.warning > span { color: #f0bf63; }
 .event-entry.worker > span { color: #b9adff; }
+.control-preview-image { display: block; width: min(100%, 640px); max-height: 55vh; margin: 14px auto; object-fit: contain; background: #000; border: 1px solid var(--border); border-radius: 8px; image-rendering: auto; }
 .event-entry p { margin: 0; color: var(--muted-bright); overflow-wrap: anywhere; }
 .face-detector-icon { color: var(--violet); background: rgba(159,145,255,.09); }
 .face-detector-modal code { padding: 2px 5px; color: #d9d3ff; background: #0d1016; border-radius: 4px; }

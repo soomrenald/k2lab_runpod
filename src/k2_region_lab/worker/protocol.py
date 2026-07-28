@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 from k2_region_lab.semantic_conditioning import PoseSemanticError
+from k2_region_lab.krea_control_lora import KreaControlError
 
 
 class CommandKind(StrEnum):
@@ -94,6 +95,39 @@ WORKER_ERROR_MESSAGES = {
     "semantic_prediction_composite_multigpu_unsupported": (
         "Prediction composite currently supports one GPU only."
     ),
+    "krea_control_checkpoint_invalid": (
+        "The selected Krea pose adapter is not a valid verified safetensors checkpoint."
+    ),
+    "krea_control_checkpoint_incompatible": (
+        "The selected pose adapter is incompatible with this Krea model."
+    ),
+    "krea_control_format_mismatch": (
+        "The selected pose adapter uses a different volumetric control format."
+    ),
+    "krea_control_projection_missing": (
+        "The pose adapter is missing its expanded Krea input projection."
+    ),
+    "krea_control_block_weights_missing": (
+        "The pose adapter is missing one or more required Krea block weights."
+    ),
+    "krea_control_vae_incompatible": (
+        "The selected VAE is incompatible with the Krea pose adapter."
+    ),
+    "krea_control_encode_failed": (
+        "The volumetric control image could not be encoded with the selected VAE."
+    ),
+    "krea_control_latent_shape_invalid": (
+        "The encoded volumetric control latent has an incompatible shape."
+    ),
+    "krea_control_scope_missing": (
+        "A required subject control scope was not prepared."
+    ),
+    "krea_control_lora_target_conflict": (
+        "The pose adapter conflicts with another model patch target."
+    ),
+    "krea_control_hook_incompatible": (
+        "Another sampling hook conflicts with Krea volumetric pose control."
+    ),
     "generation_failed": (
         "Generation failed during sampling. Review the detailed worker diagnostic "
         "and verify the selected generation settings."
@@ -116,6 +150,8 @@ def classify_worker_error(
     if "outofmemory" in combined or "out_of_memory" in combined or "out of memory" in combined:
         code = "worker_oom"
     elif isinstance(error, PoseSemanticError):
+        code = error.code
+    elif isinstance(error, KreaControlError):
         code = error.code
     elif isinstance(error, MemoryError):
         code = "worker_ram_low"

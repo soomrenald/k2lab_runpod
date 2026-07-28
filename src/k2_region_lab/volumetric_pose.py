@@ -155,7 +155,7 @@ def _disk(
     center: tuple[float, float],
     radius: float,
     *,
-    fill: int = 255,
+    fill: int | tuple[int, int, int] = 255,
 ) -> None:
     x, y = center
     draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
@@ -167,11 +167,13 @@ def _tapered_capsule(
     end: tuple[float, float],
     start_radius: float,
     end_radius: float,
+    *,
+    fill: int | tuple[int, int, int] = 255,
 ) -> None:
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = math.hypot(dx, dy)
     if length < 1e-6:
-        _disk(draw, start, max(start_radius, end_radius))
+        _disk(draw, start, max(start_radius, end_radius), fill=fill)
         return
     px, py = -dy / length, dx / length
     polygon = (
@@ -180,9 +182,9 @@ def _tapered_capsule(
         (end[0] - px * end_radius, end[1] - py * end_radius),
         (start[0] - px * start_radius, start[1] - py * start_radius),
     )
-    draw.polygon(polygon, fill=255)
-    _disk(draw, start, start_radius)
-    _disk(draw, end, end_radius)
+    draw.polygon(polygon, fill=fill)
+    _disk(draw, start, start_radius, fill=fill)
+    _disk(draw, end, end_radius, fill=fill)
 
 
 def _ellipse_neck_boundary(

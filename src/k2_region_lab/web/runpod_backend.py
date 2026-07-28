@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import secrets
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -25,6 +26,7 @@ from k2_region_lab.agent.domain import (
     JobEventPage,
     JobState,
     JobSubmitRequest,
+    KreaControlCheckpointInspection,
     ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
@@ -46,6 +48,7 @@ from k2_region_lab.web.domain import (
     GpuAvailability,
     MigrationState,
     NetworkVolumeOption,
+    ProviderStatusFreshness,
     StorageTier,
     WorkspaceCreateRequest,
     WorkspaceConnectPodRequest,
@@ -66,11 +69,17 @@ from k2_region_lab.web.state_store import RunPodStateStore
 
 
 class _SerializedRunPodApi:
-    """Serialize every provider request made by one controller instance."""
+    """Keep passive provider reads from blocking explicit lifecycle mutations."""
 
-    def __init__(self, wrapped: RunPodApi, lock: asyncio.Lock) -> None:
+    def __init__(
+        self,
+        wrapped: RunPodApi,
+        status_lock: asyncio.Lock,
+        mutation_lock: asyncio.Lock,
+    ) -> None:
         self._wrapped = wrapped
-        self._lock = lock
+        self._status_lock = status_lock
+        self._mutation_lock = mutation_lock
 
     def __getattr__(self, name: str) -> Any:
         attribute = getattr(self._wrapped, name)
@@ -78,7 +87,8 @@ class _SerializedRunPodApi:
             return attribute
 
         async def serialized(*args: Any, **kwargs: Any) -> Any:
-            async with self._lock:
+            lock = self._status_lock if name == "get_pod" else self._mutation_lock
+            async with lock:
                 return await attribute(*args, **kwargs)
 
         return serialized
@@ -93,6 +103,8 @@ class RunPodPersistentPodBackend:
     NETWORK_VOLUME_PRICE_OVER_1TB = 0.05
     MIGRATION_CHUNK_SIZE = 8 * 1024 * 1024
     MIGRATION_COPY_BUDGET = 64 * 1024 * 1024
+    PROVIDER_STATUS_SUCCESS_TTL_SECONDS = 30
+    PROVIDER_STATUS_FAILURE_BACKOFF_SECONDS = (15, 30, 60, 120)
 
     def __init__(
         self,
@@ -112,11 +124,21 @@ class RunPodPersistentPodBackend:
         self._image_version = image_version
         self._api_factory = api_factory
         self._agent_factory = agent_factory
-        self._provider_request_lock = asyncio.Lock()
+        self._provider_status_request_lock = asyncio.Lock()
+        self._provider_mutation_request_lock = asyncio.Lock()
+        self._provider_refresh_locks: dict[str, asyncio.Lock] = {}
+        self._provider_refresh_tasks: dict[str, asyncio.Task[WorkspaceRecord]] = {}
+        self._provider_failure_counts: dict[str, int] = {}
         self._agent_clients: dict[str, tuple[str, WorkspaceAgentApi]] = {}
         self._agent_clients_lock = asyncio.Lock()
 
     async def close(self) -> None:
+        refresh_tasks = list(self._provider_refresh_tasks.values())
+        self._provider_refresh_tasks.clear()
+        for task in refresh_tasks:
+            task.cancel()
+        if refresh_tasks:
+            await asyncio.gather(*refresh_tasks, return_exceptions=True)
         async with self._agent_clients_lock:
             clients = [client for _secret, client in self._agent_clients.values()]
             self._agent_clients.clear()
@@ -136,7 +158,11 @@ class RunPodPersistentPodBackend:
                 "Enter a complete RunPod API key.",
                 status_code=401,
             )
-        api = _SerializedRunPodApi(self._api_factory(value), self._provider_request_lock)
+        api = _SerializedRunPodApi(
+            self._api_factory(value),
+            self._provider_status_request_lock,
+            self._provider_mutation_request_lock,
+        )
         await api.validate_credentials()
         await api.list_gpu_types()
         status = CredentialStatus(
@@ -442,11 +468,208 @@ class RunPodPersistentPodBackend:
             and workspace.state == WorkspaceState.STOPPED
         ):
             return workspace.model_copy(deep=True)
-        provider_id = self._provider_id(workspace)
-        provider = await (await self._api()).get_pod(provider_id)
-        updated = await self._workspace_from_provider(workspace, provider)
-        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
-        return updated.model_copy(deep=True)
+        freshness = workspace.provider_freshness
+        now = utc_now()
+        if freshness.last_attempt_at is None:
+            return (
+                await self._refresh_workspace_provider(
+                    workspace_id,
+                    raise_definitive=True,
+                )
+            ).model_copy(deep=True)
+        if freshness.next_retry_at is not None and now < freshness.next_retry_at:
+            return workspace.model_copy(deep=True)
+        reference = freshness.last_success_at or freshness.last_attempt_at
+        if (now - reference).total_seconds() < self.PROVIDER_STATUS_SUCCESS_TTL_SECONDS:
+            return workspace.model_copy(deep=True)
+        task = self._provider_refresh_tasks.get(workspace_id)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self._refresh_workspace_provider(
+                    workspace_id,
+                    raise_definitive=False,
+                )
+            )
+            self._provider_refresh_tasks[workspace_id] = task
+            task.add_done_callback(
+                lambda completed, key=workspace_id: self._provider_refresh_tasks.pop(
+                    key, None
+                )
+                if self._provider_refresh_tasks.get(key) is completed
+                else None
+            )
+        return workspace.model_copy(
+            update={
+                "provider_freshness": freshness.model_copy(
+                    update={
+                        "stale": True,
+                        "refresh_in_flight": True,
+                    }
+                )
+            },
+            deep=True,
+        )
+
+    async def _refresh_workspace_provider(
+        self,
+        workspace_id: str,
+        *,
+        raise_definitive: bool,
+    ) -> WorkspaceRecord:
+        lock = self._provider_refresh_locks.setdefault(workspace_id, asyncio.Lock())
+        async with lock:
+            started_at = time.monotonic()
+            workspace = await self._workspace(workspace_id)
+            attempted_at = utc_now()
+            attempting = workspace.model_copy(
+                update={
+                    "provider_freshness": workspace.provider_freshness.model_copy(
+                        update={
+                            "stale": True,
+                            "refresh_in_flight": True,
+                            "last_attempt_at": attempted_at,
+                        }
+                    )
+                }
+            )
+            await self.state_store.save_workspace(
+                attempting,
+                image_digest=self._image_digest,
+            )
+            try:
+                provider = await (await self._api()).get_pod(
+                    self._provider_id(workspace)
+                )
+                updated = await self._workspace_from_provider(workspace, provider)
+            except WorkspaceError as error:
+                transient = error.code in {"provider_timeout", "provider_unavailable"}
+                failure_count = self._provider_failure_counts.get(workspace_id, 0) + 1
+                self._provider_failure_counts[workspace_id] = failure_count
+                delay = self.PROVIDER_STATUS_FAILURE_BACKOFF_SECONDS[
+                    min(failure_count - 1, len(self.PROVIDER_STATUS_FAILURE_BACKOFF_SECONDS) - 1)
+                ]
+                failed_freshness = ProviderStatusFreshness(
+                    stale=True,
+                    refresh_in_flight=False,
+                    last_attempt_at=attempted_at,
+                    last_success_at=workspace.provider_freshness.last_success_at,
+                    last_error_code=error.code,
+                    last_error_message=error.message,
+                    next_retry_at=attempted_at + timedelta(seconds=delay),
+                )
+                failed = workspace.model_copy(
+                    update={
+                        "provider_freshness": failed_freshness,
+                        **(
+                            {}
+                            if transient
+                            else {
+                                "state": WorkspaceState.ERROR,
+                                "error_code": error.code,
+                                "error_message": error.message,
+                            }
+                        ),
+                    }
+                )
+                await self.state_store.save_workspace(
+                    failed,
+                    image_digest=self._image_digest,
+                )
+                await self.state_store.append_audit(
+                    action="workspace.passive_provider_refresh",
+                    result="transient_warning" if transient else "failure",
+                    workspace_id=workspace_id,
+                    context={
+                        "provider_resource_suffix": self._provider_id(workspace)[-6:],
+                        "attempt": error.diagnostics.get("request_attempts", 1),
+                        "provider_refresh_failure_count": failure_count,
+                        "elapsed_ms": round((time.monotonic() - started_at) * 1000),
+                        "timeout_type": error.diagnostics.get("timeout_type"),
+                        "exception_type": type(error).__name__,
+                        "error_code": error.code,
+                        "agent_reachable": bool(workspace.readiness.get("agent")),
+                        "workspace_state_before": workspace.state.value,
+                        "workspace_state_after": failed.state.value,
+                    },
+                )
+                if not transient and raise_definitive:
+                    raise
+                return failed
+            self._provider_failure_counts.pop(workspace_id, None)
+            succeeded_at = utc_now()
+            updated = updated.model_copy(
+                update={
+                    "provider_freshness": ProviderStatusFreshness(
+                        stale=False,
+                        refresh_in_flight=False,
+                        last_attempt_at=attempted_at,
+                        last_success_at=succeeded_at,
+                    )
+                }
+            )
+            await self.state_store.save_workspace(
+                updated,
+                image_digest=self._image_digest,
+            )
+            await self.state_store.append_audit(
+                action="workspace.passive_provider_refresh",
+                result="success",
+                workspace_id=workspace_id,
+                context={
+                    "provider_resource_suffix": self._provider_id(workspace)[-6:],
+                    "attempt": 1,
+                    "elapsed_ms": round((time.monotonic() - started_at) * 1000),
+                    "workspace_state_before": workspace.state.value,
+                    "workspace_state_after": updated.state.value,
+                },
+            )
+            return updated
+
+    async def _reconcile_mutation_timeout(
+        self,
+        workspace: WorkspaceRecord,
+        *,
+        operation: str,
+        desired_statuses: set[str],
+        missing_is_success: bool = False,
+    ) -> dict[str, Any] | None:
+        """Resolve an ambiguous provider mutation without replaying that mutation."""
+
+        try:
+            provider = await (await self._api()).get_pod(self._provider_id(workspace))
+        except WorkspaceError as error:
+            if error.code == "provider_resource_not_found" and missing_is_success:
+                provider = {"desiredStatus": "TERMINATED"}
+            elif error.code in {"provider_timeout", "provider_unavailable"}:
+                await self.state_store.append_audit(
+                    action=operation,
+                    result="ambiguous_timeout",
+                    workspace_id=workspace.id,
+                    context={
+                        "provider_resource_suffix": self._provider_id(workspace)[-6:],
+                        "reconciliation_error_code": error.code,
+                    },
+                )
+                raise WorkspaceError(
+                    "provider_mutation_unconfirmed",
+                    "RunPod did not confirm the operation before timeout. "
+                    "The request may have succeeded; K2Lab will continue status reconciliation.",
+                    status_code=504,
+                ) from error
+            else:
+                raise
+        status = str(provider.get("desiredStatus", "")).upper()
+        reached = status in desired_statuses
+        await self.state_store.append_audit(
+            action=operation,
+            result="reconciled_success" if reached else "reconciled_not_reached",
+            workspace_id=workspace.id,
+            context={
+                "provider_resource_suffix": self._provider_id(workspace)[-6:],
+                "provider_state": status,
+            },
+        )
+        return provider if reached else None
 
     async def start_workspace(
         self, workspace_id: str, request: WorkspaceStartRequest | None = None
@@ -469,10 +692,25 @@ class RunPodPersistentPodBackend:
             else:
                 provider = await (await self._api()).start_pod(self._provider_id(workspace))
         except Exception as error:
-            if agent_secret is not None:
-                await self._vault.delete(f"agent:{workspace.id}")
-            await self._record_provider_failure(workspace, "runpod.workspace.start", error)
-            raise
+            if (
+                isinstance(error, WorkspaceError)
+                and error.code == "provider_timeout"
+                and workspace.mode == WorkspaceMode.PERSISTENT_POD
+            ):
+                provider = await self._reconcile_mutation_timeout(
+                    workspace,
+                    operation="workspace.explicit_start",
+                    desired_statuses={"RUNNING"},
+                )
+                if provider is not None:
+                    error = None
+            if error is None:
+                pass
+            else:
+                if agent_secret is not None:
+                    await self._vault.delete(f"agent:{workspace.id}")
+                await self._record_provider_failure(workspace, "runpod.workspace.start", error)
+                raise error
         now = utc_now()
         status = str(provider.get("desiredStatus", "RUNNING"))
         updated = workspace.model_copy(
@@ -584,8 +822,17 @@ class RunPodPersistentPodBackend:
             else:
                 await (await self._api()).stop_pod(self._provider_id(workspace))
         except Exception as error:
-            await self._record_provider_failure(workspace, "runpod.workspace.stop", error)
-            raise
+            reconciled = None
+            if isinstance(error, WorkspaceError) and error.code == "provider_timeout":
+                reconciled = await self._reconcile_mutation_timeout(
+                    workspace,
+                    operation="workspace.explicit_stop",
+                    desired_statuses={"EXITED", "TERMINATED"},
+                    missing_is_success=workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE,
+                )
+            if reconciled is None:
+                await self._record_provider_failure(workspace, "runpod.workspace.stop", error)
+                raise
         updated = workspace.model_copy(
             update={
                 "state": WorkspaceState.STOPPED,
@@ -644,16 +891,31 @@ class RunPodPersistentPodBackend:
             if workspace.provider_resource_id:
                 await (await self._api()).delete_pod(self._provider_id(workspace))
         except Exception as error:
-            if getattr(error, "code", None) != "provider_resource_not_found":
+            reconciled_missing = False
+            if isinstance(error, WorkspaceError) and error.code == "provider_timeout":
+                reconciled_missing = (
+                    await self._reconcile_mutation_timeout(
+                        workspace,
+                        operation="workspace.explicit_delete",
+                        desired_statuses={"TERMINATED"},
+                        missing_is_success=True,
+                    )
+                    is not None
+                )
+            if (
+                getattr(error, "code", None) != "provider_resource_not_found"
+                and not reconciled_missing
+            ):
                 await self.state_store.update_operation(operation_id, state="failed")
                 await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
                 raise
-            await self.state_store.append_audit(
-                action="runpod.workspace.delete.provider_already_missing",
-                result="success",
-                workspace_id=workspace_id,
-                context={"provider_resource_id": workspace.provider_resource_id},
-            )
+            if getattr(error, "code", None) == "provider_resource_not_found":
+                await self.state_store.append_audit(
+                    action="runpod.workspace.delete.provider_already_missing",
+                    result="success",
+                    workspace_id=workspace_id,
+                    context={"provider_resource_id": workspace.provider_resource_id},
+                )
         await self.state_store.update_operation(operation_id, state="provider_deleted")
         updated = workspace.model_copy(
             update={
@@ -1275,6 +1537,20 @@ class RunPodPersistentPodBackend:
     async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord:
         return await (await self._workspace_agent(workspace_id)).delete_file(file_id)
 
+    async def inspect_krea_control_checkpoint(
+        self,
+        workspace_id: str,
+        file_id: str,
+        *,
+        allow_unverified_legacy: bool = False,
+    ) -> KreaControlCheckpointInspection:
+        return await (
+            await self._workspace_agent(workspace_id)
+        ).inspect_krea_control_checkpoint(
+            file_id,
+            allow_unverified_legacy=allow_unverified_legacy,
+        )
+
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest
     ) -> FileRecord:
@@ -1596,7 +1872,11 @@ class RunPodPersistentPodBackend:
                 "Connect a RunPod account before planning a workspace.",
                 status_code=401,
             )
-        return _SerializedRunPodApi(self._api_factory(key), self._provider_request_lock)
+        return _SerializedRunPodApi(
+            self._api_factory(key),
+            self._provider_status_request_lock,
+            self._provider_mutation_request_lock,
+        )
 
     async def _validate_migrated_pod(
         self,

@@ -22,6 +22,15 @@ from k2_region_lab.image_edit import (
     regional_edit_conditioning,
     regional_reference_emphases,
 )
+from k2_region_lab.krea_control_lora import (
+    CONTROL_ATTACHMENT_KEY,
+    CONTROL_LATENT_MAPPING_KEY,
+    KreaControlError,
+    attach_krea_control_latents,
+    encode_control_bundle,
+    install_krea_control_lora,
+    krea_control_runtime_report,
+)
 from k2_region_lab.face_detail import (
     BACKEND as FACE_DETAIL_BACKEND,
     FaceDetailSettings,
@@ -54,7 +63,6 @@ from k2_region_lab.pose_gating import (
     PoseGatePhases,
     PoseGateRegionBinding,
     PoseGatingSettings,
-    PoseMaskBuildError,
     SigmaScheduleError,
     installed_pose_gate_hook,
     resolve_sigma_schedule,
@@ -109,6 +117,11 @@ from k2_region_lab.volumetric_pose import (
     VolumetricMaskBundle,
     ownership_image_token_fields,
     render_volumetric_masks,
+)
+from k2_region_lab.volumetric_control import (
+    K2_VOLUMETRIC_CONTROL_FORMAT,
+    KreaVolumetricControlBundle,
+    render_krea_volumetric_control_bundle,
 )
 from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
@@ -834,6 +847,7 @@ class ComfyBaselineRuntime:
     def _apply_global_projector_vector(
         self,
         *,
+        base_model=None,
         enabled: bool,
         preset: str,
         values,
@@ -867,12 +881,13 @@ class ComfyBaselineRuntime:
         }
         if not enabled or not any(effective_values):
             summary["status"] = "disabled" if not enabled else "zero_effect"
-            return self.model, summary
+            return base_model or self.model, summary
 
         import torch
 
         target = summary["target"]
-        target_weight = self.model.model.state_dict().get(target)
+        source_model = base_model or self.model
+        target_weight = source_model.model.state_dict().get(target)
         expected_shape = (1, PROJECTOR_VECTOR_COUNT)
         if target_weight is None:
             raise RuntimeError(f"Krea projector target is missing: {target}")
@@ -933,7 +948,7 @@ class ComfyBaselineRuntime:
                         self._mask_cache[cache_key] = mask
                     return functional.linear(x, weight) * mask
 
-            patched_model = self.model.clone()
+            patched_model = source_model.clone()
             patched_model.set_attachments(
                 "k2_projector_bypass_adapter",
                 {
@@ -955,7 +970,7 @@ class ComfyBaselineRuntime:
                 )
             return patched_model, summary
 
-        patched_model = self.model.clone()
+        patched_model = source_model.clone()
         patched_keys = patched_model.add_patches({target: ("diff", (delta,))})
         if target not in patched_keys:
             raise RuntimeError("could not install the Krea projector vector patch")
@@ -1257,14 +1272,35 @@ class ComfyBaselineRuntime:
     @staticmethod
     def _release_generation_model(generation_model) -> None:
         import comfy.model_management
+        import comfy.patcher_extension
 
         comfy.model_management.unload_all_models()
         generation_model.remove_injections("k2_routed_loras")
         generation_model.remove_injections("k2_projector_delta")
+        generation_model.remove_injections(CONTROL_ATTACHMENT_KEY)
+        generation_model.remove_wrappers_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+            CONTROL_ATTACHMENT_KEY,
+        )
+        generation_model.remove_callbacks_with_key(
+            comfy.patcher_extension.CallbacksMP.ON_DETACH,
+            CONTROL_ATTACHMENT_KEY,
+        )
+        generation_model.remove_callbacks_with_key(
+            comfy.patcher_extension.CallbacksMP.ON_CLEANUP,
+            CONTROL_ATTACHMENT_KEY,
+        )
         remove_attachments = getattr(generation_model, "remove_attachments", None)
         if callable(remove_attachments):
             remove_attachments("lora_metadata")
             remove_attachments("projector_settings")
+            remove_attachments(CONTROL_ATTACHMENT_KEY)
+        transformer_options = generation_model.model_options.get(
+            "transformer_options",
+            {},
+        )
+        if isinstance(transformer_options, dict):
+            transformer_options.pop(CONTROL_LATENT_MAPPING_KEY, None)
         patches = getattr(generation_model, "patches", None)
         if isinstance(patches, dict):
             patches.clear()
@@ -1639,6 +1675,12 @@ class ComfyBaselineRuntime:
         regional_lora_delta_adaptation_gain: float = 0.35,
         pose_gating: PoseGatingSettings | None = None,
         pose_semantic_mode: PoseSemanticMode | str = PoseSemanticMode.PREDICTION_COMPOSITE,
+        pose_control_lora_enabled: bool = False,
+        pose_control_lora_path: Path | None = None,
+        pose_control_lora_file_id: str | None = None,
+        pose_control_lora_strength: float = 1.0,
+        pose_control_format: str = K2_VOLUMETRIC_CONTROL_FORMAT,
+        pose_control_allow_unverified_legacy: bool = False,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1672,6 +1714,21 @@ class ComfyBaselineRuntime:
         lora_specifications = list(loras or [])
         pose_gating = pose_gating or PoseGatingSettings()
         semantic_mode = PoseSemanticMode(pose_semantic_mode)
+        if not 0.0 <= pose_control_lora_strength <= 2.0:
+            raise ValueError("Krea pose-adapter strength must be between zero and two")
+        if pose_control_format != K2_VOLUMETRIC_CONTROL_FORMAT:
+            raise KreaControlError(
+                "krea_control_format_mismatch",
+                "The project pose-control format is incompatible with this runtime.",
+            )
+        if pose_control_lora_enabled and (
+            pose_control_lora_path is None
+            or not pose_control_lora_path.expanduser().is_file()
+        ):
+            raise KreaControlError(
+                "krea_control_checkpoint_invalid",
+                "Select a readable Krea volumetric pose adapter checkpoint.",
+            )
         pose_phases = pose_gating.phases(steps)
         pose_mask_bundle: VolumetricMaskBundle | None = None
         if pose_gating.enabled and pose_gating.hard_steps + pose_gating.soft_steps > 0:
@@ -1685,9 +1742,26 @@ class ComfyBaselineRuntime:
                     "enable at least one subject mannequin before using volumetric "
                     "pose gating"
                 )
-            if not pose_mask_bundle.union_support.any():
-                raise PoseMaskBuildError(
-                    "enabled subject mannequins do not overlap the output canvas"
+        control_bundle: KreaVolumetricControlBundle | None = None
+        if pose_control_lora_enabled:
+            control_bundle = render_krea_volumetric_control_bundle(
+                regions=regions,
+                width=width,
+                height=height,
+                include_subjects=(
+                    pose_mask_bundle is not None
+                    and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+                ),
+            )
+            if not control_bundle.full.region_ids:
+                raise KreaControlError(
+                    "krea_control_scope_missing",
+                    "Enable at least one subject mannequin for the Krea pose adapter.",
+                )
+            if control_bundle.full.coverage <= 0:
+                raise KreaControlError(
+                    "krea_control_scope_missing",
+                    "Enabled subject mannequins do not overlap the output canvas.",
                 )
         semantic_regional_plan_required = (
             pose_mask_bundle is not None
@@ -1778,6 +1852,15 @@ class ComfyBaselineRuntime:
                     for region in regions
                     if region.region_type == "subject"
                 ),
+                pose_control_lora_path=(
+                    pose_control_lora_path if pose_control_lora_enabled else None
+                ),
+                pose_control_lora_file_id=pose_control_lora_file_id,
+                pose_control_lora_strength=pose_control_lora_strength,
+                control_bundle=control_bundle,
+                pose_control_allow_unverified_legacy=(
+                    pose_control_allow_unverified_legacy
+                ),
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1834,6 +1917,13 @@ class ComfyBaselineRuntime:
                 for region in regions
                 if region.region_type == "subject"
             ),
+            pose_control_lora_path=(
+                pose_control_lora_path if pose_control_lora_enabled else None
+            ),
+            pose_control_lora_file_id=pose_control_lora_file_id,
+            pose_control_lora_strength=pose_control_lora_strength,
+            control_bundle=control_bundle,
+            pose_control_allow_unverified_legacy=pose_control_allow_unverified_legacy,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1872,6 +1962,11 @@ class ComfyBaselineRuntime:
         pose_phases: PoseGatePhases,
         pose_mask_bundle: VolumetricMaskBundle | None,
         pose_subject_region_ids: tuple[str, ...],
+        pose_control_lora_path: Path | None,
+        pose_control_lora_file_id: str | None,
+        pose_control_lora_strength: float,
+        control_bundle: KreaVolumetricControlBundle | None,
+        pose_control_allow_unverified_legacy: bool,
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -2045,7 +2140,44 @@ class ComfyBaselineRuntime:
         noise = comfy.sample.prepare_noise(latent, seed)
         if loras:
             self._ensure_memory("before LoRA loading", event)
+        generation_model = self.model
+        control_latents = None
+        control_compatibility = None
+        if pose_control_lora_path is not None:
+            self._ensure_memory("before Krea pose adapter loading", event)
+            generation_model, control_compatibility = install_krea_control_lora(
+                generation_model,
+                pose_control_lora_path,
+                strength=pose_control_lora_strength,
+                allow_unverified_legacy=pose_control_allow_unverified_legacy,
+            )
+            if control_bundle is None:
+                raise KreaControlError(
+                    "krea_control_encode_failed",
+                    "The volumetric control image was not prepared.",
+                )
+            control_latents = encode_control_bundle(
+                self.vae,
+                generation_model,
+                control_bundle,
+            )
+            generation_model = attach_krea_control_latents(
+                generation_model,
+                control_latents,
+            )
+            if event is not None:
+                event(
+                    "krea_volumetric_pose_control_prepared",
+                    {
+                        "checkpoint": control_compatibility.document(),
+                        "strength": pose_control_lora_strength,
+                        "full_control_sha256": control_bundle.full.sha256,
+                        "subject_control_count": len(control_bundle.subjects),
+                        "vae_encode_seconds": control_latents.encode_seconds,
+                    },
+                )
         generation_model, projector_summary = self._apply_global_projector_vector(
+            base_model=generation_model,
             enabled=projector_enabled,
             preset=projector_preset,
             values=projector_values,
@@ -2119,6 +2251,7 @@ class ComfyBaselineRuntime:
             ).unsqueeze(0)
             pose_summary_document = {
                 "enabled": True,
+                "checkpoint_file_id": pose_control_lora_file_id,
                 "format": "k2-volumetric-pose-v1",
                 "effective_steps": effective_steps,
                 "phases": {
@@ -2401,6 +2534,50 @@ class ComfyBaselineRuntime:
                 "pose_semantic_conditioning_completed",
                 semantic_summary_document,
             )
+        control_summary_document: dict[str, Any] = {
+            "version": 1,
+            "enabled": False,
+        }
+        if (
+            pose_control_lora_path is not None
+            and control_bundle is not None
+            and control_latents is not None
+            and control_compatibility is not None
+            and control_compatibility.checkpoint is not None
+        ):
+            runtime_report = krea_control_runtime_report(generation_model)
+            checkpoint = control_compatibility.checkpoint
+            control_summary_document = {
+                "version": 1,
+                "enabled": True,
+                "checkpoint_sha256": checkpoint.sha256,
+                "checkpoint_metadata": {
+                    "rank": checkpoint.rank,
+                    "base_model": checkpoint.metadata.get("k2lab_base_model", ""),
+                    "control_format": checkpoint.format_id,
+                    "verified": checkpoint.verified,
+                },
+                "strength": pose_control_lora_strength,
+                "full_control_sha256": control_bundle.full.sha256,
+                "full_control_coverage": control_bundle.full.coverage,
+                "subject_controls": {
+                    region_id: {
+                        "sha256": image.sha256,
+                        "coverage": image.coverage,
+                        "latent_shape": list(control_latents.subjects[region_id].shape),
+                    }
+                    for region_id, image in control_bundle.subjects.items()
+                },
+                "vae_encode_seconds": control_latents.encode_seconds,
+                "format_sha256": control_bundle.full.format_sha256,
+                "renderer_version": control_bundle.full.renderer_version,
+                **runtime_report.document(),
+            }
+            if event is not None:
+                event(
+                    "krea_volumetric_pose_control_completed",
+                    control_summary_document,
+                )
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -2468,6 +2645,10 @@ class ComfyBaselineRuntime:
             "pose_semantic_runtime",
             json.dumps(semantic_summary_document),
         )
+        metadata.add_text(
+            "pose_control_lora_runtime",
+            json.dumps(control_summary_document),
+        )
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
@@ -2495,6 +2676,7 @@ class ComfyBaselineRuntime:
             "regional_prompting": regional_summary,
             "pose_gating": pose_summary_document,
             "pose_semantic_runtime": semantic_summary_document,
+            "pose_control_lora_runtime": control_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,

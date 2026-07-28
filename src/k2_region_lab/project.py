@@ -43,11 +43,12 @@ from k2_region_lab.sampling import (
     validate_sampler,
     validate_scheduler,
 )
+from k2_region_lab.volumetric_control import K2_VOLUMETRIC_CONTROL_FORMAT
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 22
+PROJECT_VERSION = 23
 LEGACY_POSE_MIGRATION_NOTICE = (
     "Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating "
     "is available but remains disabled until enabled."
@@ -78,6 +79,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     19,
     20,
     21,
+    22,
     PROJECT_VERSION,
 }
 
@@ -176,6 +178,10 @@ class ProjectState:
     pose_sigma_hard_share: float = 0.20
     pose_sigma_soft_share: float = 0.30
     pose_sigma_knots: tuple[float, ...] = ()
+    pose_control_lora_enabled: bool = False
+    pose_control_lora_model: Path | None = None
+    pose_control_lora_strength: float = 1.0
+    pose_control_format: str = K2_VOLUMETRIC_CONTROL_FORMAT
     prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
@@ -214,6 +220,12 @@ class ProjectState:
         if len(self.global_prompt) > 100_000 or len(self.shared_visual_prompt) > 100_000:
             raise ValueError("scene and shared visual prompts must not exceed 100000 characters")
         semantic_mode = PoseSemanticMode(self.pose_semantic_mode)
+        if not 0.0 <= self.pose_control_lora_strength <= 2.0:
+            raise ValueError("pose Control-LoRA strength must be between 0 and 2")
+        if self.pose_control_format != K2_VOLUMETRIC_CONTROL_FORMAT:
+            raise ValueError("project pose control format is incompatible with this K2Lab build")
+        if self.pose_control_lora_enabled and self.pose_control_lora_model is None:
+            raise ValueError("an enabled pose Control-LoRA requires a selected checkpoint")
         validate_sampler(self.sampler)
         validate_scheduler(self.scheduler)
         if self.seed < 0:
@@ -328,6 +340,19 @@ class ProjectState:
                     "every Prediction composite subject requires descriptive or "
                     "face-identity text"
                 )
+        if self.pose_control_lora_enabled:
+            posed_subjects = [
+                region
+                for region in self.regions
+                if region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+            ]
+            if not posed_subjects:
+                raise ValueError(
+                    "Krea pose Control-LoRA requires at least one enabled posed subject"
+                )
         known_ids = set(region_ids)
         for emphasis in self.prompt_emphases:
             if emphasis.scope_id != GLOBAL_EMPHASIS_SCOPE and emphasis.scope_id not in known_ids:
@@ -394,6 +419,14 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "pose_sigma_hard_share": state.pose_sigma_hard_share,
             "pose_sigma_soft_share": state.pose_sigma_soft_share,
             "pose_sigma_knots": list(state.pose_sigma_knots),
+            "pose_control_lora_enabled": state.pose_control_lora_enabled,
+            "pose_control_lora_model": (
+                str(state.pose_control_lora_model)
+                if state.pose_control_lora_model is not None
+                else None
+            ),
+            "pose_control_lora_strength": state.pose_control_lora_strength,
+            "pose_control_format": state.pose_control_format,
             "prompt_emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -728,7 +761,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
                     PoseSemanticMode.PREDICTION_COMPOSITE.value,
                 )
             )
-            if source_version >= PROJECT_VERSION
+            if source_version >= 22
             else PoseSemanticMode.SPATIAL_ONLY.value
         ),
         pose_hard_gate_steps=hard_steps,
@@ -740,6 +773,30 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         pose_sigma_hard_share=float(generation.get("pose_sigma_hard_share", 0.20)),
         pose_sigma_soft_share=float(generation.get("pose_sigma_soft_share", 0.30)),
         pose_sigma_knots=sigma_knots,
+        pose_control_lora_enabled=(
+            bool(generation.get("pose_control_lora_enabled", False))
+            if source_version >= PROJECT_VERSION
+            else False
+        ),
+        pose_control_lora_model=(
+            Path(generation["pose_control_lora_model"]).expanduser()
+            if source_version >= PROJECT_VERSION
+            and generation.get("pose_control_lora_model")
+            else None
+        ),
+        pose_control_lora_strength=(
+            float(generation.get("pose_control_lora_strength", 1.0))
+            if source_version >= PROJECT_VERSION
+            else 1.0
+        ),
+        pose_control_format=str(
+            generation.get(
+                "pose_control_format",
+                K2_VOLUMETRIC_CONTROL_FORMAT,
+            )
+            if source_version >= PROJECT_VERSION
+            else K2_VOLUMETRIC_CONTROL_FORMAT
+        ),
         prompt_emphases=prompt_emphases_from_payload(generation.get("prompt_emphases", [])),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)),

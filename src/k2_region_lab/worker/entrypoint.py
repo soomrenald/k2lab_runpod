@@ -323,6 +323,31 @@ def main() -> int:
                     pose_semantic_mode=str(
                         payload.get("pose_semantic_mode", "prediction_composite")
                     ),
+                    pose_control_lora_enabled=bool(
+                        payload.get("pose_control_lora_enabled", False)
+                    ),
+                    pose_control_lora_path=(
+                        Path(payload["pose_control_lora_file"])
+                        if payload.get("pose_control_lora_file")
+                        else None
+                    ),
+                    pose_control_lora_file_id=(
+                        str(payload["pose_control_lora_file_id"])
+                        if payload.get("pose_control_lora_file_id")
+                        else None
+                    ),
+                    pose_control_lora_strength=float(
+                        payload.get("pose_control_lora_strength", 1.0)
+                    ),
+                    pose_control_format=str(
+                        payload.get(
+                            "pose_control_format",
+                            "k2-volumetric-pose-control-v1",
+                        )
+                    ),
+                    pose_control_allow_unverified_legacy=bool(
+                        payload.get("pose_control_allow_unverified_legacy", False)
+                    ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(
                         payload.get("projector_preset", "filter_bypass2")

@@ -81,6 +81,12 @@ export interface GenerationSettings {
   poseSigmaHardShare: number;
   poseSigmaSoftShare: number;
   poseSigmaKnots: number[];
+  poseControlLoraEnabled: boolean;
+  poseControlLoraFileId: string;
+  poseControlLoraModel: string;
+  poseControlLoraStrength: number;
+  poseControlFormat: "k2-volumetric-pose-control-v1";
+  poseControlLegacyAcknowledged: boolean;
   postUpscale: boolean;
   upscaleScale: 2 | 4;
   upscaleMethod: "lanczos" | "model";
@@ -219,6 +225,12 @@ export function createStudioSettings(): StudioSettings {
       poseSigmaHardShare: 0.20,
       poseSigmaSoftShare: 0.30,
       poseSigmaKnots: [],
+      poseControlLoraEnabled: false,
+      poseControlLoraFileId: "",
+      poseControlLoraModel: "",
+      poseControlLoraStrength: 1,
+      poseControlFormat: "k2-volumetric-pose-control-v1",
+      poseControlLegacyAcknowledged: false,
       postUpscale: false,
       upscaleScale: 2,
       upscaleMethod: "lanczos",
@@ -341,7 +353,7 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 22,
+    version: 23,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
@@ -377,6 +389,10 @@ export function buildProjectDocument(
           generation.poseHardGateSteps + generation.poseSoftGateSteps + generation.steps,
         )
         : generation.poseSigmaKnots,
+      pose_control_lora_enabled: generation.poseControlLoraEnabled,
+      pose_control_lora_model: generation.poseControlLoraModel || null,
+      pose_control_lora_strength: generation.poseControlLoraStrength,
+      pose_control_format: generation.poseControlFormat,
       prompt_emphases: emphasisDocuments(
         generation.promptEmphases,
         prompts.generation,
@@ -548,7 +564,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (![18, 19, 20, 21, 22].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (![18, 19, 20, 21, 22, 23].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -558,6 +574,12 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const height = integerValue(canvas.height, settings.generation.height);
   const projectorValues = numberList(generation.projector_values, settings.generation.projector.values);
   const referenceProjectorValues = numberList(edit.reference_projector_values, settings.edit.referenceProjector.values);
+  const poseControlFormat = Number(document.version) >= 23
+    ? stringValue(generation.pose_control_format, "k2-volumetric-pose-control-v1")
+    : "k2-volumetric-pose-control-v1";
+  if (poseControlFormat !== "k2-volumetric-pose-control-v1") {
+    throw new Error(`Unsupported pose control format: ${poseControlFormat}`);
+  }
   settings.generation = {
     ...settings.generation,
     width,
@@ -593,6 +615,18 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     poseSigmaHardShare: numberValue(generation.pose_sigma_hard_share, settings.generation.poseSigmaHardShare),
     poseSigmaSoftShare: numberValue(generation.pose_sigma_soft_share, settings.generation.poseSigmaSoftShare),
     poseSigmaKnots: numericList(generation.pose_sigma_knots),
+    poseControlLoraEnabled: Number(document.version) >= 23
+      ? booleanValue(generation.pose_control_lora_enabled, false)
+      : false,
+    poseControlLoraFileId: "",
+    poseControlLoraModel: Number(document.version) >= 23
+      ? basename(stringValue(generation.pose_control_lora_model, ""))
+      : "",
+    poseControlLoraStrength: Number(document.version) >= 23
+      ? numberValue(generation.pose_control_lora_strength, 1)
+      : 1,
+    poseControlFormat,
+    poseControlLegacyAcknowledged: false,
     promptEmphases: emphasisStates(generation.prompt_emphases),
     postUpscale: booleanValue(generation.post_upscale, settings.generation.postUpscale),
     upscaleScale: generation.upscale_scale === 4 ? 4 : 2,
