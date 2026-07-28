@@ -211,11 +211,11 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .layer-switcher svg { width: 13px; }
 .workspace-grid { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(440px, 1fr) 336px; }
 
-.canvas-column { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px 1fr; background: #0a0d12; }
-.canvas-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 0 14px 0 18px; border-bottom: 1px solid var(--line-soft); }
+.canvas-column { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto 1fr; background: #0a0d12; }
+.canvas-toolbar { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 14px 8px 18px; border-bottom: 1px solid var(--line-soft); }
 .canvas-title { display: flex; align-items: center; gap: 8px; font-size: 10px; }
 .canvas-title small { padding-left: 8px; color: var(--muted); border-left: 1px solid var(--line); font-size: 8px; }
-.canvas-actions { display: flex; gap: 6px; }
+.canvas-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .canvas-actions .quiet-button { min-height: 30px; height: 30px; padding: 0 10px; font-size: 8px; }
 .canvas-download { text-decoration: none; }
 .file-button { position: relative; cursor: pointer; }
@@ -231,6 +231,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .result-clip { position: absolute; z-index: 2; inset: 0; overflow: hidden; }
 .result-image { width: 100%; }
 .region-overlay { position: absolute; z-index: 5; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.region-overlay.regions-hidden { pointer-events: none; }
 .drawing .region-overlay { cursor: crosshair; }
 .region-fill { fill: rgba(169,255,111,.10); cursor: pointer; }
 .region-outline { fill: none; stroke: rgba(169,255,111,.82); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }

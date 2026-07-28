@@ -22,7 +22,9 @@ export type IconName =
   | "layers"
   | "sliders"
   | "wand"
-  | "events";
+  | "events"
+  | "eye"
+  | "eyeOff";
 
 const paths: Record<IconName, React.ReactNode> = {
   spark: <path d="m12 2 1.5 5.1L18 9l-4.5 1.9L12 16l-1.5-5.1L6 9l4.5-1.9L12 2Zm6 12 .8 2.7L21 18l-2.2 1.3L18 22l-.8-2.7L15 18l2.2-1.3L18 14ZM5 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3Z" />,
@@ -47,6 +49,8 @@ const paths: Record<IconName, React.ReactNode> = {
   sliders: <path d="M4 7h8m4 0h4M4 17h4m4 0h8M12 4v6M8 14v6" />,
   wand: <path d="m4 20 11-11m-3-3 6 6M6 3l.5 2L8 6l-1.5.5L6 8l-.5-1.5L4 6l1.5-1L6 3Zm13 12 .5 2 1.5.5-1.5.5-.5 2-.5-2-1.5-.5 1.5-.5.5-2Z" />,
   events: <path d="M5 5h14M5 10h14M5 15h9M5 20h7" />,
+  eye: <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Zm9.5-2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5Z" />,
+  eyeOff: <path d="m3 3 18 18M10.6 6.1c.5-.1.9-.1 1.4-.1 6 0 9.5 6 9.5 6a16.8 16.8 0 0 1-2.4 3.1M6.3 7.3A16.1 16.1 0 0 0 2.5 12s3.5 6 9.5 6c1.5 0 2.8-.4 4-1M9.9 9.9a2.5 2.5 0 0 0 3.5 3.5" />,
 };
 
 export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGElement>) {
