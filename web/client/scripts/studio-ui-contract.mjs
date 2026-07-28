@@ -385,6 +385,8 @@ assert.ok(
 );
 const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const icon = await readFile(new URL("../src/components/Icon.tsx", import.meta.url), "utf8");
+const studioProject = await readFile(new URL("../src/studioProject.ts", import.meta.url), "utf8");
 assert.ok(
   regionCanvas.includes("(sourceUrl || resultUrl)")
     && regionCanvas.includes("Clear canvas"),
@@ -401,6 +403,41 @@ assert.ok(
     && regionCanvas.includes("onError={retry}")
     && regionCanvas.includes("retryCount.current >= 6"),
   "Transient output delivery failures must retry instead of leaving the canvas permanently blank",
+);
+assert.ok(
+  regionCanvas.includes("const [regionsHidden, setRegionsHidden] = useState(false)")
+    && regionCanvas.includes('aria-pressed={regionsHidden}')
+    && regionCanvas.includes('regionsHidden ? "Show regions" : "Hide regions"')
+    && regionCanvas.includes('mode !== "face"')
+    && regionCanvas.includes("disabled={drag !== null}"),
+  "Generate/Edit canvases must expose an accessible, drag-safe region visibility toggle",
+);
+assert.ok(
+  regionCanvas.includes("if (!regionsHidden && drawMode) onDrawMode(null)")
+    && regionCanvas.includes("if (regionsHidden)")
+    && regionCanvas.includes("onDrawMode(nextMode)")
+    && regionCanvas.includes("!regionOverlayHidden && orderedRegions.map")
+    && regionCanvas.includes("onPointerDown={regionOverlayHidden ? undefined : beginDraw}")
+    && styles.includes(".region-overlay.regions-hidden { pointer-events: none; }"),
+  "Hidden regions must render no annotation groups, accept no pointer input, and reveal before drawing",
+);
+const visibilityFunctions = regionCanvas
+  .split("function toggleRegionsHidden()", 2)[1]
+  .split("return (", 1)[0];
+assert.ok(
+  regionCanvas.includes('toggleDrawMode("region")')
+    && regionCanvas.includes('toggleDrawMode("subject")')
+    && !visibilityFunctions.includes("onRegions(")
+    && regionCanvas.includes('className="pose-mannequin"')
+    && regionCanvas.includes("!regionOverlayHidden && orderedRegions.map"),
+  "The pose canvas must reveal before either drawing mode and hide the entire mannequin without mutating region or pose data",
+);
+assert.ok(
+  icon.includes('| "eye"')
+    && icon.includes('| "eyeOff"')
+    && !studioProject.includes("regionsHidden")
+    && !studioProject.includes("regions_hidden"),
+  "The visibility control must use dedicated icons and remain outside canonical project JSON",
 );
 assert.ok(
   regionCanvas.includes("orderedRegions")
