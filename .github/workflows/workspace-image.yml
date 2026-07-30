@@ -86,6 +86,8 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          scanners: vuln
+          timeout: 15m
           version: v0.70.0
 
       - name: Generate SPDX SBOM
