@@ -26,7 +26,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
             dockerfile,
         )
         for pin in (
-            "K2CORE_REF=237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+            "K2CORE_REF=903166f756614b13c0add0196fb5705206370dc3",
             "TORCH_VERSION=2.9.1",
             "PIP_VERSION=26.2",
             "SETUPTOOLS_VERSION=83.0.0",
@@ -42,6 +42,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("python -m pip check", dockerfile)
         self.assertIn("python -m pip uninstall -y pip setuptools wheel", dockerfile)
         self.assertIn("COPY src /opt/k2lab-runpod/src", dockerfile)
+        self.assertIn("COPY LICENSE MODEL_USE_POLICY.md", dockerfile)
         self.assertNotIn("COPY . /opt/k2lab-runpod", dockerfile)
         self.assertNotIn("COMFYUI_REPOSITORY", dockerfile)
         self.assertNotIn("COMFYUI_REF", dockerfile)

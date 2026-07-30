@@ -7,9 +7,10 @@ name = "k2lab-runpod"
 version = "0.3.0"
 description = "RunPod-hosted web workspace for K2 regional generation, editing, and face refinement"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "k2core @ git+https://github.com/soomrenald/k2core.git@237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+    "k2core @ git+https://github.com/soomrenald/k2core.git@903166f756614b13c0add0196fb5705206370dc3",
     "numpy>=2.1",
     "pillow>=12.3.0",
     "pydantic>=2.10",
