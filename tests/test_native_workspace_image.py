@@ -113,6 +113,13 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("syft-version: v1.42.3", workflow)
         self.assertIn("Sign release-candidate digest with GitHub OIDC", workflow)
 
+        health_command = re.search(
+            r"docker exec .*? -c \\\n\s+'(?P<code>[^\n]+)'",
+            workflow,
+        )
+        self.assertIsNotNone(health_command)
+        compile(health_command.group("code"), "<native-workspace-health-smoke>", "exec")
+
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertIn("**/node_modules", dockerignore)
 

@@ -128,12 +128,7 @@ jobs:
           test "${status}" = "healthy"
 
           docker exec "${container_id}" /opt/k2lab-venv/bin/python -c \
-            'import json, urllib.request; request = urllib.request.Request(
-            "http://127.0.0.1:8080/v1/health",
-            headers={"Authorization": "Bearer gate12-ci-smoke-token-0000000000000000"},
-            ); payload = json.load(urllib.request.urlopen(request, timeout=5));
-            assert payload["status"] == "ready";
-            assert all(payload["readiness"][key] for key in ("container", "agent", "storage"))'
+            'import json, urllib.request; request = urllib.request.Request("http://127.0.0.1:8080/v1/health", headers={"Authorization": "Bearer gate12-ci-smoke-token-0000000000000000"}); payload = json.load(urllib.request.urlopen(request, timeout=5)); assert payload["status"] == "ready"; assert all(payload["readiness"][key] for key in ("container", "agent", "storage"))'
 
       - name: Scan image for high and critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
