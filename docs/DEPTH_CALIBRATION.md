@@ -23,7 +23,7 @@ python -m k2lab.depth.validate \
   --depth-checkpoint /models/depth-control-lora.safetensors \
   --depth-image depth_16bit.png \
   --output reports/depth-validation \
-  --mode turbo --inspect-only
+  --mode turbo --vram-mode dynamic --reserve-vram-gb 4 --inspect-only
 ```
 
 Remove `--inspect-only` on an accelerator worker to generate an image. For a
