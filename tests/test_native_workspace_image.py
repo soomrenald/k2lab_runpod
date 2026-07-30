@@ -93,6 +93,10 @@ class NativeWorkspaceImageTests(unittest.TestCase):
 
         self.assertIn("file: Dockerfile.native-workspace", workflow)
         self.assertIn('tags:\n      - "native-v*"', workflow)
+        self.assertIn(
+            "IMAGE: ghcr.io/${{ github.repository_owner }}/k2lab-runpod-workspace",
+            workflow,
+        )
         self.assertIn("push: ${{ startsWith(github.ref, 'refs/tags/native-v') }}", workflow)
         self.assertIn("Log in to GHCR for release-candidate builds", workflow)
         self.assertIn("steps.target.outputs.image", workflow)
