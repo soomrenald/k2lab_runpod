@@ -35,6 +35,8 @@ class AgentCapabilities(BaseModel):
     image_version: str
     cuda_version: str | None = None
     pytorch_version: str | None = None
+    inference_backend: str = "comfyui"
+    inference_backend_capabilities: dict[str, object] = Field(default_factory=dict)
     supported_job_kinds: list[str] = Field(
         default_factory=lambda: ["generate", "edit_image", "refine_faces"]
     )
@@ -354,6 +356,7 @@ class GenerationJob(BaseModel):
     command_id: str
     kind: JobKind
     project_id: str
+    backend: str = "comfyui"
     state: JobState
     progress_current: int = Field(default=0, ge=0)
     progress_total: int = Field(default=0, ge=0)

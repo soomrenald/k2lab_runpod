@@ -188,6 +188,7 @@ class JobManager:
         *,
         worker_python: Path,
         comfyui_root: Path,
+        inference_backend: str = "comfyui",
         executor_factory: Callable[[], WorkerExecutor] | None = None,
         readiness_callback: Callable[[bool], None] | None = None,
     ) -> None:
@@ -195,6 +196,7 @@ class JobManager:
         self._transfers = transfers
         self._worker_python = worker_python
         self._comfyui_root = comfyui_root
+        self._inference_backend = inference_backend
         self._executor_factory = executor_factory or (
             lambda: SubprocessWorkerExecutor(worker_python, layout.root)
         )
@@ -224,6 +226,7 @@ class JobManager:
                 command_id=request.command_id,
                 kind=request.kind,
                 project_id=request.project_id,
+                backend=self._inference_backend,
                 state=JobState.QUEUED,
                 created_at=now,
                 updated_at=now,
@@ -382,7 +385,10 @@ class JobManager:
                     job_id,
                     state=JobState.COMPLETED.value,
                     message="Remote job complete.",
-                    payload={"output_file_ids": output_ids},
+                    payload={
+                        "output_file_ids": output_ids,
+                        "backend": self._inference_backend,
+                    },
                 )
         except JobError as error:
             if job_id not in self._cancelled:
@@ -410,6 +416,7 @@ class JobManager:
     @staticmethod
     def _resident_cache_key(payload: dict[str, Any]) -> tuple[str, ...]:
         keys = (
+            "inference_backend",
             "comfyui_root",
             "diffusion_models",
             "text_encoders",
@@ -449,9 +456,17 @@ class JobManager:
                 "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128],
                 "error_code": error_code,
                 "command_kind": str(raw_payload.get("command_kind", "unknown"))[:64],
+                "backend": self._inference_backend,
             }
         else:
-            payload = self._sanitize_payload(raw_payload)
+            payload = self._sanitize_payload(
+                {
+                    **raw_payload,
+                    "backend": str(
+                        raw_payload.get("backend", self._inference_backend)
+                    ),
+                }
+            )
         step = int(payload.get("step", 0) or 0)
         total = int(payload.get("total_steps", 0) or 0)
         if raw_state == "running":
@@ -660,6 +675,7 @@ class JobManager:
                 )
                 face_detector_path = str(face_files[0]) if face_files else None
         return {
+            "inference_backend": self._inference_backend,
             "comfyui_root": str(self._comfyui_root),
             "diffusion_models": str(self._layout.destination(FileKind.DIFFUSION_MODELS.value)),
             "text_encoders": str(self._layout.destination(FileKind.TEXT_ENCODERS.value)),

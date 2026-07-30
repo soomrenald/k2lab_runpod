@@ -133,6 +133,11 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["workspace_layout_version"], LAYOUT_VERSION)
         self.assertEqual(body["cuda_version"], "12.8")
         self.assertEqual(body["pytorch_version"], "2.9.1")
+        self.assertEqual(body["inference_backend"], "comfyui")
+        self.assertEqual(
+            body["inference_backend_capabilities"]["modes"],
+            ["generate", "edit_image", "refine_faces"],
+        )
         self.assertEqual(body["pose_semantic_routing"]["version"], 1)
         self.assertEqual(
             body["pose_semantic_routing"]["modes"],
@@ -215,6 +220,42 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["reserve_vram_gb"], 1.5)
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
+        self.assertEqual(payload["inference_backend"], "comfyui")
+
+    async def test_native_backend_is_server_configured_and_capability_gated(self) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://agent.test",
+        ) as client:
+            response = await client.get("/v1/capabilities", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["inference_backend"], "native")
+        self.assertEqual(body["supported_job_kinds"], ["generate", "edit_image"])
+        self.assertTrue(body["inference_backend_capabilities"]["developer_only"])
+        self.assertFalse(body["inference_backend_capabilities"]["face_refinement"])
+
+    def test_unknown_inference_backend_is_rejected_at_startup(self) -> None:
+        with self.assertRaisesRegex(ValueError, "inference backend"):
+            AgentSettings(
+                session_token=self.settings.session_token,
+                workspace_id=self.settings.workspace_id,
+                image_version=self.settings.image_version,
+                workspace_root=self.root,
+                worker_python=self.settings.worker_python,
+                inference_backend="mystery",
+            )
 
     async def test_subject_pose_gating_requires_mannequin_and_no_model(self) -> None:
         document = self._project_document("two people shaking hands")

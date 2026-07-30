@@ -68,6 +68,7 @@ class AgentSettings:
         workspace_root: Path,
         worker_python: Path,
         comfyui_root: Path = Path("/opt/ComfyUI"),
+        inference_backend: str = "comfyui",
         cuda_version: str | None = None,
         pytorch_version: str | None = None,
         read_requests_per_minute: int = 600,
@@ -88,6 +89,10 @@ class AgentSettings:
         self.workspace_root = workspace_root
         self.worker_python = worker_python
         self.comfyui_root = comfyui_root
+        normalized_backend = inference_backend.strip().casefold()
+        if normalized_backend not in {"comfyui", "native"}:
+            raise ValueError("inference backend must be 'comfyui' or 'native'")
+        self.inference_backend = normalized_backend
         self.cuda_version = cuda_version
         self.pytorch_version = pytorch_version
         self.read_requests_per_minute = read_requests_per_minute
@@ -110,6 +115,7 @@ class AgentSettings:
                 os.environ.get("K2LAB_WORKER_PYTHON", "/opt/comfyui-venv/bin/python")
             ),
             comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
+            inference_backend=os.environ.get("K2LAB_INFERENCE_BACKEND", "comfyui"),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
             read_requests_per_minute=int(os.environ.get("K2LAB_AGENT_READ_RATE_LIMIT", "600")),
@@ -183,6 +189,7 @@ def create_agent_app(
         transfer_manager,
         worker_python=configured.worker_python,
         comfyui_root=configured.comfyui_root,
+        inference_backend=configured.inference_backend,
         executor_factory=job_executor_factory,
         readiness_callback=lambda ready: setattr(application.state, "worker_ready", ready),
     )
@@ -311,6 +318,31 @@ def create_agent_app(
             image_version=configured.image_version,
             cuda_version=configured.cuda_version,
             pytorch_version=configured.pytorch_version,
+            inference_backend=configured.inference_backend,
+            inference_backend_capabilities=(
+                {
+                    "modes": ["generate", "edit_image"],
+                    "face_refinement": False,
+                    "pose_control": False,
+                    "projector": False,
+                    "post_upscale": False,
+                    "developer_only": True,
+                }
+                if configured.inference_backend == "native"
+                else {
+                    "modes": ["generate", "edit_image", "refine_faces"],
+                    "face_refinement": True,
+                    "pose_control": True,
+                    "projector": True,
+                    "post_upscale": True,
+                    "developer_only": False,
+                }
+            ),
+            supported_job_kinds=(
+                ["generate", "edit_image"]
+                if configured.inference_backend == "native"
+                else ["generate", "edit_image", "refine_faces"]
+            ),
         )
 
     @application.get("/v1/storage", response_model=StorageStatus, dependencies=authentication)
