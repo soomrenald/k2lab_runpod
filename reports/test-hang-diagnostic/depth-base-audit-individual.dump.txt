@@ -1,0 +1,547 @@
+{
+  "pid": 242,
+  "node": "tests/test_runpod_backend.py::RunPodBackendTests::test_audit_store_redacts_nested_secrets_and_authenticated_urls",
+  "last_relevant_location": [
+    "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+    656,
+    "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+  ],
+  "relevant_locations": [
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      38,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      39,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      40,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      41,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      44,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/credential_vault.py",
+      45,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      109,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      119,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      121,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      122,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      123,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      124,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      125,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      126,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      127,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      128,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      129,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      130,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      131,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      132,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/runpod_backend.py",
+      133,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      292,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      293,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      294,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      295,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      296,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      297,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      299,
+      "initialize"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      300,
+      "initialize"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      302,
+      "initialize"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      303,
+      "initialize"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      305,
+      "initialize"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      467,
+      "append_audit"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/src/k2_region_lab/web/state_store.py",
+      475,
+      "append_audit"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      85,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      86,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      87,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      88,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      89,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      90,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      91,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      92,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      93,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      94,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      95,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      96,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      97,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      98,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      102,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      103,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      104,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      105,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      106,
+      "__init__"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      563,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      564,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      565,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      566,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      567,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      568,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      569,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      570,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      571,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      572,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      573,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      574,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      575,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      576,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      577,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      578,
+      "asyncSetUp"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      655,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      656,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      657,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      658,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      659,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      660,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      661,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ],
+    [
+      "/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py",
+      662,
+      "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+    ]
+  ],
+  "threads": [
+    {
+      "name": "MainThread",
+      "ident": 139631767555008,
+      "daemon": false,
+      "alive": true
+    },
+    {
+      "name": "Thread-1",
+      "ident": 139631498438336,
+      "daemon": true,
+      "alive": true
+    },
+    {
+      "name": "Thread-2 (_connection_worker_thread)",
+      "ident": 139630652032704,
+      "daemon": true,
+      "alive": true
+    }
+  ],
+  "children": [],
+  "open_fds": [
+    {
+      "fd": 6,
+      "target": "socket:[4300565]"
+    },
+    {
+      "fd": 7,
+      "target": "socket:[4300566]"
+    },
+    {
+      "fd": 8,
+      "target": "/tmp/tmpsjfn3qlk/control-plane.sqlite3"
+    }
+  ],
+  "loops_seen": [
+    "<_UnixSelectorEventLoop running=True closed=False debug=True>"
+  ],
+  "asyncio": {
+    "capture": "direct cross-thread snapshot; event-loop callback did not complete",
+    "loop": "<_UnixSelectorEventLoop running=True closed=False debug=True>",
+    "loop_running": true,
+    "loop_closed": false,
+    "tasks": [
+      {
+        "name": "Task-2",
+        "done": false,
+        "cancelled": false,
+        "coro": "<coroutine object RunPodBackendTests.test_audit_store_redacts_nested_secrets_and_authenticated_urls at 0x7efe4bab1a40>",
+        "waiter": "<Future pending cb=[Task.task_wakeup()] created at /usr/lib64/python3.12/asyncio/base_events.py:448>",
+        "stack": [
+          "  File \"/tmp/k2lab-depth-base-diagnostic-4048ad6/tests/test_runpod_backend.py\", line 656, in test_audit_store_redacts_nested_secrets_and_authenticated_urls\n    await self.state_store.append_audit(\n"
+        ]
+      }
+    ],
+    "async_primitives": [
+      {
+        "type": "asyncio.locks.Event",
+        "state": "<asyncio.locks.Event object at 0x7efe4bae0320 [set]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7efe4bac90d0 [locked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7efe4baca5a0 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7efe4bae00b0 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7efe4bae00e0 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7efe4bae0110 [unlocked]>",
+        "waiter_count": 0
+      }
+    ],
+    "sqlite_connections": [
+      {
+        "repr": "<aiosqlite.core.Connection object at 0x7efe4bae0350>",
+        "running": true,
+        "connection": "None",
+        "queue_size": 0,
+        "thread_alive": null
+      }
+    ],
+    "asgi_apps": []
+  }
+}
+
+=== PYTHON THREAD STACKS ===
+Thread 0x00007efe4b6a06c0 (most recent call first):
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/aiosqlite/core.py", line 59 in _connection_worker_thread
+  File "/usr/lib64/python3.12/threading.py", line 1012 in run
+  File "/usr/lib64/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib64/python3.12/threading.py", line 1032 in _bootstrap
+
+Current thread 0x00007efe7ddd26c0 (most recent call first):
+  File "/tmp/k2_hang_probe.py", line 225 in _write_dump
+  File "/usr/lib64/python3.12/threading.py", line 1433 in run
+  File "/usr/lib64/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib64/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007efe8de78bc0 (most recent call first):
+  File "/usr/lib64/python3.12/selectors.py", line 468 in select
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 1961 in _run_once
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 645 in run_forever
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 678 in run_until_complete
+  File "/usr/lib64/python3.12/asyncio/runners.py", line 118 in run
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 113 in _callMaybeAsync
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 91 in _callTestMethod
+  File "/usr/lib64/python3.12/unittest/case.py", line 634 in run
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 132 in run
+  File "/usr/lib64/python3.12/unittest/case.py", line 690 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/unittest.py", line 391 in runtest
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 184 in pytest_runtest_call
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 250 in <lambda>
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 361 in from_call
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 249 in call_and_report
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 139 in runtestprotocol
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 118 in pytest_runtest_protocol
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 408 in pytest_runtestloop
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 384 in _main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 330 in wrap_session
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 377 in pytest_cmdline_main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/config/__init__.py", line 229 in _main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/config/__init__.py", line 253 in _console_main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pytest/__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main

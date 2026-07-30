@@ -1,0 +1,27 @@
+................................................sss..................... [ 22%]
+.................................................................. [ 43%]
+............sss.......s.........s..............s........................ [ 65%]
+...............ss...........ssss........................................ [ 88%]
+......................................                         [100%]
+=============================== warnings summary ===============================
+../opt/diag-venv/lib/python3.12/site-packages/_pytest/cacheprovider.py:469
+  /opt/diag-venv/lib/python3.12/site-packages/_pytest/cacheprovider.py:469: PytestCacheWarning: cache could not write path /src/.pytest_cache/v/cache/nodeids: [Errno 30] Read-only file system: '/src/.pytest_cache/v/cache/nodeids'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_krea_control_lora.py:193: could not import 'torch': No module named 'torch'
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_krea_control_lora.py:235: could not import 'torch': No module named 'torch'
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_krea_control_lora.py:292: could not import 'torch': No module named 'torch'
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_isolation_parity.py:32: Torch is tested in the ComfyUI worker environment
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_isolation_parity.py:76: Torch is tested in the ComfyUI worker environment
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_isolation_parity.py:51: Torch is tested in the ComfyUI worker environment
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_lora.py:468: Torch is exercised in the configured ComfyUI worker environment
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_prompting.py:232: Torch is exercised in the configured ComfyUI worker environment
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_regional_prompting.py:179: Torch is exercised in the configured ComfyUI worker environment
+SKIPPED [1] ../tmp/k2lab_runpod_split/tests/test_runpod_live_acceptance.py:74: set K2LAB_RUNPOD_LIVE_TESTS=I_ACCEPT_BILLING_AND_DELETION to authorize a billable disposable Pod
+SKIPPED [1] ../tmp/k2lab_runpod_split/tests/test_runpod_live_acceptance.py:131: set K2LAB_RUNPOD_LIVE_TESTS=I_ACCEPT_BILLING_AND_DELETION to authorize a billable disposable Pod
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_semantic_conditioning.py:162: could not import 'torch': No module named 'torch'
+SKIPPED [1] ../home/wolfhard/k2lab_runpod/tests/test_semantic_conditioning.py:194: could not import 'torch': No module named 'torch'
+SKIPPED [2] ../home/wolfhard/k2lab_runpod/tests/test_semantic_conditioning.py:234: could not import 'torch': No module named 'torch'
+305 passed, 15 skipped, 1 warning, 16 subtests passed in 11.66s

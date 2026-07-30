@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /home/wolfhard/k2lab_runpod/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /tmp/k2lab-depth-base-diagnostic-4048ad6
+configfile: pyproject.toml
+plugins: anyio-4.14.2, timeout-2.4.0
+collecting ... collected 1 item
+
+tests/test_workspace_agent.py::WorkspaceAgentTests::test_chunked_upload_resumes_verifies_and_updates_inventory
