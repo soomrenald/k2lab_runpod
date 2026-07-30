@@ -33,6 +33,28 @@ a near-constant control. Evaluate output-depth rank correlation, edge
 alignment, silhouette overlap, prompt similarity, visual quality, runtime, and
 peak VRAM. Do not select a convention from correlation alone.
 
+Run the reproducible depth-response metrics over completed images:
+
+```bash
+python -m k2lab.depth.evaluate \
+  --reference-depth depth_16bit.png \
+  --image correct=correct.png \
+  --image shuffled=shuffled.png \
+  --image zero=zero.png \
+  --output reports/depth-response.json
+```
+
+The evaluator defaults to Depth Anything V2 Small and requires the `model`
+dependency group. It evaluates both relative-depth polarities because
+monocular estimators and renderer exports do not share a universal convention.
+
+The validation harness can also exercise integration invariants. Add
+`--verify-cleanup` to generate identical depth-disabled controls before and
+after the depth run and compare decoded RGB pixels. Add ordinary LoRAs with
+`--lora PATH --lora-strength VALUE`. A regional test can be expressed as, for
+example, `--depth-region subject:relax:0.25:360,220,500,650`; coordinates are
+canvas pixels and multiple regions may be supplied.
+
 Raw uses 28 steps and CFG 3.5 by default; Turbo uses 8 steps and CFG 0. Record
 both separately. Calibration reports should only recommend a preprocessing
 choice after the correct control beats shuffled and neutral controls and visual
