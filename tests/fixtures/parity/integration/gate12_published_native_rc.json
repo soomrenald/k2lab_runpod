@@ -1,0 +1,70 @@
+{
+  "schema": "k2lab-gate12-published-native-rc/1",
+  "status": "published_signed_not_gpu_deployed",
+  "recorded_at": "2026-07-30T04:37:03Z",
+  "source": {
+    "repository": "soomrenald/k2lab_runpod",
+    "commit": "4b091c54162fc689833b5115f78e47b1955525cb",
+    "tag": "native-v0.4.0-rc.2"
+  },
+  "workflow": {
+    "name": "Native workspace image",
+    "run_id": 30513561956,
+    "run_url": "https://github.com/soomrenald/k2lab_runpod/actions/runs/30513561956",
+    "conclusion": "success",
+    "checks": {
+      "immutable_base": true,
+      "no_comfyui_installation": true,
+      "native_imports": true,
+      "locked_python_environment": true,
+      "empty_workspace_authenticated_health": true,
+      "trivy_high": 0,
+      "trivy_critical": 0,
+      "spdx_sbom": true,
+      "github_oidc_signature": true
+    }
+  },
+  "image": {
+    "tag": "ghcr.io/soomrenald/k2lab-runpod-workspace:native-v0.4.0-rc.2",
+    "immutable": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f",
+    "index_sha256": "7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f",
+    "amd64_manifest_sha256": "275714df05acfbbd2deca4e5974cc7c0141a45f840ab807e909379660851ce92",
+    "attestation_manifest_sha256": "caf1fdec8be4c1c2ee3dd76c31883c18f334966c78c052dd78c49e3dee7c24e7"
+  },
+  "sbom": {
+    "format": "SPDX-2.3",
+    "artifact_id": 8748277095,
+    "artifact_name": "native-workspace-image.spdx.json",
+    "sha256": "1c1a058333bdfe6fd41f6c5df6227e93d577672082511140a966492678522479",
+    "size_bytes": 5470485,
+    "packages": 243,
+    "files": 6041,
+    "relationships": 7107
+  },
+  "signature": {
+    "tool": "cosign v3.0.6",
+    "certificate_identity": "https://github.com/soomrenald/k2lab_runpod/.github/workflows/native-workspace-image.yml@refs/tags/native-v0.4.0-rc.2",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "claims_validated": true,
+    "transparency_log_verified": true,
+    "trusted_certificate_authority_verified": true
+  },
+  "superseded_candidate": {
+    "tag": "native-v0.4.0-rc.1",
+    "workflow_run_id": 30512953637,
+    "reason": "The empty-workspace shell step contained syntactically invalid embedded Python.",
+    "signed": false,
+    "deploy": false
+  },
+  "runpod_gpu_deployment": {
+    "status": "pending",
+    "required_checks": [
+      "clean-install authenticated health",
+      "structured failure recovery",
+      "native generation",
+      "swap to preserved ComfyUI image",
+      "post-rollback authenticated health and generation",
+      "disposable Pod and volume deletion"
+    ]
+  }
+}
