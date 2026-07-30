@@ -65,6 +65,20 @@ immutable base image, confirms `/opt/ComfyUI` is absent, runs an import smoke, s
 and emits an SPDX SBOM. It never publishes an image; promotion remains an explicit
 release action.
 
+The web-runtime dependency closure is exported from `uv.lock` into
+`native-web-requirements.lock` with package hashes. Regenerate it after an intentional
+lock update:
+
+```bash
+uv export --frozen --extra web --no-dev --no-emit-project \
+  --no-emit-package k2core --no-annotate \
+  --output-file deploy/workspace/native-web-requirements.lock
+```
+
+The image installs that file with pip hash enforcement, installs k2core separately from
+its exact commit, and installs the local RunPod package with `--no-deps`. This prevents
+ranged web dependencies from drifting during a later image build.
+
 Native tokenizer files live in the durable
 `/workspace/k2lab/models/tokenizers` model kind. Upload or remotely transfer every file
 from the approved Qwen tokenizer directory without renaming it. The agent reports model

@@ -7,6 +7,10 @@ ARG TORCH_VERSION=2.9.1
 ARG TORCHVISION_VERSION=0.24.1
 ARG TORCHAUDIO_VERSION=2.9.1
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG PIP_VERSION=26.2
+ARG SETUPTOOLS_VERSION=83.0.0
+ARG WHEEL_VERSION=0.47.0
+ARG PACKAGING_VERSION=26.2
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -31,11 +35,14 @@ RUN apt-get update && apt-get upgrade -y \
         python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/k2lab-runpod
-COPY . /opt/k2lab-runpod
+COPY deploy/workspace/native-web-requirements.lock /tmp/native-web-requirements.lock
 
 RUN python3.12 -m venv /opt/k2lab-venv \
-    && /opt/k2lab-venv/bin/python -m pip install --upgrade pip setuptools wheel \
+    && /opt/k2lab-venv/bin/python -m pip install \
+        "pip==${PIP_VERSION}" \
+        "setuptools==${SETUPTOOLS_VERSION}" \
+        "wheel==${WHEEL_VERSION}" \
+        "packaging==${PACKAGING_VERSION}" \
     && /opt/k2lab-venv/bin/python -m pip install \
         "torch==${TORCH_VERSION}" \
         "torchvision==${TORCHVISION_VERSION}" \
@@ -46,7 +53,14 @@ RUN python3.12 -m venv /opt/k2lab-venv \
         "safetensors==0.8.0" \
         "transformers==5.14.1" \
         "git+${K2CORE_REPOSITORY}@${K2CORE_REF}" \
-    && /opt/k2lab-venv/bin/python -m pip install '/opt/k2lab-runpod[web]' \
+    && /opt/k2lab-venv/bin/python -m pip install \
+        --require-hashes \
+        --requirement /tmp/native-web-requirements.lock
+
+WORKDIR /opt/k2lab-runpod
+COPY . /opt/k2lab-runpod
+
+RUN /opt/k2lab-venv/bin/python -m pip install --no-deps /opt/k2lab-runpod \
     && chmod 0755 /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 
 EXPOSE 8080
