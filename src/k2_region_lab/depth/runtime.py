@@ -221,7 +221,11 @@ def encode_depth_control(
     rgb = np.repeat(preparation.resized_values[..., None], 3, axis=-1)
     image = torch.from_numpy(np.ascontiguousarray(rgb)).to(dtype=torch.float32)
     try:
-        latent = vae.encode(image.unsqueeze(0))
+        # A prior Comfy generation can leave lazily materialized VAE weights as
+        # inference tensors. Keep control encoding in the same inference-only
+        # lifecycle so a subsequent depth job never asks autograd to save them.
+        with torch.inference_mode():
+            latent = vae.encode(image.unsqueeze(0))
     except Exception as error:
         raise KreaControlError(
             "depth_encode_failed",

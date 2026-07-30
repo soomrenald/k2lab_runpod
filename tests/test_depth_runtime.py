@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from k2core.depth import EffectiveDepthField
+from k2_region_lab.depth import runtime as depth_runtime
 from k2_region_lab.depth.runtime import DepthScheduleController
 
 
@@ -33,3 +36,47 @@ def test_depth_schedule_rejects_callback_divergence() -> None:
         controller.advance_after(0, 3)
     with pytest.raises(RuntimeError, match="callback"):
         controller.advance_after(1, 2)
+
+
+def test_depth_encode_uses_inference_lifecycle(monkeypatch) -> None:
+    state = {"inference": False}
+
+    class FakeTensor:
+        def to(self, **_kwargs):
+            return self
+
+        def unsqueeze(self, _dimension):
+            return self
+
+    class InferenceMode:
+        def __enter__(self):
+            state["inference"] = True
+
+        def __exit__(self, *_args):
+            state["inference"] = False
+
+    class FakeVae:
+        def encode(self, _pixels):
+            assert state["inference"]
+            return "latent"
+
+    fake_torch = SimpleNamespace(
+        float32="float32",
+        from_numpy=lambda _values: FakeTensor(),
+        inference_mode=InferenceMode,
+    )
+    monkeypatch.setattr(depth_runtime, "torch", fake_torch)
+    monkeypatch.setattr(
+        depth_runtime,
+        "_process_control_latent_for_model",
+        lambda _model, latent: latent,
+    )
+
+    result = depth_runtime.encode_depth_control(
+        FakeVae(),
+        object(),
+        SimpleNamespace(resized_values=np.ones((16, 16), dtype=np.float32)),
+    )
+
+    assert result.full == "latent"
+    assert state["inference"] is False
