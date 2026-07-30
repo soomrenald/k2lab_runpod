@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from k2core.depth import DepthFeatureFlags
 from k2_region_lab.agent import AGENT_API_VERSION, AGENT_VERSION, WORKER_PROTOCOL_VERSION
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION
 
@@ -66,6 +67,18 @@ class AgentCapabilities(BaseModel):
             "scope_aware": True,
             "single_gpu_prediction_composite": True,
             "strength_schedule": "constant_all_steps",
+        }
+    )
+    krea_depth_control: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "feature_flags": DepthFeatureFlags.from_environment().document(),
+            "control_format": "krea2-depth-control-lora-v1",
+            "checkpoint_sha256": (
+                "fb80547ed79b47c1e3fea7bb9d36297e3917b2115fab6700ca1501350f9f483c"
+            ),
+            "region_modes": ["inherit", "emphasize", "relax", "ignore"],
+            "single_sampler_trajectory": True,
         }
     )
 
@@ -302,6 +315,12 @@ class JobSubmitRequest(BaseModel):
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
     pose_control_lora_file_id: str | None = Field(default=None, max_length=64)
     pose_control_allow_unverified_legacy: bool = False
+    depth_checkpoint_file_id: str | None = Field(default=None, max_length=64)
+    depth_image_file_id: str | None = Field(default=None, max_length=64)
+    depth_override_file_ids: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=128,
+    )
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
     filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)

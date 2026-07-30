@@ -212,6 +212,14 @@ def test_expanded_projection_preserves_native_image_path_and_scales_only_control
         output,
         original(image_tokens) + torch.full((1, 2, 3), 4.0),
     )
+    projection.token_strength = torch.tensor([0.0, 2.0])
+    spatial = projection(image_tokens)
+    assert torch.equal(spatial[:, 0], original(image_tokens)[:, 0])
+    assert torch.equal(
+        spatial[:, 1],
+        original(image_tokens)[:, 1] + torch.full((1, 3), 8.0),
+    )
+    projection.token_strength = None
     projection.strength = 0
     assert torch.equal(projection(image_tokens), original(image_tokens))
     with pytest.raises(Exception, match="latent shape"):

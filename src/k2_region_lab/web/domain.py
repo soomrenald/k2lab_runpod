@@ -7,6 +7,7 @@ from typing import Any, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from k2core.depth import DepthFeatureFlags
 from k2_region_lab.agent import WORKER_PROTOCOL_VERSION
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION
 from k2_region_lab.agent.domain import (
@@ -316,6 +317,18 @@ class CapabilityManifest(BaseModel):
             "scope_aware": True,
             "single_gpu_prediction_composite": True,
             "strength_schedule": "constant_all_steps",
+        }
+    )
+    krea_depth_control: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "feature_flags": DepthFeatureFlags.from_environment().document(),
+            "control_format": "krea2-depth-control-lora-v1",
+            "checkpoint_sha256": (
+                "fb80547ed79b47c1e3fea7bb9d36297e3917b2115fab6700ca1501350f9f483c"
+            ),
+            "region_modes": ["inherit", "emphasize", "relax", "ignore"],
+            "single_sampler_trajectory": True,
         }
     )
 

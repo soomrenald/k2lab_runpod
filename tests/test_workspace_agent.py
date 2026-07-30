@@ -11,6 +11,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from PIL import Image
 
 
 FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
@@ -366,6 +369,76 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 state,
                 sanitized,
             )
+
+    async def test_depth_adapter_requires_flag_and_resolves_opaque_assets(self) -> None:
+        document = self._project_document("standing portrait")
+        document["generation"]["depth_control"] = {
+            "enabled": True,
+            "checkpoint": "depth-control-lora.safetensors",
+            "depth_image": "standing-depth.png",
+            "global_strength": 1.2,
+            "start_percent": 0.0,
+            "end_percent": 0.8,
+            "regions": [],
+        }
+        checkpoint_path = (
+            self.app.state.layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            / "depth-control-lora.safetensors"
+        )
+        checkpoint_path.write_bytes(self._safetensors_payload())
+        checkpoint = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.KREA_CONTROL_LORAS,
+            checkpoint_path,
+        )
+        depth_path = (
+            self.app.state.layout.destination(FileKind.INPUTS.value)
+            / "standing-depth.png"
+        )
+        Image.new("I;16", (64, 64), 32768).save(depth_path)
+        depth = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.INPUTS,
+            depth_path,
+        )
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "depth-adapter",
+                "kind": "generate",
+                "project_id": "depth-adapter-project",
+                "project": document,
+                "depth_checkpoint_file_id": checkpoint.id,
+                "depth_image_file_id": depth.id,
+            }
+        )
+        state, sanitized = self.app.state.job_manager._validate_request(request)
+
+        with patch.dict(os.environ, {"K2_DEPTH_CONTROL_ENABLED": ""}):
+            with self.assertRaisesRegex(Exception, "Depth control is disabled"):
+                await self.app.state.job_manager._job_payload(
+                    "job-id",
+                    request,
+                    state,
+                    sanitized,
+                )
+
+        with patch.dict(os.environ, {"K2_DEPTH_CONTROL_ENABLED": "1"}):
+            payload = await self.app.state.job_manager._job_payload(
+                "job-id",
+                request,
+                state,
+                sanitized,
+            )
+
+        self.assertTrue(payload["depth_control"]["enabled"])
+        self.assertEqual(payload["depth_control"]["global_strength"], 1.2)
+        self.assertEqual(
+            Path(payload["depth_control"]["checkpoint"]),
+            checkpoint_path,
+        )
+        self.assertEqual(
+            Path(payload["depth_control"]["depth_image"]),
+            depth_path,
+        )
+        self.assertFalse(payload["depth_override_enabled"])
 
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,

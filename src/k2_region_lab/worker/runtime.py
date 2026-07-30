@@ -12,6 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from k2core.depth import KREA2_DEPTH_PUBLIC_SHA256, DepthControlSettings
+from k2_region_lab.depth.runtime import (
+    DepthControlPreparation,
+    encode_depth_control,
+    prepare_depth_control,
+)
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.image_edit import (
     composite_regional_edit,
@@ -1657,6 +1663,7 @@ class ComfyBaselineRuntime:
         width: int,
         height: int,
         steps: int,
+        cfg: float = 1.0,
         sampler: str = DEFAULT_SAMPLER,
         scheduler: str = DEFAULT_SCHEDULER,
         seed: int,
@@ -1681,6 +1688,8 @@ class ComfyBaselineRuntime:
         pose_control_lora_strength: float = 1.0,
         pose_control_format: str = K2_VOLUMETRIC_CONTROL_FORMAT,
         pose_control_allow_unverified_legacy: bool = False,
+        depth_control: DepthControlSettings | None = None,
+        depth_override_enabled: bool = False,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1701,6 +1710,8 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        if not 0.0 <= cfg <= 20.0:
+            raise ValueError("CFG must be between zero and 20")
         sampler = validate_sampler(sampler)
         scheduler = validate_scheduler(scheduler)
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
@@ -1714,6 +1725,11 @@ class ComfyBaselineRuntime:
         lora_specifications = list(loras or [])
         pose_gating = pose_gating or PoseGatingSettings()
         semantic_mode = PoseSemanticMode(pose_semantic_mode)
+        if depth_control is not None and depth_control.enabled and pose_control_lora_enabled:
+            raise KreaControlError(
+                "krea_control_lora_target_conflict",
+                "Depth control and volumetric pose control cannot share one Krea input projection.",
+            )
         if not 0.0 <= pose_control_lora_strength <= 2.0:
             raise ValueError("Krea pose-adapter strength must be between zero and two")
         if pose_control_format != K2_VOLUMETRIC_CONTROL_FORMAT:
@@ -1834,6 +1850,7 @@ class ComfyBaselineRuntime:
                 width=width,
                 height=height,
                 steps=steps,
+                cfg=cfg,
                 sampler=sampler,
                 scheduler=scheduler,
                 seed=seed,
@@ -1861,6 +1878,9 @@ class ComfyBaselineRuntime:
                 pose_control_allow_unverified_legacy=(
                     pose_control_allow_unverified_legacy
                 ),
+                depth_control=depth_control,
+                depth_override_enabled=depth_override_enabled,
+                regions=regions,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1899,6 +1919,7 @@ class ComfyBaselineRuntime:
             width=width,
             height=height,
             steps=steps,
+            cfg=cfg,
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
@@ -1924,6 +1945,9 @@ class ComfyBaselineRuntime:
             pose_control_lora_strength=pose_control_lora_strength,
             control_bundle=control_bundle,
             pose_control_allow_unverified_legacy=pose_control_allow_unverified_legacy,
+            depth_control=depth_control,
+            depth_override_enabled=depth_override_enabled,
+            regions=regions,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1948,6 +1972,7 @@ class ComfyBaselineRuntime:
         width: int,
         height: int,
         steps: int,
+        cfg: float,
         sampler: str,
         scheduler: str,
         seed: int,
@@ -1967,6 +1992,9 @@ class ComfyBaselineRuntime:
         pose_control_lora_strength: float,
         control_bundle: KreaVolumetricControlBundle | None,
         pose_control_allow_unverified_legacy: bool,
+        depth_control: DepthControlSettings | None,
+        depth_override_enabled: bool,
+        regions: tuple[RegionDefinition, ...],
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -2143,6 +2171,8 @@ class ComfyBaselineRuntime:
         generation_model = self.model
         control_latents = None
         control_compatibility = None
+        depth_preparation: DepthControlPreparation | None = None
+        depth_latents = None
         if pose_control_lora_path is not None:
             self._ensure_memory("before Krea pose adapter loading", event)
             generation_model, control_compatibility = install_krea_control_lora(
@@ -2174,6 +2204,42 @@ class ComfyBaselineRuntime:
                         "full_control_sha256": control_bundle.full.sha256,
                         "subject_control_count": len(control_bundle.subjects),
                         "vae_encode_seconds": control_latents.encode_seconds,
+                    },
+                )
+        if depth_control is not None and depth_control.enabled:
+            self._ensure_memory("before Krea depth adapter loading", event)
+            depth_preparation = prepare_depth_control(
+                depth_control,
+                regions=regions,
+                width=width,
+                height=height,
+                steps=steps,
+                allow_override=depth_override_enabled,
+            )
+            generation_model, control_compatibility = install_krea_control_lora(
+                generation_model,
+                depth_control.checkpoint,
+                strength=1.0,
+                allow_unverified_legacy=True,
+                expected_sha256=KREA2_DEPTH_PUBLIC_SHA256,
+                adapter_format_id="krea2-depth-control-lora-v1",
+            )
+            depth_latents = encode_depth_control(
+                self.vae,
+                generation_model,
+                depth_preparation,
+            )
+            generation_model = attach_krea_control_latents(
+                generation_model,
+                depth_latents,
+                token_strength=depth_preparation.schedule,
+            )
+            if event is not None:
+                event(
+                    "krea_depth_control_prepared",
+                    {
+                        **depth_preparation.document(),
+                        "vae_encode_seconds": depth_latents.encode_seconds,
                     },
                 )
         generation_model, projector_summary = self._apply_global_projector_vector(
@@ -2329,6 +2395,8 @@ class ComfyBaselineRuntime:
                 )
             if pose_controller is not None:
                 pose_controller.mark_transition_complete(step)
+            if depth_preparation is not None:
+                depth_preparation.schedule.advance_after(step, total)
 
         attention_override = (
             KreaSpatialAttentionOverride(
@@ -2401,7 +2469,7 @@ class ComfyBaselineRuntime:
                     generation_model,
                     noise,
                     effective_steps,
-                    1.0,
+                    cfg,
                     sampler,
                     scheduler,
                     positive,
@@ -2578,6 +2646,28 @@ class ComfyBaselineRuntime:
                     "krea_volumetric_pose_control_completed",
                     control_summary_document,
                 )
+        depth_summary_document: dict[str, Any] = {
+            "version": 1,
+            "enabled": False,
+        }
+        if (
+            depth_control is not None
+            and depth_control.enabled
+            and depth_preparation is not None
+            and depth_latents is not None
+        ):
+            runtime_report = krea_control_runtime_report(generation_model)
+            depth_summary_document = {
+                "version": 1,
+                "enabled": True,
+                **depth_preparation.document(),
+                "control_latent_sha256": depth_latents.source_hashes["full"],
+                "control_latent_shape": list(depth_latents.full.shape),
+                "vae_encode_seconds": depth_latents.encode_seconds,
+                "runtime": runtime_report.document(),
+            }
+            if event is not None:
+                event("krea_depth_control_completed", depth_summary_document)
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -2625,6 +2715,7 @@ class ComfyBaselineRuntime:
         metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
+        metadata.add_text("cfg", str(cfg))
         metadata.add_text("effective_steps", str(effective_steps))
         metadata.add_text("sampler", sampler)
         metadata.add_text("scheduler", scheduler)
@@ -2648,6 +2739,10 @@ class ComfyBaselineRuntime:
         metadata.add_text(
             "pose_control_lora_runtime",
             json.dumps(control_summary_document),
+        )
+        metadata.add_text(
+            "depth_control_runtime",
+            json.dumps(depth_summary_document),
         )
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
@@ -2677,12 +2772,13 @@ class ComfyBaselineRuntime:
             "pose_gating": pose_summary_document,
             "pose_semantic_runtime": semantic_summary_document,
             "pose_control_lora_runtime": control_summary_document,
+            "depth_control_runtime": depth_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
             "sampler": sampler,
             "scheduler": scheduler,
-            "cfg": 1.0,
+            "cfg": cfg,
             "memory_policy": self.memory_policy_key,
             "system_ram_guard_enabled": self.system_ram_guard_enabled,
             "requested_vram_mode": self.requested_vram_mode,

@@ -8,6 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from k2core.depth import DepthControlSettings
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
@@ -347,6 +348,12 @@ def main() -> int:
                     ),
                     pose_control_allow_unverified_legacy=bool(
                         payload.get("pose_control_allow_unverified_legacy", False)
+                    ),
+                    depth_control=DepthControlSettings.from_payload(
+                        payload.get("depth_control")
+                    ),
+                    depth_override_enabled=bool(
+                        payload.get("depth_override_enabled", False)
                     ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(

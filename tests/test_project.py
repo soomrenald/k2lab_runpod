@@ -8,6 +8,12 @@ from pathlib import Path
 
 from PIL import Image, PngImagePlugin
 
+from k2core.depth import (
+    DepthControlSettings,
+    DepthNormalizationSettings,
+    DepthRegionMode,
+    DepthRegionSettings,
+)
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
@@ -26,6 +32,64 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 class ProjectStateTests(unittest.TestCase):
+    def test_depth_control_round_trips_and_version_23_defaults_disabled(self) -> None:
+        depth = DepthControlSettings(
+            enabled=True,
+            checkpoint=Path("depth-control-lora.safetensors"),
+            depth_image=Path("blender-depth.png"),
+            global_strength=1.25,
+            normalization=DepthNormalizationSettings(invert=True, gamma=0.8),
+            regions=(
+                DepthRegionSettings("subject-a", DepthRegionMode.EMPHASIZE, 1.5),
+            ),
+        )
+        document = project_document(
+            ProjectState(
+                canvas_width=1024,
+                canvas_height=1024,
+                depth_control=depth,
+                regions=(
+                    RegionDefinition(
+                        region_id="subject-a",
+                        name="Subject A",
+                        box=PixelBox(32, 32, 512, 900),
+                        prompt="a person",
+                    ),
+                ),
+            )
+        )
+
+        restored = project_state(document)
+
+        self.assertTrue(restored.depth_control.enabled)
+        self.assertEqual(restored.depth_control.global_strength, 1.25)
+        self.assertTrue(restored.depth_control.normalization.invert)
+        self.assertEqual(
+            restored.depth_control.regions[0].mode,
+            DepthRegionMode.EMPHASIZE,
+        )
+
+        document["version"] = 23
+        document["generation"].pop("depth_control")
+        legacy = project_state(document)
+        self.assertFalse(legacy.depth_control.enabled)
+
+    def test_depth_control_rejects_a_missing_project_region(self) -> None:
+        with self.assertRaisesRegex(ValueError, "depth settings reference"):
+            ProjectState(
+                canvas_width=1024,
+                canvas_height=1024,
+                depth_control=DepthControlSettings(
+                    regions=(
+                        DepthRegionSettings(
+                            "missing-subject",
+                            DepthRegionMode.EMPHASIZE,
+                            1.5,
+                        ),
+                    ),
+                ),
+            )
+
     def test_version_twenty_two_preserves_semantics_and_disables_new_adapter(self) -> None:
         document = project_document(
             ProjectState(

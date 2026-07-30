@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # Lightweight control-plane and training-data envir
 
 CONTROL_ATTACHMENT_KEY = "k2_krea_volumetric_control_lora"
 CONTROL_LATENT_MAPPING_KEY = "k2_krea_volumetric_control_latents"
+CONTROL_TOKEN_STRENGTH_KEY = "k2_krea_control_token_strength"
 EXPECTED_BLOCKS = 28
 EXPECTED_TARGETS = (
     "attn.wq",
@@ -347,6 +348,7 @@ if nn is not None:
             self.strength = float(strength)
             self.weight = nn.Parameter(weight.detach().cpu().clone(), requires_grad=False)
             self.control_tokens = None
+            self.token_strength = None
             object.__setattr__(self, "_original_first", original_first)
 
         @property
@@ -385,9 +387,23 @@ if nn is not None:
                 image_tokens.device,
                 image_tokens.dtype,
             )
-            return self.original_first(image_tokens) + self.strength * functional.linear(
-                control, control_weight, None
-            )
+            contribution = functional.linear(control, control_weight, None)
+            if self.token_strength is not None:
+                token_strength = self.token_strength.to(
+                    device=image_tokens.device,
+                    dtype=image_tokens.dtype,
+                )
+                if token_strength.ndim == 1:
+                    token_strength = token_strength.view(1, -1, 1)
+                elif token_strength.ndim == 2:
+                    token_strength = token_strength.unsqueeze(-1)
+                if token_strength.ndim != 3 or token_strength.shape[1] != image_tokens.shape[1]:
+                    raise KreaControlError(
+                        "krea_control_latent_shape_invalid",
+                        "The control-strength field does not match the Krea image tokens.",
+                    )
+                contribution = contribution * token_strength
+            return self.original_first(image_tokens) + self.strength * contribution
 
 else:
 
@@ -688,6 +704,7 @@ def _transformer_options(args, kwargs) -> dict[str, Any] | None:
 
 def _restore_projection(diffusion_model, projection: KreaControlInputProjection) -> None:
     projection.control_tokens = None
+    projection.token_strength = None
     if getattr(diffusion_model, "first", None) is projection:
         diffusion_model.first = projection.original_first
 
@@ -711,6 +728,7 @@ def _control_wrapper(projection: KreaControlInputProjection, scope_calls: dict[s
         diffusion_model = executor.class_obj
         previous_first = getattr(diffusion_model, "first", None)
         previous_tokens = projection.control_tokens
+        previous_strength = projection.token_strength
         try:
             projection.control_tokens = _control_tokens(
                 latent,
@@ -718,10 +736,16 @@ def _control_wrapper(projection: KreaControlInputProjection, scope_calls: dict[s
                 int(diffusion_model.patch),
                 projection.control_features,
             )
+            token_strength = options.get(CONTROL_TOKEN_STRENGTH_KEY)
+            if callable(getattr(token_strength, "current_values", None)):
+                token_strength = token_strength.current_values()
+            if token_strength is not None:
+                projection.token_strength = torch.as_tensor(token_strength)
             diffusion_model.first = projection
             return executor(*args, **kwargs)
         finally:
             projection.control_tokens = previous_tokens
+            projection.token_strength = previous_strength
             if getattr(diffusion_model, "first", None) is projection:
                 diffusion_model.first = projection.original_first or previous_first
 
@@ -740,6 +764,7 @@ def _projection_injections(projection: KreaControlInputProjection):
             projection.set_original_first(current)
         diffusion_model.first = projection.original_first
         projection.control_tokens = None
+        projection.token_strength = None
 
     def eject(model_patcher):
         diffusion_model = getattr(model_patcher.model, "diffusion_model", None)
@@ -765,6 +790,8 @@ def install_krea_control_lora(
     *,
     strength: float,
     allow_unverified_legacy: bool = False,
+    expected_sha256: str | None = None,
+    adapter_format_id: str | None = None,
 ):
     if torch is None:
         raise KreaControlError(
@@ -782,6 +809,34 @@ def install_krea_control_lora(
             "krea_control_checkpoint_incompatible",
             "The selected Krea pose adapter is incompatible with this runtime.",
             private_detail="; ".join(compatibility.errors),
+        )
+    if (
+        expected_sha256 is not None
+        and compatibility.checkpoint.sha256.casefold() != expected_sha256.casefold()
+    ):
+        raise KreaControlError(
+            "krea_control_checkpoint_incompatible",
+            "The selected Krea control adapter does not match the trusted artifact.",
+        )
+    if expected_sha256 is not None or adapter_format_id is not None:
+        checkpoint = replace(
+            compatibility.checkpoint,
+            format_id=adapter_format_id or compatibility.checkpoint.format_id,
+            verified=expected_sha256 is not None,
+        )
+        compatibility = replace(
+            compatibility,
+            verified=checkpoint.verified,
+            warnings=(
+                tuple(
+                    warning
+                    for warning in compatibility.warnings
+                    if warning != "Unverified legacy Krea control checkpoint"
+                )
+                if checkpoint.verified
+                else compatibility.warnings
+            ),
+            checkpoint=checkpoint,
         )
     if model_patcher.get_attachment(CONTROL_ATTACHMENT_KEY) is not None:
         raise KreaControlError(
@@ -860,6 +915,8 @@ def install_krea_control_lora(
 def attach_krea_control_latents(
     model_patcher,
     bundle: KreaControlLatentBundle,
+    *,
+    token_strength: Any | None = None,
 ):
     if model_patcher.get_attachment(CONTROL_ATTACHMENT_KEY) is None:
         raise KreaControlError(
@@ -872,6 +929,8 @@ def attach_krea_control_latents(
         "full": bundle.full,
         "subjects": dict(bundle.subjects),
     }
+    if token_strength is not None:
+        options[CONTROL_TOKEN_STRENGTH_KEY] = token_strength
     return generation_model
 
 
