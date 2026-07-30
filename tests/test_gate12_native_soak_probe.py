@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,19 @@ SCRIPT = (
 SPEC = importlib.util.spec_from_file_location("gate12_native_soak_probe", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 PROBE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = PROBE
 SPEC.loader.exec_module(PROBE)
+
+VRAM_SCRIPT = (
+    Path(__file__).parents[1] / "scripts" / "gate12_backend_vram_probe.py"
+)
+VRAM_SPEC = importlib.util.spec_from_file_location(
+    "gate12_backend_vram_probe",
+    VRAM_SCRIPT,
+)
+assert VRAM_SPEC is not None and VRAM_SPEC.loader is not None
+VRAM_PROBE = importlib.util.module_from_spec(VRAM_SPEC)
+VRAM_SPEC.loader.exec_module(VRAM_PROBE)
 
 
 class Gate12NativeSoakProbeTests(unittest.TestCase):
@@ -83,3 +96,19 @@ class Gate12NativeSoakProbeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "workload"):
                 PROBE.load_state(args)
+
+    def test_release_vram_comparison_enforces_ratio_limit(self) -> None:
+        passing = VRAM_PROBE.release_comparison(
+            native_peak_mib=11_500,
+            comfy_peak_mib=10_000,
+            ratio_limit=1.15,
+        )
+        failing = VRAM_PROBE.release_comparison(
+            native_peak_mib=11_501,
+            comfy_peak_mib=10_000,
+            ratio_limit=1.15,
+        )
+
+        self.assertTrue(passing["passed"])
+        self.assertFalse(failing["passed"])
+        self.assertAlmostEqual(passing["native_to_comfyui_ratio"], 1.15)

@@ -198,15 +198,31 @@ def performance_summary(iterations: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class Worker:
-    def __init__(self, *, timeout: float, log_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        timeout: float,
+        log_path: Path,
+        executable: Path | None = None,
+        backend: str = "native",
+        k2core_package: Path | None = None,
+    ) -> None:
         self.timeout = timeout
+        self.backend = backend
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log = log_path.open("a", encoding="utf-8")
         environment = os.environ.copy()
         environment.setdefault("K2LAB_DATA_DIR", str(log_path.parent))
+        environment["K2LAB_BACKEND"] = backend
+        if k2core_package is not None:
+            environment["K2LAB_K2CORE_PACKAGE"] = str(k2core_package)
         self.started_at = time.monotonic()
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "k2_region_lab.worker.entrypoint"],
+            [
+                str(executable or Path(sys.executable)),
+                "-m",
+                "k2_region_lab.worker.entrypoint",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self._log,
@@ -269,7 +285,7 @@ class Worker:
                     command(
                         "gate12-soak-shutdown",
                         "shutdown",
-                        {"inference_backend": "native"},
+                        {"inference_backend": self.backend},
                     ),
                     terminal_state="complete",
                 )
