@@ -367,6 +367,23 @@ class SubprocessWorkerTimeoutTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
+    async def test_worker_logs_are_persisted_without_forwarding_secrets(
+        self,
+    ) -> None:
+        executor = SubprocessWorkerExecutor(Path(sys.executable), Path.cwd())
+        with patch.dict(
+            os.environ,
+            {
+                "PATH": "/usr/bin",
+                "K2LAB_AGENT_SESSION_TOKEN": "must-not-leak",
+            },
+            clear=True,
+        ):
+            environment = executor._worker_environment()
+
+        self.assertEqual(environment["K2LAB_DATA_DIR"], str(Path.cwd()))
+        self.assertNotIn("K2LAB_AGENT_SESSION_TOKEN", environment)
+
     async def test_worker_startup_timeout_is_distinct(self) -> None:
         process = self.Process(self.Stdout())
         executor = SubprocessWorkerExecutor(Path(sys.executable), Path.cwd())

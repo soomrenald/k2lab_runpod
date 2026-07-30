@@ -52,6 +52,7 @@ from k2_region_lab.agent.jobs import JobError, JobManager
 from k2_region_lab.agent.migrations import WorkspaceMigrationManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
+from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.http_security import SlidingWindowRateLimiter
 from k2_region_lab.memory import system_memory_snapshot
 from k2_region_lab.krea_control_lora import inspect_krea_control_checkpoint
@@ -835,7 +836,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    uvicorn.run(create_agent_app(), host=args.host, port=args.port)
+    settings = AgentSettings.from_environment()
+    configure_debug_logging("agent", settings.workspace_root)
+    uvicorn.run(create_agent_app(settings), host=args.host, port=args.port)
     return 0
 
 

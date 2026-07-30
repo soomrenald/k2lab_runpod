@@ -237,8 +237,7 @@ class SubprocessWorkerExecutor:
         while await stream.read(64 * 1024):
             pass
 
-    @staticmethod
-    def _worker_environment() -> dict[str, str]:
+    def _worker_environment(self) -> dict[str, str]:
         allowed_names = {
             "HOME",
             "LANG",
@@ -250,11 +249,13 @@ class SubprocessWorkerExecutor:
             "VIRTUAL_ENV",
         }
         allowed_prefixes = ("CUDA_", "HIP_", "NVIDIA_", "ROCM_")
-        return {
+        environment = {
             key: value
             for key, value in os.environ.items()
             if key in allowed_names or key.startswith(allowed_prefixes)
         }
+        environment["K2LAB_DATA_DIR"] = str(self._working_directory)
+        return environment
 
 
 class JobManager:

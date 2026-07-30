@@ -195,6 +195,11 @@ def finish_native_job(
     resident = bool(payload.get("keep_model_loaded", False))
     if not resident:
         backend.unload()
+    logging.getLogger("k2_region_lab.worker.entrypoint").info(
+        "native cleanup command_id=%s resident=%s",
+        command_id,
+        resident,
+    )
     emit(
         WorkerState.COMPLETE,
         (
@@ -255,7 +260,12 @@ def main() -> int:
                     backend_name=active_backend,
                     phase="worker_command",
                 )
-            logger.debug("received worker command id=%s kind=%s", command_id, kind.value)
+            logger.info(
+                "received worker command id=%s kind=%s backend=%s",
+                command_id,
+                kind.value,
+                active_backend,
+            )
             comfyui_root = Path(payload.get("comfyui_root", "~/ComfyUI")).expanduser()
             if kind == CommandKind.PROBE:
                 emit(WorkerState.PROBING, "Probing worker runtime", command_id=command_id)
@@ -306,6 +316,17 @@ def main() -> int:
                 if active_backend == "native":
                     directories = model_directories(payload)
                     native_artifacts = discover_native_model_artifacts(directories)
+                    logger.info(
+                        (
+                            "native model load command_id=%s transformer_sha256=%s "
+                            "text_encoder_sha256=%s vae_sha256=%s tokenizer_sha256=%s"
+                        ),
+                        command_id,
+                        payload.get("diffusion_model_sha256"),
+                        payload.get("text_encoder_sha256"),
+                        payload.get("vae_sha256"),
+                        payload.get("tokenizer_sha256"),
+                    )
                     emit(
                         WorkerState.LOADING,
                         "Loading native Krea 2 baseline components",
@@ -440,6 +461,19 @@ def main() -> int:
                     native_request = GenerationRequest.from_payload(
                         payload, correlation_id=str(command_id or "")
                     )
+                    logger.info(
+                        (
+                            "native generation command_id=%s seed=%s sampler=%s "
+                            "scheduler=%s steps=%s regions=%s loras=%s"
+                        ),
+                        command_id,
+                        native_request.seed,
+                        native_request.sampler,
+                        native_request.scheduler,
+                        native_request.steps,
+                        len(native_request.regions),
+                        len(native_request.loras),
+                    )
                     generated = native_backend.generate(
                         native_request,
                         progress=lambda event: emit_native_progress(
@@ -447,6 +481,11 @@ def main() -> int:
                         ),
                         diagnostic=native_event,
                     ).to_payload()
+                    logger.info(
+                        "native generation output command_id=%s image_path=%s",
+                        command_id,
+                        generated.get("image_path"),
+                    )
                     emit(
                         WorkerState.RUNNING,
                         (
