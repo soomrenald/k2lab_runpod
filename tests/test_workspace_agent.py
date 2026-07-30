@@ -138,6 +138,12 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             body["inference_backend_capabilities"]["modes"],
             ["generate", "edit_image", "refine_faces"],
         )
+        self.assertIn(
+            "worker_startup_timeout",
+            body["timeout_classification"],
+        )
+        self.assertIn("generation_timeout", body["timeout_classification"])
+        self.assertIn("worker_disconnected", body["timeout_classification"])
         self.assertEqual(body["pose_semantic_routing"]["version"], 1)
         self.assertEqual(
             body["pose_semantic_routing"]["modes"],

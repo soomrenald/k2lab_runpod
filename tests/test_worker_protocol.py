@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -15,6 +16,10 @@ from unittest.mock import Mock, patch
 from k2core.inference import GenerationRequest
 
 from k2_region_lab.semantic_conditioning import SemanticAttentionError
+from k2_region_lab.agent.jobs import (
+    JobError,
+    SubprocessWorkerExecutor,
+)
 from k2_region_lab.worker import entrypoint as worker_entrypoint
 from k2_region_lab.worker.entrypoint import (
     model_directories,
@@ -287,6 +292,141 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertIn("device_paths", diagnostic["payload"])
             self.assertTrue(diagnostic["payload"]["recommendations"])
 
+
+class SubprocessWorkerTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    class Stdin:
+        def __init__(self) -> None:
+            self.closing = False
+
+        def write(self, _content: bytes) -> None:
+            return None
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closing = True
+
+        def is_closing(self) -> bool:
+            return self.closing
+
+        async def wait_closed(self) -> None:
+            return None
+
+    class Stderr:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class Stdout:
+        def __init__(
+            self, events: list[dict] | None = None, *, eof: bool = False
+        ) -> None:
+            self.events = list(events or [])
+            self.eof = eof
+            self.blocker = asyncio.Event()
+
+        async def readline(self) -> bytes:
+            if self.events:
+                return (
+                    json.dumps(self.events.pop(0), separators=(",", ":")) + "\n"
+                ).encode()
+            if self.eof:
+                return b""
+            await self.blocker.wait()
+            return b""
+
+    class Process:
+        def __init__(self, stdout) -> None:
+            self.stdin = SubprocessWorkerTimeoutTests.Stdin()
+            self.stdout = stdout
+            self.stderr = SubprocessWorkerTimeoutTests.Stderr()
+            self.returncode = None
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    @staticmethod
+    async def _on_event(_event: dict) -> None:
+        return None
+
+    @staticmethod
+    def _commands(**payload) -> list[dict]:
+        return [
+            {
+                "command_id": "generation",
+                "kind": "generate_baseline",
+                "payload": payload,
+            }
+        ]
+
+    async def test_worker_startup_timeout_is_distinct(self) -> None:
+        process = self.Process(self.Stdout())
+        executor = SubprocessWorkerExecutor(Path(sys.executable), Path.cwd())
+        with patch(
+            "k2_region_lab.agent.jobs.asyncio.create_subprocess_exec",
+            return_value=process,
+        ):
+            with self.assertRaises(JobError) as caught:
+                await executor.run(
+                    self._commands(worker_startup_timeout_seconds=0.01),
+                    self._on_event,
+                )
+
+        self.assertEqual(caught.exception.code, "worker_startup_timeout")
+        self.assertEqual(process.returncode, -15)
+
+    async def test_generation_timeout_starts_at_first_running_event(self) -> None:
+        process = self.Process(
+            self.Stdout(
+                [
+                    {
+                        "command_id": "generation",
+                        "state": "running",
+                        "message": "Generation started",
+                        "payload": {},
+                    }
+                ]
+            )
+        )
+        executor = SubprocessWorkerExecutor(Path(sys.executable), Path.cwd())
+        with patch(
+            "k2_region_lab.agent.jobs.asyncio.create_subprocess_exec",
+            return_value=process,
+        ):
+            with self.assertRaises(JobError) as caught:
+                await executor.run(
+                    self._commands(
+                        worker_startup_timeout_seconds=1,
+                        generation_timeout_seconds=0.01,
+                    ),
+                    self._on_event,
+                )
+
+        self.assertEqual(caught.exception.code, "generation_timeout")
+        self.assertEqual(process.returncode, -15)
+
+    async def test_worker_disconnect_requires_a_terminal_event(self) -> None:
+        process = self.Process(self.Stdout(eof=True))
+        executor = SubprocessWorkerExecutor(Path(sys.executable), Path.cwd())
+        with patch(
+            "k2_region_lab.agent.jobs.asyncio.create_subprocess_exec",
+            return_value=process,
+        ):
+            with self.assertRaises(JobError) as caught:
+                await executor.run(
+                    self._commands(worker_startup_timeout_seconds=1),
+                    self._on_event,
+                )
+
+        self.assertEqual(caught.exception.code, "worker_disconnected")
 
 if __name__ == "__main__":
     unittest.main()

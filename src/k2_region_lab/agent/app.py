@@ -75,6 +75,8 @@ class AgentSettings:
         native_tokenizer_sha256: str = (
             "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
         ),
+        worker_startup_timeout_seconds: float = 300.0,
+        generation_timeout_seconds: float = 1800.0,
         cuda_version: str | None = None,
         pytorch_version: str | None = None,
         read_requests_per_minute: int = 600,
@@ -107,6 +109,12 @@ class AgentSettings:
         ):
             raise ValueError("native tokenizer SHA-256 must contain 64 hexadecimal characters")
         self.native_tokenizer_sha256 = normalized_tokenizer_hash
+        if worker_startup_timeout_seconds <= 0:
+            raise ValueError("worker startup timeout must be positive")
+        if generation_timeout_seconds <= 0:
+            raise ValueError("generation timeout must be positive")
+        self.worker_startup_timeout_seconds = worker_startup_timeout_seconds
+        self.generation_timeout_seconds = generation_timeout_seconds
         self.cuda_version = cuda_version
         self.pytorch_version = pytorch_version
         self.read_requests_per_minute = read_requests_per_minute
@@ -139,6 +147,15 @@ class AgentSettings:
             native_tokenizer_sha256=os.environ.get(
                 "K2LAB_NATIVE_TOKENIZER_SHA256",
                 "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d",
+            ),
+            worker_startup_timeout_seconds=float(
+                os.environ.get(
+                    "K2LAB_WORKER_STARTUP_TIMEOUT_SECONDS",
+                    "300",
+                )
+            ),
+            generation_timeout_seconds=float(
+                os.environ.get("K2LAB_GENERATION_TIMEOUT_SECONDS", "1800")
             ),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
@@ -216,6 +233,10 @@ def create_agent_app(
         inference_backend=configured.inference_backend,
         native_tokenizer_path=configured.native_tokenizer_path,
         native_tokenizer_sha256=configured.native_tokenizer_sha256,
+        worker_startup_timeout_seconds=(
+            configured.worker_startup_timeout_seconds
+        ),
+        generation_timeout_seconds=configured.generation_timeout_seconds,
         executor_factory=job_executor_factory,
         readiness_callback=lambda ready: setattr(application.state, "worker_ready", ready),
     )
@@ -353,6 +374,12 @@ def create_agent_app(
                     "projector": False,
                     "post_upscale": False,
                     "developer_only": True,
+                    "worker_startup_timeout_seconds": (
+                        configured.worker_startup_timeout_seconds
+                    ),
+                    "generation_timeout_seconds": (
+                        configured.generation_timeout_seconds
+                    ),
                 }
                 if configured.inference_backend == "native"
                 else {
@@ -362,6 +389,12 @@ def create_agent_app(
                     "projector": True,
                     "post_upscale": True,
                     "developer_only": False,
+                    "worker_startup_timeout_seconds": (
+                        configured.worker_startup_timeout_seconds
+                    ),
+                    "generation_timeout_seconds": (
+                        configured.generation_timeout_seconds
+                    ),
                 }
             ),
             supported_job_kinds=(

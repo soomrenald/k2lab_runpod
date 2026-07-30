@@ -7,6 +7,7 @@ import copy
 import json
 import math
 import os
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,8 +86,20 @@ class SubprocessWorkerExecutor:
             self._stderr_task = asyncio.create_task(self._discard_stderr(self._process.stderr))
         assert self._process.stdin is not None
         assert self._process.stdout is not None
-        keep_requested = bool(commands[-1].get("payload", {}).get("keep_model_loaded"))
+        terminal_payload = commands[-1].get("payload", {})
+        keep_requested = bool(terminal_payload.get("keep_model_loaded"))
         terminal_command_id = str(commands[-1]["command_id"])
+        worker_timeout = self._positive_timeout(
+            terminal_payload.get("worker_startup_timeout_seconds"),
+            default=300.0,
+        )
+        generation_timeout = self._positive_timeout(
+            terminal_payload.get("generation_timeout_seconds"),
+            default=1800.0,
+        )
+        deadline = time.monotonic() + worker_timeout
+        generation_started = False
+        terminal_seen = False
         for command in commands:
             encoded = json.dumps(command, separators=(",", ":"), allow_nan=False)
             self._process.stdin.write((encoded + "\n").encode("utf-8"))
@@ -94,7 +107,19 @@ class SubprocessWorkerExecutor:
         if not keep_requested:
             self._process.stdin.close()
         try:
-            while encoded := await self._process.stdout.readline():
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise self._timeout_error(generation_started)
+                try:
+                    encoded = await asyncio.wait_for(
+                        self._process.stdout.readline(),
+                        timeout=remaining,
+                    )
+                except TimeoutError as error:
+                    raise self._timeout_error(generation_started) from error
+                if not encoded:
+                    break
                 if len(encoded) > 1024 * 1024:
                     raise JobError(
                         "worker_protocol_invalid",
@@ -116,10 +141,25 @@ class SubprocessWorkerExecutor:
                         502,
                     )
                 await on_event(event)
+                event_command_id = str(event.get("command_id"))
+                event_state = str(event.get("state"))
+                if (
+                    event_command_id == terminal_command_id
+                    and event_state == "running"
+                    and not generation_started
+                ):
+                    generation_started = True
+                    deadline = time.monotonic() + generation_timeout
+                if event_command_id == terminal_command_id and event_state in {
+                    "ready",
+                    "complete",
+                    "error",
+                }:
+                    terminal_seen = True
                 event_payload = event.get("payload")
                 if (
-                    str(event.get("command_id")) == terminal_command_id
-                    and str(event.get("state")) == "complete"
+                    event_command_id == terminal_command_id
+                    and event_state == "complete"
                     and isinstance(event_payload, dict)
                     and bool(event_payload.get("resident"))
                 ):
@@ -133,10 +173,47 @@ class SubprocessWorkerExecutor:
             if self._stderr_task is not None:
                 await self._stderr_task
                 self._stderr_task = None
+            if not terminal_seen:
+                raise JobError(
+                    "worker_disconnected",
+                    (
+                        "The GPU worker connection closed before the job emitted "
+                        "a terminal event."
+                    ),
+                    502,
+                )
             return result
         except BaseException:
             await self.cancel()
             raise
+
+    @staticmethod
+    def _positive_timeout(value: object, *, default: float) -> float:
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            return default
+        return timeout if timeout > 0 else default
+
+    @staticmethod
+    def _timeout_error(generation_started: bool) -> JobError:
+        if generation_started:
+            return JobError(
+                "generation_timeout",
+                (
+                    "Generation exceeded the configured maximum runtime. "
+                    "The isolated GPU worker was stopped."
+                ),
+                504,
+            )
+        return JobError(
+            "worker_startup_timeout",
+            (
+                "The GPU worker did not reach generation before the startup "
+                "and model-load timeout."
+            ),
+            504,
+        )
 
     async def cancel(self) -> None:
         process = self._process
@@ -195,6 +272,8 @@ class JobManager:
         native_tokenizer_sha256: str = (
             "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
         ),
+        worker_startup_timeout_seconds: float = 300.0,
+        generation_timeout_seconds: float = 1800.0,
         executor_factory: Callable[[], WorkerExecutor] | None = None,
         readiness_callback: Callable[[bool], None] | None = None,
     ) -> None:
@@ -205,6 +284,8 @@ class JobManager:
         self._inference_backend = inference_backend
         self._native_tokenizer_path = native_tokenizer_path
         self._native_tokenizer_sha256 = native_tokenizer_sha256
+        self._worker_startup_timeout_seconds = worker_startup_timeout_seconds
+        self._generation_timeout_seconds = generation_timeout_seconds
         self._executor_factory = executor_factory or (
             lambda: SubprocessWorkerExecutor(worker_python, layout.root)
         )
@@ -730,6 +811,10 @@ class JobManager:
             "vae_sha256": vae_sha256,
             "tokenizer_path": str(self._native_tokenizer_path),
             "tokenizer_sha256": self._native_tokenizer_sha256,
+            "worker_startup_timeout_seconds": (
+                self._worker_startup_timeout_seconds
+            ),
+            "generation_timeout_seconds": self._generation_timeout_seconds,
             "face_detector_path": face_detector_path,
             "manifest_directory": str(self._layout.state_directory / "manifests"),
             "memory_policy": "custom",
