@@ -74,6 +74,14 @@ settings.generation.poseControlLoraEnabled = true;
 settings.generation.poseControlLoraFileId = "opaque-pose-adapter";
 settings.generation.poseControlLoraModel = "krea-volumetric-pose-r64.safetensors";
 settings.generation.poseControlLoraStrength = 0.85;
+settings.generation.depth.enabled = true;
+settings.generation.depth.checkpointFileId = "opaque-depth-adapter";
+settings.generation.depth.checkpointName = "depth-control-lora.safetensors";
+settings.generation.depth.imageFileId = "opaque-depth-image";
+settings.generation.depth.imageName = "depth_16bit.png";
+settings.generation.depth.globalStrength = 1.25;
+settings.generation.depth.normalization = "percentile";
+settings.generation.depth.gamma = 0.9;
 settings.generation.promptEmphases = [{
   id: "not-persisted", scopeId: "person", phrase: "red coat", strength: 1.2, occurrence: 7,
 }, {
@@ -94,7 +102,7 @@ settings.runtime.textEncoderName = "chosen-text.safetensors";
 settings.runtime.vaeName = "chosen-vae.safetensors";
 settings.runtime.faceDetectorName = "chosen-detector.onnx";
 const regions = [
-  { id: "person", name: "Person", layer: "generation", x: 80, y: 40, width: 400, height: 900, prompt: "red coat", faceIdentityPrompt: "green eyes", spatialRole: "subject", regionType: "subject", pose: standingPose(), enabled: true },
+  { id: "person", name: "Person", layer: "generation", x: 80, y: 40, width: 400, height: 900, prompt: "red coat", faceIdentityPrompt: "green eyes", spatialRole: "subject", regionType: "subject", pose: standingPose(), depthMode: "relax", depthStrength: 0.25, depthStartPercent: 0.1, depthEndPercent: 0.8, enabled: true },
   { id: "wall", name: "Wall", layer: "generation", x: 0, y: 0, width: 1024, height: 1024, prompt: "brick wall", faceIdentityPrompt: "", spatialRole: "background", regionType: "region", pose: null, enabled: true },
   { id: "reference", name: "Reference", layer: "reference", x: 20, y: 30, width: 300, height: 700, prompt: "portrait", faceIdentityPrompt: "same person", spatialRole: "subject", regionType: "region", pose: null, enabled: true },
   { id: "target", name: "Target", layer: "targets", x: 350, y: 300, width: 200, height: 250, prompt: "blue jacket", faceIdentityPrompt: "", spatialRole: "subject", regionType: "region", pose: null, enabled: true },
@@ -128,7 +136,20 @@ assert.deepEqual(second.regions.map((region) => [region.id, region.priority, reg
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
 assert.equal(second.regions[0].region_type, "subject");
-assert.equal(second.version, 23);
+assert.equal(second.version, 24);
+assert.equal(second.generation.depth_control.enabled, true);
+assert.equal(second.generation.depth_control.checkpoint, "depth-control-lora.safetensors");
+assert.equal(second.generation.depth_control.depth_image, "depth_16bit.png");
+assert.equal(second.generation.depth_control.global_strength, 1.25);
+assert.equal(second.generation.depth_control.normalization.mode, "percentile");
+assert.equal(second.generation.depth_control.normalization.gamma, 0.9);
+assert.deepEqual(second.generation.depth_control.regions[0], {
+  region_id: "person",
+  mode: "relax",
+  strength: 0.25,
+  start_percent: 0.1,
+  end_percent: 0.8,
+});
 assert.equal(second.generation.pose_gating_enabled, true);
 assert.equal(second.generation.pose_semantic_mode, "attention_isolation");
 assert.equal(second.generation.shared_visual_prompt, "cinematic 35 mm photography");
@@ -143,6 +164,22 @@ assert.equal(Object.keys(second.regions[0].pose.joints).length, 13);
 assert.ok(second.regions[0].pose.head.rx > 0);
 assert.equal(second.regions[1].region_type, "region");
 assert.equal(second.regions[1].pose, null);
+
+const version23 = structuredClone(first);
+version23.version = 23;
+delete version23.generation.depth_control;
+for (const region of version23.regions) {
+  delete region.depth_mode;
+  delete region.depth_strength;
+  delete region.depth_start_percent;
+  delete region.depth_end_percent;
+}
+const migrated23 = loadStudioProjectDocument(version23);
+assert.equal(migrated23.settings.generation.depth.enabled, false);
+assert.equal(migrated23.settings.generation.depth.checkpointName, "");
+assert.equal(migrated23.settings.generation.depth.imageName, "");
+assert.equal(migrated23.regions[0].depthMode, "inherit");
+assert.equal(migrated23.regions[0].depthStrength, 1);
 
 const version22 = structuredClone(first);
 version22.version = 22;
