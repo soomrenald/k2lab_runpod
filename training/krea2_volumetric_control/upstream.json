@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/Tanmaypatil123/Krea-2-controlnet.git",
+  "commit": "909682ae0bdd9eb87c8258894c0003224db00d0b",
+  "verified_at": "2026-07-27",
+  "license": "No license file was present at the pinned revision; source is not vendored.",
+  "integration": "external-checkout-required",
+  "required_paths": [
+    "k2_lora.py",
+    "mmdit.py",
+    "trainer/train_control_lora.py"
+  ],
+  "native_reference": {
+    "repository": "https://github.com/facok/comfyui-krea2-controlnet.git",
+    "commit": "79ebfd3bd80d2180b334dd7ce57f3c9ddaa0848f",
+    "license": "No license file was present at the pinned revision; behavior was independently integrated."
+  },
+  "official_krea": {
+    "repository": "https://github.com/krea-ai/krea-2.git",
+    "commit": "db3984fbc6e13b34c0064990fc2d95ac64d00058",
+    "license": "Apache-2.0"
+  }
+}

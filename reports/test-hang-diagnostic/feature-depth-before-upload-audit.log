@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /home/wolfhard/k2lab_runpod/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/wolfhard/k2lab_runpod
+configfile: pyproject.toml
+plugins: anyio-4.14.2
+collecting ... collected 34 items
+
+tests/test_depth_evaluate.py::test_parse_image_requires_label_and_path PASSED
+tests/test_depth_evaluate.py::test_comparative_metrics_rank_matching_depth_higher PASSED
+tests/test_depth_runtime.py::test_depth_schedule_advances_after_each_completed_sampler_transition PASSED
+tests/test_depth_runtime.py::test_depth_schedule_rejects_callback_divergence PASSED
+tests/test_depth_runtime.py::test_depth_encode_uses_inference_lifecycle PASSED
+tests/test_depth_validate.py::test_depth_region_argument_builds_matching_settings_and_geometry PASSED
+tests/test_depth_validate.py::test_depth_region_argument_rejects_bad_shape PASSED
+tests/test_depth_validate.py::test_pixel_digest_ignores_png_metadata PASSED
+tests/test_krea_control_lora.py::test_checkpoint_validator_accepts_complete_verified_rank64 PASSED
+tests/test_krea_control_lora.py::test_checkpoint_validator_rejects_missing_projection_and_wrong_format PASSED
+tests/test_krea_control_lora.py::test_legacy_checkpoint_requires_explicit_override PASSED
+tests/test_krea_control_lora.py::test_unsafe_or_non_safetensors_file_is_rejected PASSED
+tests/test_krea_control_lora.py::test_checkpoint_validator_rejects_wrong_projection_width_and_missing_pair PASSED
+tests/test_krea_control_lora.py::test_ordinary_lora_is_not_accepted_as_control_checkpoint PASSED
+tests/test_krea_control_lora.py::test_scope_selection_uses_full_and_exact_subject_controls PASSED
+tests/test_krea_control_lora.py::test_expanded_projection_preserves_native_image_path_and_scales_only_control SKIPPED
+tests/test_krea_control_lora.py::test_control_wrapper_restores_projection_after_success_and_error SKIPPED
+tests/test_krea_control_lora.py::test_control_images_are_encoded_independently_and_processed_as_model_latents SKIPPED
+tests/test_project.py::ProjectStateTests::test_character_identity_lora_routing_round_trips PASSED
+tests/test_project.py::ProjectStateTests::test_depth_control_rejects_a_missing_project_region PASSED
+tests/test_project.py::ProjectStateTests::test_depth_control_round_trips_and_version_23_defaults_disabled PASSED
+tests/test_project.py::ProjectStateTests::test_late_step_scale_round_trips PASSED
+tests/test_project.py::ProjectStateTests::test_legacy_negative_prompt_is_discarded PASSED
+tests/test_project.py::ProjectStateTests::test_legacy_project_uses_euler_simple_defaults PASSED
+tests/test_project.py::ProjectStateTests::test_legacy_project_uses_existing_relaxation_default PASSED
+tests/test_project.py::ProjectStateTests::test_project_image_metadata_loads_and_uses_imported_png_as_background PASSED
+tests/test_project.py::ProjectStateTests::test_project_image_requires_embedded_k2_metadata PASSED
+tests/test_project.py::ProjectStateTests::test_version_eleven_project_uses_safe_face_refinement_defaults PASSED
+tests/test_project.py::ProjectStateTests::test_version_twelve_lora_uses_standard_routing_defaults PASSED
+tests/test_project.py::ProjectStateTests::test_version_twenty_one_migrates_to_spatial_only PASSED
+tests/test_project.py::ProjectStateTests::test_version_twenty_two_preserves_semantics_and_disables_new_adapter PASSED
+tests/test_project.py::ProjectStateTests::test_vram_controls_are_bounded PASSED
+tests/test_workspace_agent.py::WorkspaceAgentTests::test_chunked_upload_resumes_verifies_and_updates_inventory

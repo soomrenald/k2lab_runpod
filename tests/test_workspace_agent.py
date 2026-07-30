@@ -11,6 +11,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from PIL import Image
 
 
 FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
@@ -19,6 +22,7 @@ if FASTAPI_AVAILABLE:
     import httpx
     from httpx import ASGITransport, AsyncClient
 
+    from k2_region_lab.agent import WORKER_PROTOCOL_VERSION
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
     from k2_region_lab.agent.domain import (
         FaceDetectionRequest,
@@ -33,6 +37,10 @@ if FASTAPI_AVAILABLE:
     )
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
+    from k2_region_lab.pose import (
+        default_volumetric_subject_pose,
+        volumetric_subject_pose_document,
+    )
     from k2_region_lab.project import PROJECT_VERSION, project_state
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
@@ -121,9 +129,22 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["api_version"], "v1")
         self.assertEqual(body["project_schema"], "k2-region-lab-project")
         self.assertEqual(body["project_schema_version"], PROJECT_VERSION)
+        self.assertEqual(
+            body["worker_protocol_version"],
+            WORKER_PROTOCOL_VERSION,
+        )
         self.assertEqual(body["workspace_layout_version"], LAYOUT_VERSION)
         self.assertEqual(body["cuda_version"], "12.8")
         self.assertEqual(body["pytorch_version"], "2.9.1")
+        self.assertEqual(body["pose_semantic_routing"]["version"], 1)
+        self.assertEqual(
+            body["pose_semantic_routing"]["modes"],
+            [
+                "spatial_only",
+                "attention_isolation",
+                "prediction_composite",
+            ],
+        )
 
     async def test_worker_memory_separates_raw_charge_from_reclaimable_cache(self) -> None:
         response = await self.client.get("/v1/worker/memory", headers=self.headers)
@@ -146,6 +167,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(marker, {"layout_version": LAYOUT_VERSION})
         self.assertTrue((self.root / "downloads" / "incomplete").is_dir())
         self.assertTrue((self.root / "models" / "face_detection").is_dir())
+        self.assertTrue((self.root / "models" / "controlnet_models").is_dir())
 
     async def test_generation_payload_disables_late_relaxation_exactly_like_desktop(
         self,
@@ -196,6 +218,227 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["reserve_vram_gb"], 1.5)
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
+
+    async def test_subject_pose_gating_requires_mannequin_and_no_model(self) -> None:
+        document = self._project_document("two people shaking hands")
+        document["generation"].update(
+            {
+                "pose_gating_enabled": True,
+                "pose_hard_gate_steps": 3,
+                "pose_soft_gate_steps": 2,
+                "pose_soft_gate_schedule": "cosine",
+                "pose_sigma_schedule_mode": "automatic",
+                "shared_visual_prompt": "Cinematic photography, 35 mm lens",
+                "pose_semantic_mode": "prediction_composite",
+            }
+        )
+        missing = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-missing-mannequin",
+                "kind": "generate",
+                "project_id": "pose-project",
+                "project": document,
+            }
+        )
+        with self.assertRaisesRegex(Exception, "Enable at least one subject mannequin"):
+            self.app.state.job_manager._validate_request(missing)
+
+        document["regions"] = [
+            {
+                "id": "person",
+                "name": "Person",
+                "box": {"x0": 100, "y0": 100, "x1": 500, "y1": 900},
+                "prompt": "standing person",
+                "spatial_role": "subject",
+                "region_type": "subject",
+                "pose": volumetric_subject_pose_document(
+                    default_volumetric_subject_pose()
+                ),
+            },
+            {
+                "id": "background",
+                "name": "Background",
+                "box": {"x0": 0, "y0": 0, "x1": 1024, "y1": 1024},
+                "prompt": "studio",
+                "spatial_role": "background",
+                "region_type": "region",
+                "pose": None,
+            },
+        ]
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-gating",
+                "kind": "generate",
+                "project_id": "pose-project",
+                "project": document,
+            }
+        )
+        state, _project = self.app.state.job_manager._validate_request(request)
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id",
+            request,
+            state,
+            document,
+        )
+
+        self.assertTrue(payload["pose_gating_enabled"])
+        self.assertEqual(payload["pose_hard_gate_steps"], 3)
+        self.assertEqual(payload["pose_soft_gate_steps"], 2)
+        self.assertEqual(
+            payload["shared_visual_prompt"],
+            "Cinematic photography, 35 mm lens",
+        )
+        self.assertEqual(payload["pose_semantic_mode"], "prediction_composite")
+        self.assertNotIn("pose_controlnet_path", payload)
+
+    async def test_pose_adapter_uses_dedicated_opaque_asset_kind(self) -> None:
+        document = self._project_document("standing portrait")
+        document["generation"].update(
+            {
+                "pose_control_lora_enabled": True,
+                "pose_control_lora_model": "krea-pose-r64.safetensors",
+                "pose_control_lora_strength": 0.85,
+                "pose_control_format": "k2-volumetric-pose-control-v1",
+            }
+        )
+        document["regions"] = [
+            {
+                "id": "person",
+                "name": "Person",
+                "box": {"x0": 100, "y0": 100, "x1": 500, "y1": 900},
+                "prompt": "standing person",
+                "spatial_role": "subject",
+                "region_type": "subject",
+                "pose": volumetric_subject_pose_document(
+                    default_volumetric_subject_pose()
+                ),
+            }
+        ]
+        checkpoint_path = (
+            self.app.state.layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            / "krea-pose-r64.safetensors"
+        )
+        checkpoint_path.write_bytes(self._safetensors_payload())
+        checkpoint = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.KREA_CONTROL_LORAS,
+            checkpoint_path,
+        )
+        inspection = await self.client.get(
+            f"/v1/krea-control-checkpoints/{checkpoint.id}",
+            headers=self.headers,
+        )
+        self.assertEqual(inspection.status_code, 200, inspection.text)
+        self.assertFalse(inspection.json()["compatible"])
+        self.assertFalse(inspection.json()["verified"])
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "pose-adapter",
+                "kind": "generate",
+                "project_id": "pose-adapter-project",
+                "project": document,
+                "pose_control_lora_file_id": checkpoint.id,
+            }
+        )
+
+        state, sanitized = self.app.state.job_manager._validate_request(request)
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id",
+            request,
+            state,
+            sanitized,
+        )
+
+        self.assertTrue(payload["pose_control_lora_enabled"])
+        self.assertEqual(payload["pose_control_lora_strength"], 0.85)
+        self.assertEqual(
+            Path(payload["pose_control_lora_file"]),
+            checkpoint_path,
+        )
+        self.assertEqual(payload["loras"], [])
+
+        wrong_path = self.app.state.layout.destination(FileKind.LORAS.value) / "wrong.safetensors"
+        wrong_path.write_bytes(self._safetensors_payload())
+        wrong = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.LORAS,
+            wrong_path,
+        )
+        with self.assertRaises(Exception):
+            await self.app.state.job_manager._job_payload(
+                "job-id",
+                request.model_copy(update={"pose_control_lora_file_id": wrong.id}),
+                state,
+                sanitized,
+            )
+
+    async def test_depth_adapter_requires_flag_and_resolves_opaque_assets(self) -> None:
+        document = self._project_document("standing portrait")
+        document["generation"]["depth_control"] = {
+            "enabled": True,
+            "checkpoint": "depth-control-lora.safetensors",
+            "depth_image": "standing-depth.png",
+            "global_strength": 1.2,
+            "start_percent": 0.0,
+            "end_percent": 0.8,
+            "regions": [],
+        }
+        checkpoint_path = (
+            self.app.state.layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            / "depth-control-lora.safetensors"
+        )
+        checkpoint_path.write_bytes(self._safetensors_payload())
+        checkpoint = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.KREA_CONTROL_LORAS,
+            checkpoint_path,
+        )
+        depth_path = (
+            self.app.state.layout.destination(FileKind.INPUTS.value)
+            / "standing-depth.png"
+        )
+        Image.new("I;16", (64, 64), 32768).save(depth_path)
+        depth = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.INPUTS,
+            depth_path,
+        )
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "depth-adapter",
+                "kind": "generate",
+                "project_id": "depth-adapter-project",
+                "project": document,
+                "depth_checkpoint_file_id": checkpoint.id,
+                "depth_image_file_id": depth.id,
+            }
+        )
+        state, sanitized = self.app.state.job_manager._validate_request(request)
+
+        with patch.dict(os.environ, {"K2_DEPTH_CONTROL_ENABLED": ""}):
+            with self.assertRaisesRegex(Exception, "Depth control is disabled"):
+                await self.app.state.job_manager._job_payload(
+                    "job-id",
+                    request,
+                    state,
+                    sanitized,
+                )
+
+        with patch.dict(os.environ, {"K2_DEPTH_CONTROL_ENABLED": "1"}):
+            payload = await self.app.state.job_manager._job_payload(
+                "job-id",
+                request,
+                state,
+                sanitized,
+            )
+
+        self.assertTrue(payload["depth_control"]["enabled"])
+        self.assertEqual(payload["depth_control"]["global_strength"], 1.2)
+        self.assertEqual(
+            Path(payload["depth_control"]["checkpoint"]),
+            checkpoint_path,
+        )
+        self.assertEqual(
+            Path(payload["depth_control"]["depth_image"]),
+            depth_path,
+        )
+        self.assertFalse(payload["depth_override_enabled"])
 
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,

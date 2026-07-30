@@ -1,9 +1,32 @@
 import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
+import { poseFromDocument } from "./pose.ts";
+import { resamplePoseKnots } from "./poseGating.ts";
 import { reconcilePromptEmphases } from "./promptEmphasis.ts";
 
 export type SeedMode = "fixed" | "random" | "increment";
 export type LoraRoutingMode = "standard" | "character_identity";
 export type VramMode = "auto" | "high_vram" | "dynamic" | "low_vram";
+export type PoseSoftRelease = "cosine" | "linear" | "exponential" | "stepped";
+export type PoseSigmaMode = "automatic" | "phase_weighted" | "advanced";
+export type PoseSemanticMode = "spatial_only" | "attention_isolation" | "prediction_composite";
+export type DepthNormalizationMode = "none" | "minmax" | "percentile" | "camera_range" | "checkpoint_reference";
+
+export interface DepthSettings {
+  enabled: boolean;
+  checkpointFileId: string;
+  checkpointName: string;
+  imageFileId: string;
+  imageName: string;
+  globalStrength: number;
+  startPercent: number;
+  endPercent: number;
+  invert: boolean;
+  normalization: DepthNormalizationMode;
+  nearPercentile: number;
+  farPercentile: number;
+  gamma: number;
+  featherPixels: number;
+}
 
 export const COMFYUI_SAMPLERS = [
   "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun",
@@ -47,6 +70,7 @@ export interface ProjectorSettings {
 }
 
 export interface GenerationSettings {
+  sharedVisualPrompt: string;
   width: number;
   height: number;
   steps: number;
@@ -66,6 +90,22 @@ export interface GenerationSettings {
   lateStepScale: number;
   loraAdaptation: boolean;
   loraResponse: number;
+  poseGating: boolean;
+  poseSemanticMode: PoseSemanticMode;
+  poseHardGateSteps: number;
+  poseSoftGateSteps: number;
+  poseSoftRelease: PoseSoftRelease;
+  poseSigmaMode: PoseSigmaMode;
+  poseSigmaHardShare: number;
+  poseSigmaSoftShare: number;
+  poseSigmaKnots: number[];
+  poseControlLoraEnabled: boolean;
+  poseControlLoraFileId: string;
+  poseControlLoraModel: string;
+  poseControlLoraStrength: number;
+  poseControlFormat: "k2-volumetric-pose-control-v1";
+  poseControlLegacyAcknowledged: boolean;
+  depth: DepthSettings;
   postUpscale: boolean;
   upscaleScale: 2 | 4;
   upscaleMethod: "lanczos" | "model";
@@ -175,6 +215,7 @@ function defaultProjector(): ProjectorSettings {
 export function createStudioSettings(): StudioSettings {
   return {
     generation: {
+      sharedVisualPrompt: "",
       width: 1024,
       height: 1024,
       steps: 8,
@@ -194,6 +235,37 @@ export function createStudioSettings(): StudioSettings {
       lateStepScale: 0.35,
       loraAdaptation: false,
       loraResponse: 0.35,
+      poseGating: false,
+      poseSemanticMode: "prediction_composite",
+      poseHardGateSteps: 2,
+      poseSoftGateSteps: 2,
+      poseSoftRelease: "cosine",
+      poseSigmaMode: "automatic",
+      poseSigmaHardShare: 0.20,
+      poseSigmaSoftShare: 0.30,
+      poseSigmaKnots: [],
+      poseControlLoraEnabled: false,
+      poseControlLoraFileId: "",
+      poseControlLoraModel: "",
+      poseControlLoraStrength: 1,
+      poseControlFormat: "k2-volumetric-pose-control-v1",
+      poseControlLegacyAcknowledged: false,
+      depth: {
+        enabled: false,
+        checkpointFileId: "",
+        checkpointName: "",
+        imageFileId: "",
+        imageName: "",
+        globalStrength: 1,
+        startPercent: 0,
+        endPercent: 1,
+        invert: false,
+        normalization: "minmax",
+        nearPercentile: 1,
+        farPercentile: 99,
+        gamma: 1,
+        featherPixels: 32,
+      },
       postUpscale: false,
       upscaleScale: 2,
       upscaleMethod: "lanczos",
@@ -316,10 +388,11 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 19,
+    version: 24,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
+      shared_visual_prompt: generation.sharedVisualPrompt,
       steps: generation.steps,
       sampler: generation.sampler,
       scheduler: generation.scheduler,
@@ -337,6 +410,51 @@ export function buildProjectDocument(
       regional_late_step_scale: generation.lateStepScale,
       regional_lora_delta_adaptation: generation.loraAdaptation,
       regional_lora_delta_adaptation_gain: generation.loraResponse,
+      pose_gating_enabled: generation.poseGating,
+      pose_semantic_mode: generation.poseSemanticMode,
+      pose_hard_gate_steps: generation.poseHardGateSteps,
+      pose_soft_gate_steps: generation.poseSoftGateSteps,
+      pose_soft_gate_schedule: generation.poseSoftRelease,
+      pose_sigma_schedule_mode: generation.poseSigmaMode,
+      pose_sigma_hard_share: generation.poseSigmaHardShare,
+      pose_sigma_soft_share: generation.poseSigmaSoftShare,
+      pose_sigma_knots: generation.poseSigmaMode === "advanced"
+        ? resamplePoseKnots(
+          generation.poseSigmaKnots,
+          generation.poseHardGateSteps + generation.poseSoftGateSteps + generation.steps,
+        )
+        : generation.poseSigmaKnots,
+      pose_control_lora_enabled: generation.poseControlLoraEnabled,
+      pose_control_lora_model: generation.poseControlLoraModel || null,
+      pose_control_lora_strength: generation.poseControlLoraStrength,
+      pose_control_format: generation.poseControlFormat,
+      depth_control: {
+        enabled: generation.depth.enabled,
+        checkpoint: generation.depth.checkpointName || null,
+        depth_image: generation.depth.imageName || null,
+        global_strength: generation.depth.globalStrength,
+        start_percent: generation.depth.startPercent,
+        end_percent: generation.depth.endPercent,
+        invert: generation.depth.invert,
+        normalization: {
+          mode: generation.depth.normalization,
+          near_percentile: generation.depth.nearPercentile,
+          far_percentile: generation.depth.farPercentile,
+          gamma: generation.depth.gamma,
+          clamp: true,
+          invalid_value_policy: "far",
+        },
+        feather_pixels: generation.depth.featherPixels,
+        regions: regions
+          .filter((region) => region.layer === "generation")
+          .map((region) => ({
+            region_id: region.id,
+            mode: region.depthMode ?? "inherit",
+            strength: region.depthStrength ?? 1,
+            start_percent: region.depthStartPercent ?? 0,
+            end_percent: region.depthEndPercent ?? 1,
+          })),
+      },
       prompt_emphases: emphasisDocuments(
         generation.promptEmphases,
         prompts.generation,
@@ -454,6 +572,22 @@ function layerRegions(regions: RegionBox[], layer: RegionLayer) {
     enabled: region.enabled,
     priority: selected.length - index,
     spatial_role: region.spatialRole,
+    region_type: region.regionType,
+    depth_mode: region.depthMode ?? "inherit",
+    depth_strength: region.depthStrength ?? 1,
+    depth_start_percent: region.depthStartPercent ?? 0,
+    depth_end_percent: region.depthEndPercent ?? 1,
+    pose: region.pose ? {
+      format: region.pose.format,
+      enabled: region.pose.enabled,
+      joints: Object.fromEntries(
+        region.pose.joints.map((joint) => [
+          joint.name,
+          { x: joint.x, y: joint.y },
+        ]),
+      ),
+      head: { ...region.pose.head },
+    } : null,
   }));
 }
 
@@ -488,6 +622,7 @@ export interface LoadedStudioProject {
   settings: StudioSettings;
   loras: StudioLora[];
   sourceName: string;
+  migrationNotices: string[];
 }
 
 type JsonObject = Record<string, unknown>;
@@ -495,7 +630,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (document.version !== 18 && document.version !== 19) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (![18, 19, 20, 21, 22, 23, 24].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -505,10 +640,21 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const height = integerValue(canvas.height, settings.generation.height);
   const projectorValues = numberList(generation.projector_values, settings.generation.projector.values);
   const referenceProjectorValues = numberList(edit.reference_projector_values, settings.edit.referenceProjector.values);
+  const poseControlFormat = Number(document.version) >= 23
+    ? stringValue(generation.pose_control_format, "k2-volumetric-pose-control-v1")
+    : "k2-volumetric-pose-control-v1";
+  if (poseControlFormat !== "k2-volumetric-pose-control-v1") {
+    throw new Error(`Unsupported pose control format: ${poseControlFormat}`);
+  }
+  const depth = Number(document.version) >= 24
+    ? objectValue(generation.depth_control)
+    : {};
+  const depthNormalization = objectValue(depth.normalization);
   settings.generation = {
     ...settings.generation,
     width,
     height,
+    sharedVisualPrompt: stringValue(generation.shared_visual_prompt, ""),
     steps: integerValue(generation.steps, settings.generation.steps),
     sampler: stringValue(generation.sampler, settings.generation.sampler),
     scheduler: stringValue(generation.scheduler, settings.generation.scheduler),
@@ -526,6 +672,47 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     lateStepScale: numberValue(generation.regional_late_step_scale, settings.generation.lateStepScale),
     loraAdaptation: booleanValue(generation.regional_lora_delta_adaptation, settings.generation.loraAdaptation),
     loraResponse: numberValue(generation.regional_lora_delta_adaptation_gain, settings.generation.loraResponse),
+    poseGating: Number(document.version) >= 21
+      ? booleanValue(generation.pose_gating_enabled, settings.generation.poseGating)
+      : false,
+    poseSemanticMode: Number(document.version) >= 22
+      ? poseSemanticModeValue(generation.pose_semantic_mode)
+      : "spatial_only",
+    poseHardGateSteps: integerValue(generation.pose_hard_gate_steps, settings.generation.poseHardGateSteps),
+    poseSoftGateSteps: integerValue(generation.pose_soft_gate_steps, settings.generation.poseSoftGateSteps),
+    poseSoftRelease: poseSoftReleaseValue(generation.pose_soft_gate_schedule),
+    poseSigmaMode: poseSigmaModeValue(generation.pose_sigma_schedule_mode),
+    poseSigmaHardShare: numberValue(generation.pose_sigma_hard_share, settings.generation.poseSigmaHardShare),
+    poseSigmaSoftShare: numberValue(generation.pose_sigma_soft_share, settings.generation.poseSigmaSoftShare),
+    poseSigmaKnots: numericList(generation.pose_sigma_knots),
+    poseControlLoraEnabled: Number(document.version) >= 23
+      ? booleanValue(generation.pose_control_lora_enabled, false)
+      : false,
+    poseControlLoraFileId: "",
+    poseControlLoraModel: Number(document.version) >= 23
+      ? basename(stringValue(generation.pose_control_lora_model, ""))
+      : "",
+    poseControlLoraStrength: Number(document.version) >= 23
+      ? numberValue(generation.pose_control_lora_strength, 1)
+      : 1,
+    poseControlFormat,
+    poseControlLegacyAcknowledged: false,
+    depth: {
+      enabled: booleanValue(depth.enabled, false),
+      checkpointFileId: "",
+      checkpointName: basename(stringValue(depth.checkpoint, "")),
+      imageFileId: "",
+      imageName: basename(stringValue(depth.depth_image, "")),
+      globalStrength: numberValue(depth.global_strength, 1),
+      startPercent: numberValue(depth.start_percent, 0),
+      endPercent: numberValue(depth.end_percent, 1),
+      invert: booleanValue(depth.invert, booleanValue(depthNormalization.invert, false)),
+      normalization: depthNormalizationModeValue(depthNormalization.mode),
+      nearPercentile: numberValue(depthNormalization.near_percentile, 1),
+      farPercentile: numberValue(depthNormalization.far_percentile, 99),
+      gamma: numberValue(depthNormalization.gamma, 1),
+      featherPixels: numberValue(depth.feather_pixels, 32),
+    },
     promptEmphases: emphasisStates(generation.prompt_emphases),
     postUpscale: booleanValue(generation.post_upscale, settings.generation.postUpscale),
     upscaleScale: generation.upscale_scale === 4 ? 4 : 2,
@@ -601,6 +788,11 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   return {
     settings,
     sourceName: basename(stringValue(edit.source_image, stringValue(document.background_image, ""))),
+    migrationNotices: Number(document.version) === 20
+      ? ["Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating is available but remains disabled until enabled."]
+      : Number(document.version) === 21
+        ? ["This project was created before subject-semantic pose routing. It was opened in Spatial only mode to preserve its previous behavior. Select Prediction composite to bind gated mannequin cells to each subject's own prompt and LoRAs."]
+        : stringList(objectValue(document.runtime).migration_notices),
     prompts: {
       generation: stringValue(generation.global_prompt, ""),
       reference: stringValue(edit.reference_global_prompt, ""),
@@ -708,6 +900,9 @@ function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
     const box = objectValue(region.box);
     const x = numberValue(box.x0, 0);
     const y = numberValue(box.y0, 0);
+    const regionType: RegionBox["regionType"] = stringValue(region.region_type, "region") === "subject"
+      ? "subject"
+      : "region";
     return {
       id: stringValue(region.id, crypto.randomUUID()),
       name: stringValue(region.name, `Region ${index + 1}`),
@@ -718,9 +913,15 @@ function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
       height: numberValue(box.y1, y + 16) - y,
       prompt: stringValue(region.prompt, ""),
       faceIdentityPrompt: stringValue(region.face_identity_prompt, ""),
-      spatialRole: spatialRoleValue(region.spatial_role),
+      spatialRole: regionType === "subject" ? "subject" : spatialRoleValue(region.spatial_role),
+      regionType,
+      pose: regionType === "subject" ? poseFromDocument(region.pose) : null,
       enabled: booleanValue(region.enabled, true),
       priority: integerValue(region.priority, 0),
+      depthMode: depthModeValue(region.depth_mode),
+      depthStrength: numberValue(region.depth_strength, 1),
+      depthStartPercent: numberValue(region.depth_start_percent, 0),
+      depthEndPercent: numberValue(region.depth_end_percent, 1),
     };
   }).sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0)).map(({ priority: _priority, ...region }) => region);
 }
@@ -779,3 +980,9 @@ function routingModeValue(value: unknown): LoraRoutingMode { return value === "c
 function cropSizeValue(value: unknown): FaceSettings["cropSize"] { return value === 256 || value === 768 || value === 1024 ? value : 512; }
 function detectorProviderValue(value: unknown): FaceSettings["detectorProvider"] { return value === "cpu" || value === "cuda" ? value : "auto"; }
 function vramModeValue(value: unknown): VramMode { return value === "high_vram" || value === "dynamic" || value === "low_vram" ? value : "auto"; }
+function poseSoftReleaseValue(value: unknown): PoseSoftRelease { return value === "linear" || value === "exponential" || value === "stepped" ? value : "cosine"; }
+function poseSigmaModeValue(value: unknown): PoseSigmaMode { return value === "phase_weighted" || value === "advanced" ? value : "automatic"; }
+function poseSemanticModeValue(value: unknown): PoseSemanticMode { return value === "spatial_only" || value === "attention_isolation" ? value : "prediction_composite"; }
+function depthModeValue(value: unknown): NonNullable<RegionBox["depthMode"]> { return value === "emphasize" || value === "relax" || value === "ignore" ? value : "inherit"; }
+function depthNormalizationModeValue(value: unknown): DepthNormalizationMode { return value === "none" || value === "percentile" || value === "camera_range" || value === "checkpoint_reference" ? value : "minmax"; }
+function numericList(value: unknown): number[] { return arrayValue(value).filter((item): item is number => typeof item === "number" && Number.isFinite(item)); }

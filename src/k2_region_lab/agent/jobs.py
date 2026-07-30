@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from PIL import Image
 
+from k2core.depth import DepthFeatureFlags, DepthRegionMode
+from k2_region_lab.pose import volumetric_subject_pose_document
 from k2_region_lab.agent.domain import (
     FileKind,
     GenerationJob,
@@ -81,9 +83,7 @@ class SubprocessWorkerExecutor:
                 env=environment,
             )
             assert self._process.stderr is not None
-            self._stderr_task = asyncio.create_task(
-                self._discard_stderr(self._process.stderr)
-            )
+            self._stderr_task = asyncio.create_task(self._discard_stderr(self._process.stderr))
         assert self._process.stdin is not None
         assert self._process.stdout is not None
         keep_requested = bool(commands[-1].get("payload", {}).get("keep_model_loaded"))
@@ -427,8 +427,7 @@ class JobManager:
             "cpu_vae",
         )
         return tuple(
-            json.dumps(payload.get(key), sort_keys=True, separators=(",", ":"))
-            for key in keys
+            json.dumps(payload.get(key), sort_keys=True, separators=(",", ":")) for key in keys
         )
 
     async def _handle_worker_event(self, job_id: str, raw: dict[str, Any]) -> str | None:
@@ -498,9 +497,81 @@ class JobManager:
             }
         )
         if request.kind == JobKind.GENERATE:
+            pose_control_lora_file: str | None = None
+            if state.pose_control_lora_enabled:
+                if not request.pose_control_lora_file_id:
+                    raise JobError(
+                        "krea_control_checkpoint_invalid",
+                        "Select a Krea volumetric pose adapter checkpoint.",
+                        409,
+                    )
+                pose_control_lora_file = await self._optional_file_path(
+                    request.pose_control_lora_file_id,
+                    FileKind.KREA_CONTROL_LORAS,
+                )
+            depth_payload = state.depth_control.to_payload()
+            depth_flags = DepthFeatureFlags.from_environment()
+            if state.depth_control.enabled:
+                if not depth_flags.control:
+                    raise JobError(
+                        "depth_feature_disabled",
+                        "Depth control is disabled on this worker.",
+                        409,
+                    )
+                if state.depth_control.regions and not depth_flags.regions:
+                    raise JobError(
+                        "depth_regions_disabled",
+                        "Regional depth weighting is disabled on this worker.",
+                        409,
+                    )
+                if any(
+                    region.mode == DepthRegionMode.OVERRIDE
+                    for region in state.depth_control.regions
+                ) and not depth_flags.override:
+                    raise JobError(
+                        "depth_override_disabled",
+                        "Regional depth override is disabled on this worker.",
+                        409,
+                    )
+                if not request.depth_checkpoint_file_id:
+                    raise JobError(
+                        "depth_checkpoint_invalid",
+                        "Select the Krea depth adapter checkpoint.",
+                        409,
+                    )
+                if not request.depth_image_file_id:
+                    raise JobError(
+                        "depth_image_invalid",
+                        "Select a grayscale depth image.",
+                        409,
+                    )
+                depth_payload["checkpoint"] = await self._optional_file_path(
+                    request.depth_checkpoint_file_id,
+                    FileKind.KREA_CONTROL_LORAS,
+                )
+                depth_payload["depth_image"] = await self._optional_file_path(
+                    request.depth_image_file_id,
+                    FileKind.INPUTS,
+                )
+                for region in depth_payload["regions"]:
+                    if region.get("mode") != DepthRegionMode.OVERRIDE.value:
+                        continue
+                    region_id = str(region["region_id"])
+                    file_id = request.depth_override_file_ids.get(region_id)
+                    if not file_id:
+                        raise JobError(
+                            "depth_image_invalid",
+                            f"Select an override depth image for region {region_id}.",
+                            409,
+                        )
+                    region["override_image"] = await self._optional_file_path(
+                        file_id,
+                        FileKind.INPUTS,
+                    )
             base.update(
                 {
                     "prompt": state.global_prompt,
+                    "shared_visual_prompt": state.shared_visual_prompt,
                     "width": state.canvas_width,
                     "height": state.canvas_height,
                     "steps": state.steps,
@@ -520,6 +591,29 @@ class JobManager:
                     ),
                     "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
+                    "pose_gating_enabled": state.pose_gating_enabled,
+                    "pose_semantic_mode": state.pose_semantic_mode,
+                    "pose_control_lora_enabled": state.pose_control_lora_enabled,
+                    "pose_control_lora_strength": state.pose_control_lora_strength,
+                    "pose_control_format": state.pose_control_format,
+                    "pose_control_lora_file": pose_control_lora_file,
+                    "pose_control_lora_file_id": (
+                        request.pose_control_lora_file_id
+                        if state.pose_control_lora_enabled
+                        else None
+                    ),
+                    "pose_control_allow_unverified_legacy": (
+                        request.pose_control_allow_unverified_legacy
+                    ),
+                    "depth_control": depth_payload,
+                    "depth_override_enabled": depth_flags.override,
+                    "pose_hard_gate_steps": state.pose_hard_gate_steps,
+                    "pose_soft_gate_steps": state.pose_soft_gate_steps,
+                    "pose_soft_gate_schedule": state.pose_soft_gate_schedule,
+                    "pose_sigma_schedule_mode": state.pose_sigma_schedule_mode,
+                    "pose_sigma_hard_share": state.pose_sigma_hard_share,
+                    "pose_sigma_soft_share": state.pose_sigma_soft_share,
+                    "pose_sigma_knots": list(state.pose_sigma_knots),
                     "projector_enabled": state.projector_enabled,
                     "projector_preset": state.projector_preset,
                     "projector_values": list(state.projector_values),
@@ -633,7 +727,13 @@ class JobManager:
             "text_encoders": str(self._layout.destination(FileKind.TEXT_ENCODERS.value)),
             "vae": str(self._layout.destination(FileKind.VAE.value)),
             "lora_directory": str(self._layout.destination(FileKind.LORAS.value)),
+            "krea_control_lora_directory": str(
+                self._layout.destination(FileKind.KREA_CONTROL_LORAS.value)
+            ),
             "upscale_models": str(self._layout.destination(FileKind.UPSCALE_MODELS.value)),
+            "controlnet_models": str(
+                self._layout.destination(FileKind.CONTROLNET_MODELS.value)
+            ),
             "diffusion_model_file": await self._optional_file_path(
                 request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
             ),
@@ -749,6 +849,35 @@ class JobManager:
             raise JobError("project_invalid", "The project document is invalid.") from error
         if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
             raise JobError("project_too_large", "The project document exceeds 2 MiB.", 413)
+        generation = request.project.get("generation", {})
+        regions = request.project.get("regions", [])
+        if (
+            request.kind == JobKind.GENERATE
+            and isinstance(generation, dict)
+            and bool(generation.get("pose_gating_enabled", False))
+            and sum(
+                value
+                for value in (
+                    generation.get("pose_hard_gate_steps", 0),
+                    generation.get("pose_soft_gate_steps", 0),
+                )
+                if isinstance(value, int | float)
+            )
+            > 0
+            and isinstance(regions, list)
+            and not any(
+                isinstance(region, dict)
+                and bool(region.get("enabled", True))
+                and region.get("region_type") == "subject"
+                and isinstance(region.get("pose"), dict)
+                and bool(region["pose"].get("enabled", True))
+                for region in regions
+            )
+        ):
+            raise JobError(
+                "pose_mannequin_required",
+                "Enable at least one subject mannequin before using volumetric pose gating.",
+            )
         try:
             state = project_state(request.project)
         except (KeyError, TypeError, ValueError) as error:
@@ -767,6 +896,22 @@ class JobManager:
                 "lora_binding_mismatch",
                 "Every project LoRA must have one opaque cloud file binding.",
                 409,
+            )
+        if (
+            request.kind == JobKind.GENERATE
+            and state.pose_gating_enabled
+            and state.pose_hard_gate_steps + state.pose_soft_gate_steps > 0
+            and not any(
+                region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+                for region in state.regions
+            )
+        ):
+            raise JobError(
+                "pose_mannequin_required",
+                "Enable at least one subject mannequin before using volumetric pose gating.",
             )
         if request.kind in {JobKind.EDIT_IMAGE, JobKind.REFINE_FACES} and not request.input_file_id:
             raise JobError(
@@ -829,6 +974,12 @@ class JobManager:
             "enabled": region.enabled,
             "priority": region.priority,
             "spatial_role": region.spatial_role,
+            "region_type": region.region_type,
+            "pose": (
+                volumetric_subject_pose_document(region.pose)
+                if region.pose is not None
+                else None
+            ),
         }
 
     @staticmethod

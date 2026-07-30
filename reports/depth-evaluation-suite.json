@@ -1,0 +1,81 @@
+{
+  "schema": "k2lab-depth-evaluation-suite",
+  "version": 1,
+  "status": "defined_not_executed",
+  "blocker": "No Torch accelerator is exposed by the implementation host.",
+  "fixed_parameters": {
+    "seed": 20260730,
+    "prompt": "A realistic photograph matching the supplied room geometry.",
+    "raw": {
+      "steps": 28,
+      "cfg": 3.5
+    },
+    "turbo": {
+      "steps": 8,
+      "cfg": 0.0
+    }
+  },
+  "scenes": [
+    "one-standing-mannequin",
+    "two-mannequins-different-depths",
+    "person-seated-on-chair",
+    "person-lying-on-bed",
+    "table-in-foreground",
+    "chair-behind-person",
+    "overlapping-objects",
+    "strong-perspective",
+    "wide-and-portrait-aspect-ratios",
+    "sparse-scene",
+    "dense-room"
+  ],
+  "global_variants": [
+    "depth-disabled",
+    "correct-depth",
+    "shuffled-depth",
+    "inverted-depth",
+    "horizontally-shifted-depth",
+    "blank-depth",
+    "strength-0.35",
+    "strength-1.0",
+    "strength-1.5"
+  ],
+  "regional_variants": [
+    "global-depth-only",
+    "regions-only",
+    "global-depth-plus-regions",
+    "depth-emphasis-region",
+    "depth-relaxed-region",
+    "depth-ignore-region",
+    "overlapping-depth-regions",
+    "regional-character-lora",
+    "subject-interacting-with-furniture"
+  ],
+  "metrics": [
+    "estimated-output-depth-correlation",
+    "rank-order-depth-consistency",
+    "edge-alignment",
+    "silhouette-overlap",
+    "object-center-error",
+    "object-scale-error",
+    "blank-or-corrupt-rate",
+    "prompt-similarity",
+    "image-quality",
+    "runtime-seconds",
+    "peak-vram-bytes"
+  ],
+  "visual_checks": [
+    "global-perspective-preserved",
+    "regional-identity-contained",
+    "emphasized-object-adheres-more-strongly",
+    "relaxed-region-diverges-without-global-breakage",
+    "no-rectangular-seams",
+    "no-region-edge-depth-discontinuities",
+    "no-cross-region-lora-leakage-regression"
+  ],
+  "acceptance": {
+    "correct_beats_shuffled_and_blank": true,
+    "raw_required": true,
+    "turbo_required_or_explicitly_unsupported": true,
+    "visual_review_required": true
+  }
+}

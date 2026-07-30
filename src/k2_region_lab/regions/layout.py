@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from k2_region_lab.pose import SubjectPose, VolumetricSubjectPose
 from k2_region_lab.regions.geometry import CanvasGeometry, PixelBox
 
 
 REGION_ROLES = ("auto", "subject", "background", "edit")
+REGION_TYPES = ("region", "subject")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,12 +23,23 @@ class RegionDefinition:
     enabled: bool = True
     priority: int = 0
     spatial_role: str = "auto"
+    region_type: str = "region"
+    pose: SubjectPose | VolumetricSubjectPose | None = None
 
     def __post_init__(self) -> None:
         if not self.region_id.strip():
             raise ValueError("region_id must not be empty")
         if self.spatial_role not in REGION_ROLES:
             raise ValueError(f"unsupported spatial role: {self.spatial_role!r}")
+        if self.region_type not in REGION_TYPES:
+            raise ValueError(f"unsupported region type: {self.region_type!r}")
+        if self.region_type == "subject":
+            if self.spatial_role != "subject":
+                raise ValueError("subject boxes require the subject spatial role")
+            if self.pose is None:
+                raise ValueError("subject boxes require a mannequin pose")
+        elif self.pose is not None:
+            raise ValueError("ordinary region boxes cannot contain mannequin poses")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +70,7 @@ def compile_spatial_layout(
     if len(ids) != len(set(ids)):
         raise ValueError("region IDs must be unique")
     masks = tuple(
-        geometry.rasterize_box(region.box)
-        if region.enabled
-        else (0.0,) * geometry.image_lane_count
+        geometry.rasterize_box(region.box) if region.enabled else (0.0,) * geometry.image_lane_count
         for region in regions
     )
     return SpatialLayout(geometry=geometry, regions=regions, region_masks=masks)

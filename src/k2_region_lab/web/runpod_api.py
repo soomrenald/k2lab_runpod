@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import random
+import time
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -316,28 +319,67 @@ class RunPodApiClient:
             "Authorization": f"Bearer {self._api_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-            ) as client:
-                response = await client.request(method, url, headers=headers, **kwargs)
-        except httpx.TimeoutException as error:
+        allowed = expected or {200}
+        idempotent_read = method.upper() in {"GET", "HEAD"}
+        attempts = 3 if idempotent_read else 1
+        delays = (0.25, 0.75)
+        deadline = time.monotonic() + self._timeout_seconds
+        response: httpx.Response | None = None
+        last_timeout: httpx.TimeoutException | None = None
+        completed_attempts = 0
+        for attempt in range(attempts):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            completed_attempts = attempt + 1
+            try:
+                async with httpx.AsyncClient(
+                    timeout=remaining,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.request(method, url, headers=headers, **kwargs)
+            except httpx.TimeoutException as error:
+                last_timeout = error
+                response = None
+            except httpx.HTTPError as error:
+                raise WorkspaceError(
+                    "provider_unavailable",
+                    "The RunPod API is currently unreachable.",
+                    status_code=502,
+                ) from error
+            transient_response = (
+                response is not None
+                and response.status_code in {502, 503, 504}
+            )
+            if response is not None and not transient_response:
+                break
+            if attempt + 1 >= attempts:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            delay = delays[attempt] * random.uniform(0.8, 1.2)
+            await asyncio.sleep(min(delay, remaining))
+        if response is None:
+            timeout_type = (
+                type(last_timeout).__name__
+                if last_timeout is not None
+                else "operation_deadline"
+            )
             raise WorkspaceError(
                 "provider_timeout",
                 "RunPod did not respond before the provider timeout.",
                 status_code=504,
-            ) from error
-        except httpx.HTTPError as error:
-            raise WorkspaceError(
-                "provider_unavailable",
-                "The RunPod API is currently unreachable.",
-                status_code=502,
-            ) from error
-
-        allowed = expected or {200}
+                diagnostics={
+                    "request_attempts": completed_attempts,
+                    "timeout_type": timeout_type,
+                },
+            ) from last_timeout
         if response.status_code not in allowed:
-            self._raise_provider_error(response.status_code)
+            self._raise_provider_error(
+                response.status_code,
+                diagnostics={"request_attempts": completed_attempts},
+            )
         if response.status_code == 204 or not response.content:
             return {}
         try:
@@ -367,7 +409,11 @@ class RunPodApiClient:
         return payload
 
     @staticmethod
-    def _raise_provider_error(status_code: int) -> None:
+    def _raise_provider_error(
+        status_code: int,
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
         if status_code == 401:
             code, message, client_status = (
                 "invalid_api_key",
@@ -410,7 +456,12 @@ class RunPodApiClient:
                 "RunPod rejected the provider request.",
                 400,
             )
-        raise WorkspaceError(code, message, status_code=client_status)
+        raise WorkspaceError(
+            code,
+            message,
+            status_code=client_status,
+            diagnostics=diagnostics,
+        )
 
     @staticmethod
     def _raise_resume_error(errors: Any) -> None:

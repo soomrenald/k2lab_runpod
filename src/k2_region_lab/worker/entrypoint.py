@@ -8,9 +8,16 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from k2core.depth import DepthControlSettings
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
+from k2_region_lab.pose_gating import (
+    PoseGatingSettings,
+    SigmaScheduleMode,
+    SigmaScheduleRequest,
+    SoftGateSchedule,
+)
 from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET
 from k2_region_lab.regional_prompting import (
     prompt_emphases_from_payload,
@@ -211,14 +218,33 @@ def main() -> int:
                 )
 
                 def progress(step: int, total: int, memory: dict[str, Any]) -> None:
+                    phase = memory.get("pose_gate_phase")
+                    gate = memory.get("pose_gate_strength")
+                    message = f"Denoising step {step}/{total}"
+                    if isinstance(phase, str) and isinstance(gate, (int, float)):
+                        message += f" — {phase} gate, strength {float(gate):.2f}"
                     emit(
                         WorkerState.RUNNING,
-                        f"Denoising step {step}/{total}",
+                        message,
                         command_id=command_id,
                         payload={
                             "step": step,
                             "total_steps": total,
                             "memory": memory,
+                            **(
+                                {
+                                    "phase": phase,
+                                    "gate_strength": float(gate),
+                                    "sigma": memory.get("sigma"),
+                                    "next_sigma": memory.get("next_sigma"),
+                                    "normalized_trajectory_progress": memory.get(
+                                        "normalized_trajectory_progress"
+                                    ),
+                                }
+                                if isinstance(phase, str)
+                                and isinstance(gate, (int, float))
+                                else {}
+                            ),
                         },
                     )
 
@@ -232,6 +258,9 @@ def main() -> int:
 
                 generated = runtime.generate(
                     prompt=str(payload.get("prompt", "")),
+                    shared_visual_prompt=str(
+                        payload.get("shared_visual_prompt", "")
+                    ),
                     width=int(payload.get("width", 1024)),
                     height=int(payload.get("height", 1024)),
                     steps=int(payload.get("steps", 8)),
@@ -268,6 +297,63 @@ def main() -> int:
                     ),
                     regional_lora_delta_adaptation_gain=float(
                         payload.get("regional_lora_delta_adaptation_gain", 0.35)
+                    ),
+                    pose_gating=PoseGatingSettings(
+                        enabled=bool(payload.get("pose_gating_enabled", False)),
+                        hard_steps=int(payload.get("pose_hard_gate_steps", 2)),
+                        soft_steps=int(payload.get("pose_soft_gate_steps", 2)),
+                        soft_schedule=SoftGateSchedule(
+                            payload.get("pose_soft_gate_schedule", "cosine")
+                        ),
+                        sigma_request=SigmaScheduleRequest(
+                            mode=SigmaScheduleMode(
+                                payload.get("pose_sigma_schedule_mode", "automatic")
+                            ),
+                            hard_share=float(
+                                payload.get("pose_sigma_hard_share", 0.20)
+                            ),
+                            soft_share=float(
+                                payload.get("pose_sigma_soft_share", 0.30)
+                            ),
+                            normalized_knots=tuple(
+                                float(value)
+                                for value in payload.get("pose_sigma_knots", ())
+                            ),
+                        ),
+                    ),
+                    pose_semantic_mode=str(
+                        payload.get("pose_semantic_mode", "prediction_composite")
+                    ),
+                    pose_control_lora_enabled=bool(
+                        payload.get("pose_control_lora_enabled", False)
+                    ),
+                    pose_control_lora_path=(
+                        Path(payload["pose_control_lora_file"])
+                        if payload.get("pose_control_lora_file")
+                        else None
+                    ),
+                    pose_control_lora_file_id=(
+                        str(payload["pose_control_lora_file_id"])
+                        if payload.get("pose_control_lora_file_id")
+                        else None
+                    ),
+                    pose_control_lora_strength=float(
+                        payload.get("pose_control_lora_strength", 1.0)
+                    ),
+                    pose_control_format=str(
+                        payload.get(
+                            "pose_control_format",
+                            "k2-volumetric-pose-control-v1",
+                        )
+                    ),
+                    pose_control_allow_unverified_legacy=bool(
+                        payload.get("pose_control_allow_unverified_legacy", False)
+                    ),
+                    depth_control=DepthControlSettings.from_payload(
+                        payload.get("depth_control")
+                    ),
+                    depth_override_enabled=bool(
+                        payload.get("depth_override_enabled", False)
                     ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(

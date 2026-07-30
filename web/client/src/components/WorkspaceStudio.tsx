@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, JobSubmitPayload, KreaControlCheckpointInspection, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, VolumetricControlPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -12,6 +12,19 @@ import { uploadWorkspaceFile } from "../uploads";
 import { useUploadQueue } from "../useUploadQueue";
 import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
 import {
+  isPassiveProviderTransient,
+  providerFreshnessEvent,
+  scheduleProviderPoll,
+} from "../providerFreshness";
+import {
+  clearPendingJobSubmission,
+  isAmbiguousJobSubmissionError,
+  loadPendingJobSubmission,
+  type PendingJobSubmission,
+  savePendingJobSubmission,
+  uniqueJobs,
+} from "../submissionRecovery";
+import {
   buildProjectDocument,
   bindStudioLoraFiles,
   createStudioLora,
@@ -22,6 +35,7 @@ import {
 } from "../studioProject";
 import {
   RegionCanvas,
+  type DrawMode,
   type RegionBox,
   type RegionLayer,
   type StudioMode,
@@ -30,29 +44,36 @@ import {
 interface Props {
   workspace: WorkspaceRecord;
   developmentBackend: boolean;
+  poseSemanticRoutingAvailable: boolean;
+  poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
+  depthRegionsAvailable: boolean;
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
+  onWorkspaceMenu: () => void;
   onDelete: () => void;
 }
 
 const starterRegions: RegionBox[] = [];
 const FACE_DETECTOR_SOURCE = "https://huggingface.co/acvlab/FantasyPortrait/resolve/14df15cac6721a1cabdb9ecbdc0fbd6d3e49154b/face_det.onnx";
-type StudioEventKind = "info" | "error" | "worker";
+type StudioEventKind = "info" | "warning" | "error" | "worker";
+type StudioEventSource = "job" | "workspace" | "provider" | "transfer";
 
 interface StudioEvent {
   id: string;
   createdAt: string;
   kind: StudioEventKind;
+  source?: StudioEventSource;
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, poseControlLoraAvailable, depthControlAvailable, depthRegionsAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
+  const [drawMode, setDrawMode] = useState<DrawMode>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [cloudSource, setCloudSource] = useState<FileRecord | null>(null);
@@ -66,7 +87,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "pose-control" | "depth-checkpoint" | "depth-image" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -88,7 +109,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [eventLog, setEventLog] = useState<StudioEvent[]>([]);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
+  const [submissionRecovery, setSubmissionRecovery] = useState<PendingJobSubmission | null>(
+    () => loadPendingJobSubmission(window.localStorage, workspace.id),
+  );
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
+  const [controlPreview, setControlPreview] = useState<(VolumetricControlPreview & {
+    url: string;
+    subjectRegionId: string | null;
+  }) | null>(null);
+  const [poseControlCompatibility, setPoseControlCompatibility] = useState<KreaControlCheckpointInspection | null>(null);
   const [projectName, setProjectName] = useState("untitled.k2lab.json");
   const [faceDetections, setFaceDetections] = useState<DetectedFaceRecord[]>([]);
   const [selectedFaceIndices, setSelectedFaceIndices] = useState<number[]>([]);
@@ -103,30 +132,49 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [workerMemory, setWorkerMemory] = useState<WorkerMemoryStatus | null>(null);
   const [memoryRefreshing, setMemoryRefreshing] = useState(false);
   const eventCursor = useRef<string | undefined>(undefined);
+  const providerStale = useRef(Boolean(workspace.provider_freshness?.stale));
   const eventListRef = useRef<HTMLDivElement>(null);
   const eventResize = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const openProjectInput = useRef<HTMLInputElement>(null);
   const importPngInput = useRef<HTMLInputElement>(null);
 
-  function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString()) {
+  function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString(), source?: StudioEventSource) {
     if (!messageText) return;
     setEventLog((current) => appendBoundedEvents(current, [{
       id: crypto.randomUUID(),
       createdAt,
       kind,
+      source,
       message: messageText,
     }]));
   }
 
-  function report(messageText: string, kind: StudioEventKind = "info") {
+  function report(messageText: string, kind: StudioEventKind = "info", source?: StudioEventSource) {
     setMessage(messageText);
-    appendEvent(messageText, kind);
+    appendEvent(messageText, kind, new Date().toISOString(), source);
+  }
+
+  function rememberSubmissionRecovery(next: PendingJobSubmission | null) {
+    setSubmissionRecovery(next);
+    if (next) savePendingJobSubmission(window.localStorage, next);
+    else clearPendingJobSubmission(window.localStorage, workspace.id);
+  }
+
+  function trackSubmittedJobs(jobs: GenerationJob[]) {
+    const distinct = uniqueJobs(jobs);
+    if (distinct.length === 0) return;
+    setJob(distinct[0]);
+    setQueuedJobs(distinct.slice(1));
   }
 
   const uploadQueue = useUploadQueue(workspace.id, report);
   const pendingUploadCount = uploadQueue.items.filter((item) => (
     !["completed", "cancelled"].includes(item.state)
   )).length;
+
+  useEffect(() => {
+    setSubmissionRecovery(loadPendingJobSubmission(window.localStorage, workspace.id));
+  }, [workspace.id]);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
@@ -160,16 +208,46 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     async function refresh() {
       try {
         const refreshed = await controlPlane.workspace(workspace.id);
-        if (!cancelled) onWorkspace(refreshed);
+        if (!cancelled) {
+          const stale = Boolean(refreshed.provider_freshness?.stale);
+          const transition = providerFreshnessEvent(providerStale.current, stale);
+          if (transition) {
+            appendEvent(
+              transition.message,
+              transition.kind,
+              new Date().toISOString(),
+              transition.source,
+            );
+          }
+          providerStale.current = stale;
+          onWorkspace(refreshed);
+        }
       } catch (caught) {
         if (!cancelled) {
-          report(caught instanceof Error ? caught.message : "Could not refresh workspace status", "error");
+          if (isPassiveProviderTransient(caught)) {
+            const transition = providerFreshnessEvent(providerStale.current, true);
+            if (transition) {
+              appendEvent(
+                transition.message,
+                transition.kind,
+                new Date().toISOString(),
+                transition.source,
+              );
+            }
+            providerStale.current = true;
+          } else {
+            report(
+              caught instanceof Error ? caught.message : "Could not refresh workspace status",
+              "error",
+              "workspace",
+            );
+          }
         }
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void refresh(), 5_000);
+        if (!cancelled) timer = scheduleProviderPoll(window.setTimeout, () => void refresh());
       }
     }
-    timer = window.setTimeout(() => void refresh(), 5_000);
+    timer = scheduleProviderPoll(window.setTimeout, () => void refresh());
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -225,6 +303,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             id: `${jobId}-${event.sequence}`,
             createdAt: event.created_at,
             kind: "worker" as const,
+            source: "job" as const,
             message: event.message,
           }))));
         }
@@ -285,7 +364,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   function switchMode(next: StudioMode) {
     setMode(next);
-    setDrawMode(false);
+    setDrawMode(null);
     setSelectedId(null);
     setActiveLayer(next === "edit" ? "targets" : "generation");
   }
@@ -347,7 +426,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setActiveLayer("generation");
     setRegions([]);
     setSelectedId(null);
-    setDrawMode(false);
+    setDrawMode(null);
     setSourceUrl(null);
     setSourceName("");
     setCloudSource(null);
@@ -355,6 +434,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setResultName("");
     setGlobalPrompts({ generation: "", reference: "", targets: "" });
     setStudioSettings(createStudioSettings());
+    setPoseControlCompatibility(null);
     setLoras([]);
     setProjectName("untitled.k2lab.json");
     setFaceDetections([]);
@@ -378,6 +458,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   async function restoreProject(document: unknown, name: string, source?: File) {
     const loaded = loadStudioProjectDocument(document);
     let loraFiles: FileRecord[] = [];
+    let poseControlFiles: FileRecord[] = [];
     let upscalerFiles: FileRecord[] = [];
     let diffusionFiles: FileRecord[] = [];
     let textEncoderFiles: FileRecord[] = [];
@@ -389,6 +470,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       // The Pod inventory is one persistent index. Load its sections sequentially so a
       // project restore cannot create an eight-connection burst through RunPod's proxy.
       loraFiles = await allFiles("loras");
+      poseControlFiles = await allFiles("krea_control_loras");
       upscalerFiles = await allFiles("upscale_models");
       diffusionFiles = await allFiles("diffusion_models");
       textEncoderFiles = await allFiles("text_encoders");
@@ -403,6 +485,28 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       (file) => file.display_name.toLocaleLowerCase() === target.toLocaleLowerCase(),
     );
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
+    const poseControl = byName(
+      poseControlFiles,
+      loaded.settings.generation.poseControlLoraModel,
+    );
+    if (poseControl) {
+      loaded.settings.generation.poseControlLoraFileId = poseControl.id;
+      void inspectPoseControlCheckpoint(poseControl.id, false);
+    } else {
+      setPoseControlCompatibility(null);
+    }
+    const depthCheckpoint = byName(
+      poseControlFiles,
+      loaded.settings.generation.depth.checkpointName,
+    );
+    if (depthCheckpoint) {
+      loaded.settings.generation.depth.checkpointFileId = depthCheckpoint.id;
+    }
+    const depthImage = byName(
+      inputFiles,
+      loaded.settings.generation.depth.imageName,
+    );
+    if (depthImage) loaded.settings.generation.depth.imageFileId = depthImage.id;
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
     const runtime = loaded.settings.runtime;
@@ -441,9 +545,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const safeName = name.toLocaleLowerCase().endsWith(".json") ? name : `${name}.k2lab.json`;
     setProjectName(safeName);
     const missing = loaded.loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
-    report(missing.length
+    const openedMessage = missing.length
       ? `Opened ${name}. Upload or select missing cloud LoRA asset(s): ${missing.join(", ")}.`
-      : `Opened ${name}.`);
+      : `Opened ${name}.`;
+    report(
+      loaded.migrationNotices.length
+        ? `${openedMessage} ${loaded.migrationNotices.join(" ")}`
+        : openedMessage,
+      loaded.migrationNotices.length ? "worker" : undefined,
+    );
   }
 
   async function openProject(file: File) {
@@ -676,6 +786,107 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report("Assign at least one enabled LoRA to a subject region before face refinement.", "error");
       return;
     }
+    if (
+      mode === "generation"
+      && studioSettings.generation.poseGating
+      && studioSettings.generation.poseHardGateSteps + studioSettings.generation.poseSoftGateSteps > 0
+      && !regions.some((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ))
+    ) {
+      report("Add and enable at least one subject mannequin before using volumetric pose gating.", "error");
+      return;
+    }
+    if (mode === "generation" && studioSettings.generation.poseControlLoraEnabled) {
+      if (!poseControlLoraAvailable) {
+        report("This control plane or workspace protocol does not support Krea volumetric pose adapters. Update the workspace image; the adapter will not be silently disabled.", "error");
+        return;
+      }
+      if (!studioSettings.generation.poseControlLoraFileId) {
+        report("Select a verified Krea volumetric pose adapter checkpoint before generating.", "error");
+        setAssetPurpose("pose-control");
+        setUtilityPanel("assets");
+        return;
+      }
+      if (!poseControlCompatibility?.compatible) {
+        report("The selected Krea pose adapter is not verified as compatible. Review its checkpoint diagnostics before generating.", "error");
+        return;
+      }
+      if (
+        !poseControlCompatibility.verified
+        && !studioSettings.generation.poseControlLegacyAcknowledged
+      ) {
+        report("Explicitly acknowledge the compatible unverified legacy checkpoint before generating.", "error");
+        return;
+      }
+      if (!regions.some((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ))) {
+        report("Add and enable at least one subject mannequin before using the trained pose adapter.", "error");
+        return;
+      }
+    }
+    if (mode === "generation" && studioSettings.generation.depth.enabled) {
+      if (!depthControlAvailable) {
+        report("Depth control is disabled by this deployment's feature flags.", "error");
+        return;
+      }
+      if (
+        !depthRegionsAvailable
+        && regions.some((region) => (
+          region.layer === "generation"
+          && (region.depthMode ?? "inherit") !== "inherit"
+        ))
+      ) {
+        report("Regional depth weighting is disabled by this deployment's feature flags.", "error");
+        return;
+      }
+      if (studioSettings.generation.poseControlLoraEnabled) {
+        report("Depth control and volumetric pose control cannot be enabled in the same run.", "error");
+        return;
+      }
+      if (!studioSettings.generation.depth.checkpointFileId) {
+        report("Select the verified Krea depth adapter checkpoint before generating.", "error");
+        setAssetPurpose("depth-checkpoint");
+        setUtilityPanel("assets");
+        return;
+      }
+      if (!studioSettings.generation.depth.imageFileId) {
+        report("Select a grayscale PNG or TIFF depth image before generating.", "error");
+        setAssetPurpose("depth-image");
+        setUtilityPanel("assets");
+        return;
+      }
+    }
+    if (
+      mode === "generation"
+      && studioSettings.generation.poseGating
+      && studioSettings.generation.poseSemanticMode === "prediction_composite"
+    ) {
+      if (!poseSemanticRoutingAvailable) {
+        report("This control plane or workspace protocol does not support subject-semantic pose routing. Update the workspace image; the mode will not be changed automatically.", "error");
+        return;
+      }
+      const posedSubjects = regions.filter((region) => (
+        region.layer === "generation"
+        && region.enabled
+        && region.regionType === "subject"
+        && region.pose?.enabled
+      ));
+      const missingDescription = posedSubjects.find((region) => (
+        !region.prompt.trim() && !region.faceIdentityPrompt.trim()
+      ));
+      if (missingDescription) {
+        report(`Add a subject or face-identity prompt for ${missingDescription.name} before using Prediction composite.`, "error");
+        return;
+      }
+    }
     setBusy(true);
     setMessage("");
     eventCursor.current = undefined;
@@ -686,7 +897,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
       const runCount = mode === "generation" && studioSettings.generation.batchMode
         ? studioSettings.generation.batchCount : 1;
-      const submitted: GenerationJob[] = [];
+      const payloads: JobSubmitPayload[] = [];
       let lastSeed = studioSettings.generation.seed;
       for (let index = 0; index < runCount; index += 1) {
         let seed = studioSettings.generation.seed;
@@ -699,7 +910,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         const jobSettings = mode === "generation"
           ? { ...studioSettings, generation: { ...studioSettings.generation, seed } }
           : studioSettings;
-        submitted.push(await controlPlane.submitJob(workspace.id, {
+        payloads.push({
           command_id: crypto.randomUUID(),
           kind,
           project_id: `studio-${workspace.id}`,
@@ -712,22 +923,105 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             ? studioSettings.runtime.faceDetectorFileId || undefined
             : undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
+          pose_control_lora_file_id: studioSettings.generation.poseControlLoraEnabled
+            ? studioSettings.generation.poseControlLoraFileId
+            : undefined,
+          pose_control_allow_unverified_legacy: (
+            studioSettings.generation.poseControlLoraEnabled
+            && studioSettings.generation.poseControlLegacyAcknowledged
+          ),
+          depth_checkpoint_file_id: studioSettings.generation.depth.enabled
+            ? studioSettings.generation.depth.checkpointFileId
+            : undefined,
+          depth_image_file_id: studioSettings.generation.depth.enabled
+            ? studioSettings.generation.depth.imageFileId
+            : undefined,
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
           manual_face_paths: mode === "face" ? manualFacePaths : undefined,
-        }));
+        });
+      }
+      const submitted: GenerationJob[] = [];
+      for (let index = 0; index < payloads.length; index += 1) {
+        try {
+          submitted.push(await controlPlane.submitJob(workspace.id, payloads[index]));
+        } catch (caught) {
+          if (!isAmbiguousJobSubmissionError(caught)) throw caught;
+          const lastError = caught instanceof Error
+            ? caught.message
+            : "The job submission did not receive an acknowledgment.";
+          const recovery: PendingJobSubmission = {
+            version: 1,
+            workspaceId: workspace.id,
+            payloads: payloads.slice(index),
+            acknowledgedJobs: submitted,
+            createdAt: new Date().toISOString(),
+            lastError,
+          };
+          rememberSubmissionRecovery(recovery);
+          trackSubmittedJobs(submitted);
+          report(
+            "Job submission acknowledgment timed out. The request may already be queued; use Recover submission instead of starting another job.",
+            "error",
+          );
+          return;
+        }
       }
       if (mode === "generation") {
         const nextSeed = studioSettings.generation.seedMode === "increment"
           ? (studioSettings.generation.seed + runCount) % 2147483648 : lastSeed;
         setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, seed: nextSeed } });
       }
-      setJob(submitted[0]);
-      setQueuedJobs(submitted.slice(1));
+      trackSubmittedJobs(submitted);
       report(runCount > 1 ? `${runCount} remote batch runs queued.` : "Remote job queued.", "worker");
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Could not submit remote job", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recoverTimedOutSubmission() {
+    if (!submissionRecovery) return;
+    setBusy(true);
+    const recovered = [...submissionRecovery.acknowledgedJobs];
+    try {
+      for (let index = 0; index < submissionRecovery.payloads.length; index += 1) {
+        const payload = submissionRecovery.payloads[index];
+        try {
+          recovered.push(await controlPlane.submitJob(workspace.id, payload));
+        } catch (caught) {
+          const lastError = caught instanceof Error
+            ? caught.message
+            : "The recovery request did not receive an acknowledgment.";
+          const next: PendingJobSubmission = {
+            ...submissionRecovery,
+            payloads: submissionRecovery.payloads.slice(index),
+            acknowledgedJobs: uniqueJobs(recovered),
+            lastError,
+          };
+          rememberSubmissionRecovery(next);
+          trackSubmittedJobs(recovered);
+          report(
+            isAmbiguousJobSubmissionError(caught)
+              ? "Recovery still did not receive a job receipt. The same command ID remains saved; retry recovery when the agent responds."
+              : `The agent rejected submission recovery: ${lastError}`,
+            "error",
+          );
+          return;
+        }
+      }
+      const jobs = uniqueJobs(recovered);
+      rememberSubmissionRecovery(null);
+      trackSubmittedJobs(jobs);
+      eventCursor.current = undefined;
+      report(
+        jobs.length > 1
+          ? `Recovered ${jobs.length} remote batch jobs without duplicating work.`
+          : "Recovered the remote job without duplicating work.",
+        "worker",
+      );
     } finally {
       setBusy(false);
     }
@@ -755,6 +1049,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setBusy(true);
     try {
       const released = await controlPlane.releaseWorkerMemory(workspace.id);
+      rememberSubmissionRecovery(null);
       setJob(null);
       setQueuedJobs([]);
       eventCursor.current = undefined;
@@ -796,6 +1091,56 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     } finally {
       setBusy(false);
     }
+  }
+
+  async function previewPoseControl(subjectRegionId: string | null = null) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const preview = await controlPlane.previewVolumetricControl(
+        buildProjectDocument(
+          regions,
+          globalPrompts,
+          studioSettings,
+          loras,
+          cloudSource?.display_name ?? null,
+        ),
+        subjectRegionId,
+      );
+      if (controlPreview) URL.revokeObjectURL(controlPreview.url);
+      setControlPreview({
+        ...preview,
+        url: URL.createObjectURL(preview.blob),
+        subjectRegionId,
+      });
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not render the control preview", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function inspectPoseControlCheckpoint(fileId: string, allowLegacy: boolean) {
+    setBusy(true);
+    try {
+      setPoseControlCompatibility(
+        await controlPlane.inspectKreaControlCheckpoint(
+          workspace.id,
+          fileId,
+          allowLegacy,
+        ),
+      );
+    } catch (caught) {
+      setPoseControlCompatibility(null);
+      report(caught instanceof Error ? caught.message : "Could not inspect the Krea pose adapter", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function closeControlPreview() {
+    if (controlPreview) URL.revokeObjectURL(controlPreview.url);
+    setControlPreview(null);
   }
 
   async function runFaceDetection(faceDetectorFileId: string) {
@@ -1038,6 +1383,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             </label>
           )}
           <div className="popover-actions">
+            <button
+              className="quiet-button"
+              onClick={() => {
+                setShowCloud(false);
+                onWorkspaceMenu();
+              }}
+            >
+              <Icon name="layers" /> All workspaces
+            </button>
             {canExtend
               ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
               : canStart
@@ -1127,6 +1481,18 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onSettings={setStudioSettings}
             onLoras={setLoras}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
+            onChoosePoseControlLora={() => { setAssetPurpose("pose-control"); setUtilityPanel("assets"); }}
+            onChooseDepthCheckpoint={() => { setAssetPurpose("depth-checkpoint"); setUtilityPanel("assets"); }}
+            onChooseDepthImage={() => { setAssetPurpose("depth-image"); setUtilityPanel("assets"); }}
+            onPreviewPoseControl={() => void previewPoseControl()}
+            poseControlLoraAvailable={poseControlLoraAvailable}
+            depthControlAvailable={depthControlAvailable}
+            depthRegionsAvailable={depthRegionsAvailable}
+            poseControlCompatibility={poseControlCompatibility}
+            onInspectPoseControlLegacy={(allow) => {
+              const fileId = studioSettings.generation.poseControlLoraFileId;
+              if (fileId) void inspectPoseControlCheckpoint(fileId, allow);
+            }}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
@@ -1185,19 +1551,37 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <div ref={eventListRef} className="event-list event-dock-list" role="log" aria-live="polite">
             {eventLog.length === 0
               ? <p className="field-help">Events from generation, transfers, saves, and face tools will appear here.</p>
-              : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.kind}</span><p>{entry.message}</p></article>)}
+              : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.source ?? entry.kind}</span><p>{entry.message}</p></article>)}
           </div>
         </section>
       )}
 
       <footer className="action-bar">
-        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
+        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{workspace.provider_freshness?.stale ? "RunPod provider status stale · runtime and outputs use last known status" : message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
         <div className="memory-meter"><span>Job</span><div><i style={{ width: job?.progress_total ? `${Math.min(100, job.progress_current / job.progress_total * 100)}%` : "0%" }} /></div><small>{job?.progress_total ? `${job.progress_current}/${job.progress_total}` : running ? "Idle" : "Released"}</small></div>
         <button className="run-button" disabled={!running || developmentBackend || busy} title={developmentBackend ? "Remote generation jobs are disabled in preview mode" : undefined} onClick={() => void (job && !["completed", "failed", "cancelled"].includes(job.state) ? cancelRemoteJob() : runRemoteJob())}>
           <Icon name={job && !["completed", "failed", "cancelled"].includes(job.state) ? "stop" : mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />
           {job && !["completed", "failed", "cancelled"].includes(job.state) ? "Cancel remote job" : mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine faces"}
         </button>
       </footer>
+
+      {submissionRecovery && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal submission-recovery-modal" role="alertdialog" aria-modal="true" aria-labelledby="submission-recovery-title" aria-describedby="submission-recovery-description">
+            <div className="danger-icon submission-recovery-icon"><Icon name="cloud" /></div>
+            <p className="kicker">Safe timeout recovery</p>
+            <h2 id="submission-recovery-title">Job receipt was not received</h2>
+            <p id="submission-recovery-description">The Pod may already have accepted this request. Recover submission resends the exact same command ID, so the existing job is returned without creating a duplicate. This recovery remains available after a page refresh.</p>
+            <div className="submission-command-id"><span>Command ID</span><code>{submissionRecovery.payloads[0].command_id}</code></div>
+            <p className="field-help">{submissionRecovery.lastError}</p>
+            <p className="field-help">Cancel all remote work stops running and queued jobs and unloads the resident model. Workspace models, projects, inputs, and outputs are retained.</p>
+            <div className="modal-actions submission-recovery-actions">
+              <button className="danger-button" disabled={busy} onClick={() => void releaseWorkerMemory()}>Cancel all remote work</button>
+              <button className="primary-button" disabled={busy} onClick={() => void recoverTimedOutSubmission()}>{busy ? "Recovering…" : "Recover submission"}</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showDelete && (
         <div className="modal-backdrop" role="presentation">
@@ -1218,14 +1602,69 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       {promptPreview && (
         <div className="modal-backdrop" role="presentation">
           <section className="confirm-modal prompt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-preview-title">
-            <p className="kicker">Legacy compiler output</p>
-            <h2 id="prompt-preview-title">Unified spatial prompt</h2>
+            <p className="kicker">Canonical compiler output</p>
+            <h2 id="prompt-preview-title">Conditioning prompts</h2>
             <p>{promptPreview.regions.length} regional clause{promptPreview.regions.length === 1 ? "" : "s"} in front-to-back order. Pixel boxes are applied separately as a hidden soft attention grid.</p>
-            <textarea className="prompt-area prompt-preview-text" readOnly value={promptPreview.prompt} />
+            <div className="conditioning-preview-list">
+              {(promptPreview.conditioning_prompts.length
+                ? promptPreview.conditioning_prompts
+                : [{ kind: "full" as const, region_id: null, region_name: "Full scene", prompt: promptPreview.prompt }]
+              ).map((item) => <section key={item.region_id ?? "full"}>
+                <div className="section-inline-title">
+                  <strong>{item.region_name}</strong>
+                  {item.text_token_count != null && <span>{item.text_token_count} tokens</span>}
+                </div>
+                <textarea className="prompt-area prompt-preview-text" readOnly value={item.prompt} />
+              </section>)}
+            </div>
             <div className="preview-region-order">
               {promptPreview.regions.map((region, index) => <div key={region.id}><strong>{index + 1}. {region.name}</strong><span>{region.spatial_role}</span></div>)}
             </div>
             <div className="modal-actions"><button className="primary-button" onClick={() => setPromptPreview(null)}>Close</button></div>
+          </section>
+        </div>
+      )}
+      {controlPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal prompt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="control-preview-title">
+            <p className="kicker">Canonical backend raster</p>
+            <h2 id="control-preview-title">Volumetric pose control</h2>
+            <div className="inline-actions">
+              <button
+                className={`tiny-button ${controlPreview.subjectRegionId === null ? "active" : ""}`}
+                onClick={() => void previewPoseControl(null)}
+              >
+                All subjects
+              </button>
+              {regions.filter((region) => (
+                region.layer === "generation"
+                && region.enabled
+                && region.regionType === "subject"
+                && region.pose?.enabled
+              )).map((region) => (
+                <button
+                  key={region.id}
+                  className={`tiny-button ${controlPreview.subjectRegionId === region.id ? "active" : ""}`}
+                  onClick={() => void previewPoseControl(region.id)}
+                >
+                  {region.name}
+                </button>
+              ))}
+            </div>
+            <img
+              className="control-preview-image"
+              src={controlPreview.url}
+              alt="Canonical Krea volumetric pose control"
+            />
+            <div className="preview-region-order">
+              <div><strong>Format</strong><span>{controlPreview.format}</span></div>
+              <div><strong>Dimensions</strong><span>{controlPreview.width} × {controlPreview.height}</span></div>
+              <div><strong>Coverage</strong><span>{(controlPreview.coverage * 100).toFixed(2)}%</span></div>
+              <div><strong>SHA-256</strong><span><code>{controlPreview.sha256}</code></span></div>
+            </div>
+            <div className="modal-actions">
+              <button className="primary-button" onClick={closeControlPreview}>Close</button>
+            </div>
           </section>
         </div>
       )}
@@ -1337,7 +1776,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "pose-control" || assetPurpose === "depth-checkpoint" ? "krea_control_loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1349,6 +1788,53 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         }
         if (assetPurpose === "upscale") {
           if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
+          return;
+        }
+        if (assetPurpose === "pose-control") {
+          if (file.kind === "krea_control_loras") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                poseControlLoraFileId: file.id,
+                poseControlLoraModel: file.display_name,
+                poseControlLegacyAcknowledged: false,
+              },
+            });
+            void inspectPoseControlCheckpoint(file.id, false);
+          }
+          return;
+        }
+        if (assetPurpose === "depth-checkpoint") {
+          if (file.kind === "krea_control_loras") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                depth: {
+                  ...studioSettings.generation.depth,
+                  checkpointFileId: file.id,
+                  checkpointName: file.display_name,
+                },
+              },
+            });
+          }
+          return;
+        }
+        if (assetPurpose === "depth-image") {
+          if (file.kind === "inputs") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                depth: {
+                  ...studioSettings.generation.depth,
+                  imageFileId: file.id,
+                  imageName: file.display_name,
+                },
+              },
+            });
+          }
           return;
         }
         if (file.kind === "projects") { void openCloudProject(file); return; }

@@ -1,0 +1,160 @@
+{
+  "pid": 4,
+  "node": "tests/test_runpod_backend.py::RunPodBackendTests::test_audit_store_redacts_nested_secrets_and_authenticated_urls",
+  "last_relevant_location": [
+    "/home/wolfhard/k2lab_runpod/tests/test_runpod_backend.py",
+    656,
+    "test_audit_store_redacts_nested_secrets_and_authenticated_urls"
+  ],
+  "threads": [
+    {
+      "name": "MainThread",
+      "ident": 140428163173312,
+      "daemon": false,
+      "alive": true
+    },
+    {
+      "name": "Thread-1",
+      "ident": 140427894007488,
+      "daemon": true,
+      "alive": true
+    },
+    {
+      "name": "Thread-2 (_connection_worker_thread)",
+      "ident": 140427044513472,
+      "daemon": true,
+      "alive": true
+    }
+  ],
+  "children": [],
+  "open_fds": [
+    {
+      "fd": 6,
+      "target": "socket:[4240110]"
+    },
+    {
+      "fd": 7,
+      "target": "socket:[4240111]"
+    },
+    {
+      "fd": 8,
+      "target": "/tmp/tmp6if0qi9r/control-plane.sqlite3"
+    }
+  ],
+  "loops_seen": [
+    "<_UnixSelectorEventLoop running=True closed=False debug=True>"
+  ],
+  "asyncio": {
+    "capture": "direct cross-thread snapshot; event-loop callback did not complete",
+    "loop": "<_UnixSelectorEventLoop running=True closed=False debug=True>",
+    "loop_running": true,
+    "loop_closed": false,
+    "tasks": [
+      {
+        "name": "Task-2",
+        "done": false,
+        "cancelled": false,
+        "coro": "<coroutine object RunPodBackendTests.test_audit_store_redacts_nested_secrets_and_authenticated_urls at 0x7fb7b8462240>",
+        "waiter": "<Future pending cb=[Task.task_wakeup()] created at /usr/lib64/python3.12/asyncio/base_events.py:448>",
+        "stack": [
+          "  File \"/home/wolfhard/k2lab_runpod/tests/test_runpod_backend.py\", line 656, in test_audit_store_redacts_nested_secrets_and_authenticated_urls\n    await self.state_store.append_audit(\n"
+        ]
+      }
+    ],
+    "async_primitives": [
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7fb7b8483500 [locked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7fb7b8483aa0 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7fb7b83d0e60 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7fb7b83d0e90 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Lock",
+        "state": "<asyncio.locks.Lock object at 0x7fb7b8483380 [unlocked]>",
+        "waiter_count": 0
+      },
+      {
+        "type": "asyncio.locks.Event",
+        "state": "<asyncio.locks.Event object at 0x7fb7b83d1040 [set]>",
+        "waiter_count": 0
+      }
+    ],
+    "sqlite_connections": [
+      {
+        "repr": "<aiosqlite.core.Connection object at 0x7fb7b83d1190>",
+        "running": true,
+        "connection": "None",
+        "queue_size": 0,
+        "thread_alive": null
+      }
+    ],
+    "asgi_apps": []
+  }
+}
+
+=== PYTHON THREAD STACKS ===
+Thread 0x00007fb7b81ae6c0 (most recent call first):
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/aiosqlite/core.py", line 59 in _connection_worker_thread
+  File "/usr/lib64/python3.12/threading.py", line 1012 in run
+  File "/usr/lib64/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib64/python3.12/threading.py", line 1032 in _bootstrap
+
+Current thread 0x00007fb7eabd26c0 (most recent call first):
+  File "/tmp/k2_hang_probe.py", line 221 in _write_dump
+  File "/usr/lib64/python3.12/threading.py", line 1433 in run
+  File "/usr/lib64/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib64/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007fb7fac84bc0 (most recent call first):
+  File "/usr/lib64/python3.12/selectors.py", line 468 in select
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 1961 in _run_once
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 645 in run_forever
+  File "/usr/lib64/python3.12/asyncio/base_events.py", line 678 in run_until_complete
+  File "/usr/lib64/python3.12/asyncio/runners.py", line 118 in run
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 113 in _callMaybeAsync
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 91 in _callTestMethod
+  File "/usr/lib64/python3.12/unittest/case.py", line 634 in run
+  File "/usr/lib64/python3.12/unittest/async_case.py", line 132 in run
+  File "/usr/lib64/python3.12/unittest/case.py", line 690 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/unittest.py", line 391 in runtest
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 184 in pytest_runtest_call
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 250 in <lambda>
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 361 in from_call
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 249 in call_and_report
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 139 in runtestprotocol
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/runner.py", line 118 in pytest_runtest_protocol
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 408 in pytest_runtestloop
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 384 in _main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 330 in wrap_session
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/main.py", line 377 in pytest_cmdline_main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_callers.py", line 121 in _multicall
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_manager.py", line 120 in _hookexec
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pluggy/_hooks.py", line 512 in __call__
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/config/__init__.py", line 229 in _main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/_pytest/config/__init__.py", line 253 in _console_main
+  File "/home/wolfhard/k2lab_runpod/.venv/lib64/python3.12/site-packages/pytest/__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main

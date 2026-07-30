@@ -33,6 +33,7 @@ from k2_region_lab.agent.domain import (
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    KreaControlCheckpointInspection,
     MigrationChunkReceipt,
     ProjectSaveRequest,
     ReadinessStages,
@@ -53,6 +54,7 @@ from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.http_security import SlidingWindowRateLimiter
 from k2_region_lab.memory import system_memory_snapshot
+from k2_region_lab.krea_control_lora import inspect_krea_control_checkpoint
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION, project_state
 
 
@@ -434,6 +436,26 @@ def create_agent_app(
     )
     async def delete_file(file_id: str) -> FileRecord:
         return await transfer_manager.delete_file(file_id)
+
+    @application.get(
+        "/v1/krea-control-checkpoints/{file_id}",
+        response_model=KreaControlCheckpointInspection,
+        dependencies=authentication,
+    )
+    async def inspect_krea_control_asset(
+        file_id: str,
+        allow_unverified_legacy: bool = False,
+    ) -> KreaControlCheckpointInspection:
+        _record, path = await transfer_manager.resolve_file(
+            file_id,
+            required_kind=FileKind.KREA_CONTROL_LORAS,
+        )
+        return KreaControlCheckpointInspection.model_validate(
+            inspect_krea_control_checkpoint(
+                path,
+                allow_unverified_legacy=allow_unverified_legacy,
+            ).document()
+        )
 
     @application.put(
         "/v1/projects/{filename}", response_model=FileRecord, dependencies=authentication

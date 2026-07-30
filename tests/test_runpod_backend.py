@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 
 WEB_PROVIDER_AVAILABLE = all(
@@ -47,6 +48,7 @@ if WEB_PROVIDER_AVAILABLE:
         WorkspaceMode,
         WorkspacePlanRequest,
         WorkspaceStartRequest,
+        WorkspaceState,
     )
     from k2_region_lab.web.runpod_api import (
         RunPodApiClient,
@@ -99,6 +101,9 @@ class FakeRunPodApi:
         }
         self.pod_responses: dict[str, dict[str, Any]] = {}
         self.missing_pod_ids: set[str] = set()
+        self.get_pod_calls = 0
+        self.get_pod_errors: list[WorkspaceError] = []
+        self.stop_timeout_after_apply = False
 
     async def validate_credentials(self) -> None:
         self.validated = True
@@ -159,6 +164,9 @@ class FakeRunPodApi:
         }
 
     async def get_pod(self, pod_id: str) -> dict[str, Any]:
+        self.get_pod_calls += 1
+        if self.get_pod_errors:
+            raise self.get_pod_errors.pop(0)
         if pod_id in self.missing_pod_ids:
             raise WorkspaceError(
                 "provider_resource_not_found",
@@ -176,6 +184,13 @@ class FakeRunPodApi:
     async def stop_pod(self, _pod_id: str) -> dict[str, Any]:
         self.stopped_pods.append(_pod_id)
         self.status = "EXITED"
+        if self.stop_timeout_after_apply:
+            self.stop_timeout_after_apply = False
+            raise WorkspaceError(
+                "provider_timeout",
+                "RunPod did not respond before the provider timeout.",
+                status_code=504,
+            )
         return {"id": _pod_id, "desiredStatus": self.status}
 
     async def delete_pod(self, _pod_id: str) -> None:
@@ -377,6 +392,53 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "provider_resource_not_found")
         self.assertEqual(caught.exception.status_code, 409)
 
+    async def test_get_retries_transient_gateway_responses_with_one_deadline(self) -> None:
+        attempts = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"id": "pod-1", "desiredStatus": "RUNNING"})
+
+        client = RunPodApiClient(
+            "secret-runpod-key",
+            timeout_seconds=30,
+            transport=httpx.MockTransport(handler),
+        )
+        with patch(
+            "k2_region_lab.web.runpod_api.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            pod = await client.get_pod("pod-1")
+
+        self.assertEqual(pod["desiredStatus"], "RUNNING")
+        self.assertEqual(attempts, 3)
+        self.assertEqual(sleep.await_count, 2)
+
+    async def test_get_timeout_reports_attempt_count_and_timeout_subtype(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("synthetic timeout", request=request)
+
+        client = RunPodApiClient(
+            "secret-runpod-key",
+            timeout_seconds=30,
+            transport=httpx.MockTransport(handler),
+        )
+        with (
+            patch(
+                "k2_region_lab.web.runpod_api.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+            self.assertRaises(WorkspaceError) as caught,
+        ):
+            await client.get_pod("pod-1")
+
+        self.assertEqual(caught.exception.code, "provider_timeout")
+        self.assertEqual(caught.exception.diagnostics["request_attempts"], 3)
+        self.assertEqual(caught.exception.diagnostics["timeout_type"], "ReadTimeout")
+
     async def test_network_volume_and_datacenter_contracts(self) -> None:
         observed: list[tuple[str, str]] = []
 
@@ -523,6 +585,17 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         await self.state_store.close()
         self.temporary_directory.cleanup()
 
+    async def _create_ready_workspace(self, name: str = "Timeout lab"):
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(gpu_priority_ids=["NVIDIA RTX A6000"])
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name=name)
+        )
+        self.agent_workspace_id = workspace.id
+        return await self.backend.get_workspace_status(workspace.id)
+
     async def test_validates_before_storing_and_returns_only_hint(self) -> None:
         status = await self.backend.validate_credentials("secret-runpod-key")
         self.assertTrue(self.api.validated)
@@ -643,6 +716,124 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         deleted = await self.backend.terminate_workspace(workspace.id, "Portrait lab")
         self.assertEqual(deleted.state, "deleted")
         self.assertIsNone(deleted.provider_resource_id)
+
+    async def test_passive_timeout_keeps_completed_job_and_last_known_workspace(self) -> None:
+        workspace = await self._create_ready_workspace()
+        now = datetime.now(UTC)
+        completed = GenerationJob(
+            id="completed-job",
+            command_id="completed-command",
+            kind=JobKind.GENERATE,
+            project_id="timeout-project",
+            state=JobState.COMPLETED,
+            progress_current=8,
+            progress_total=8,
+            output_file_ids=["verified-output"],
+            created_at=now,
+            updated_at=now,
+        )
+        await self.state_store.save_generation_job(workspace.id, completed)
+        expired = workspace.model_copy(
+            update={
+                "provider_freshness": workspace.provider_freshness.model_copy(
+                    update={
+                        "last_success_at": now - timedelta(seconds=31),
+                        "last_attempt_at": now - timedelta(seconds=31),
+                    }
+                )
+            }
+        )
+        await self.state_store.save_workspace(
+            expired,
+            image_digest=self.backend._image_digest,
+        )
+        self.api.get_pod_errors.append(
+            WorkspaceError(
+                "provider_timeout",
+                "RunPod did not respond before the provider timeout.",
+                status_code=504,
+            )
+        )
+
+        immediate = await self.backend.get_workspace_status(workspace.id)
+        self.assertEqual(immediate.state, WorkspaceState.READY)
+        self.assertTrue(immediate.provider_freshness.stale)
+        self.assertTrue(immediate.provider_freshness.refresh_in_flight)
+        await asyncio.gather(*self.backend._provider_refresh_tasks.values())
+        stale = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(stale.state, WorkspaceState.READY)
+        self.assertTrue(stale.provider_freshness.stale)
+        self.assertEqual(stale.provider_freshness.last_error_code, "provider_timeout")
+        persisted_job = await self.state_store.get_generation_job(completed.id)
+        self.assertEqual(persisted_job[1].state, JobState.COMPLETED)
+        self.assertEqual(persisted_job[1].output_file_ids, ["verified-output"])
+        events = await self.state_store.audit_events()
+        self.assertEqual(events[-1]["action"], "workspace.passive_provider_refresh")
+        self.assertEqual(events[-1]["result"], "transient_warning")
+        self.assertGreaterEqual(events[-1]["context"]["elapsed_ms"], 0)
+        self.assertTrue(events[-1]["context"]["agent_reachable"])
+        self.assertEqual(events[-1]["context"]["attempt"], 1)
+
+    async def test_passive_timeout_backoff_dedupes_requests_and_recovers(self) -> None:
+        workspace = await self._create_ready_workspace()
+        now = datetime.now(UTC)
+        expired = workspace.model_copy(
+            update={
+                "provider_freshness": workspace.provider_freshness.model_copy(
+                    update={
+                        "last_success_at": now - timedelta(seconds=31),
+                        "last_attempt_at": now - timedelta(seconds=31),
+                    }
+                )
+            }
+        )
+        await self.state_store.save_workspace(expired, image_digest=self.backend._image_digest)
+        self.api.get_pod_errors.append(
+            WorkspaceError("provider_unavailable", "RunPod unavailable.", status_code=502)
+        )
+        await self.backend.get_workspace_status(workspace.id)
+        await asyncio.gather(*self.backend._provider_refresh_tasks.values())
+        calls_after_failure = self.api.get_pod_calls
+
+        for _ in range(4):
+            repeated = await self.backend.get_workspace_status(workspace.id)
+            self.assertTrue(repeated.provider_freshness.stale)
+        self.assertEqual(self.api.get_pod_calls, calls_after_failure)
+
+        stale = await self.state_store.get_workspace(workspace.id)
+        retryable = stale.model_copy(
+            update={
+                "provider_freshness": stale.provider_freshness.model_copy(
+                    update={"next_retry_at": now - timedelta(seconds=1)}
+                )
+            }
+        )
+        await self.state_store.save_workspace(
+            retryable,
+            image_digest=self.backend._image_digest,
+        )
+        await self.backend.get_workspace_status(workspace.id)
+        await asyncio.gather(*self.backend._provider_refresh_tasks.values())
+        recovered = await self.state_store.get_workspace(workspace.id)
+        self.assertFalse(recovered.provider_freshness.stale)
+        self.assertIsNone(recovered.provider_freshness.last_error_code)
+
+    async def test_stop_timeout_reconciles_without_replaying_mutation(self) -> None:
+        workspace = await self._create_ready_workspace()
+        self.api.stop_timeout_after_apply = True
+
+        stopped = await self.backend.stop_workspace(workspace.id)
+
+        self.assertEqual(stopped.state, WorkspaceState.STOPPED)
+        self.assertEqual(self.api.stopped_pods, [workspace.provider_resource_id])
+        events = await self.state_store.audit_events()
+        self.assertTrue(
+            any(
+                event["action"] == "workspace.explicit_stop"
+                and event["result"] == "reconciled_success"
+                for event in events
+            )
+        )
 
     async def test_delete_succeeds_when_provider_pod_is_already_missing(self) -> None:
         await self.backend.validate_credentials("secret-runpod-key")

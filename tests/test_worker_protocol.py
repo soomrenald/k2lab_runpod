@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from k2_region_lab.semantic_conditioning import SemanticAttentionError
 from k2_region_lab.worker.entrypoint import model_directories
 from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
 
@@ -79,6 +80,15 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(code, "worker_ram_low")
         self.assertIn("system RAM", message)
+
+    def test_semantic_errors_keep_their_stable_browser_code(self) -> None:
+        code, message = classify_worker_error(
+            SemanticAttentionError("private attention detail"),
+            CommandKind.GENERATE_BASELINE,
+        )
+
+        self.assertEqual(code, "semantic_attention_failed")
+        self.assertNotIn("private attention detail", message)
 
     def test_lora_directory_is_distinct_from_lora_job_specifications(self) -> None:
         payload = {
