@@ -151,6 +151,6 @@
     "C": "pass",
     "D": "pass",
     "E": "pass",
-    "F": "diagnostic complete: deterministic host-infrastructure incompatibility; narrow waiver pending approval; not merged"
+    "F": "pass via approved narrow host-only waiver for two named async tests; clean-container and CI validation remain mandatory"
   }
 }
