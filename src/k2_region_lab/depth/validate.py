@@ -1,22 +1,51 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image
+
 from k2core.depth import (
     DepthControlSettings,
     DepthNormalizationMode,
     DepthNormalizationSettings,
+    DepthRegionMode,
+    DepthRegionSettings,
     inspect_depth_checkpoint,
 )
-from k2_region_lab.model import discover_model_artifacts
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.depth.runtime import prepare_depth_control
+from k2_region_lab.model import discover_model_artifacts
+from k2_region_lab.regions import PixelBox, RegionDefinition
 from k2_region_lab.worker.runtime import ComfyBaselineRuntime
+
+
+def _depth_region(value: str) -> tuple[DepthRegionSettings, RegionDefinition]:
+    help_text = "depth regions must use ID:MODE:STRENGTH:X0,Y0,X1,Y1"
+    try:
+        region_id, mode, strength_text, coordinates_text = value.split(":", 3)
+        coordinates = tuple(float(item) for item in coordinates_text.split(","))
+        if len(coordinates) != 4:
+            raise ValueError
+        settings = DepthRegionSettings(
+            region_id=region_id,
+            mode=DepthRegionMode(mode),
+            strength=float(strength_text),
+        )
+        geometry = RegionDefinition(
+            region_id=region_id,
+            name=region_id,
+            box=PixelBox(*coordinates),
+        )
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(help_text) from error
+    return settings, geometry
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,6 +67,27 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--strength", type=float, default=1.0)
+    parser.add_argument(
+        "--depth-region",
+        action="append",
+        type=_depth_region,
+        default=[],
+        metavar="ID:MODE:STRENGTH:X0,Y0,X1,Y1",
+        help="apply a soft regional depth multiplier; repeat for additional regions",
+    )
+    parser.add_argument(
+        "--lora",
+        action="append",
+        type=Path,
+        default=[],
+        help="ordinary model LoRA to combine with depth control; repeat as needed",
+    )
+    parser.add_argument("--lora-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--verify-cleanup",
+        action="store_true",
+        help="generate identical disabled controls before and after the depth run",
+    )
     parser.add_argument(
         "--vram-mode",
         choices=("auto", "high_vram", "dynamic", "low_vram"),
@@ -82,6 +132,12 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
     os.replace(temporary, report_path)
 
 
+def _pixel_sha256(path: str | Path) -> str:
+    with Image.open(path) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    return hashlib.sha256(np.ascontiguousarray(pixels).tobytes()).hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     checkpoint = inspect_depth_checkpoint(args.depth_checkpoint)
@@ -92,12 +148,15 @@ def main(argv: list[str] | None = None) -> int:
         invert=args.invert,
         gamma=args.gamma,
     )
+    region_settings = tuple(item[0] for item in args.depth_region)
+    regions = tuple(item[1] for item in args.depth_region)
     settings = DepthControlSettings(
         enabled=True,
         checkpoint=args.depth_checkpoint,
         depth_image=args.depth_image,
         global_strength=args.strength,
         normalization=normalization,
+        regions=region_settings,
     )
     steps = args.steps if args.steps is not None else (28 if args.mode == "raw" else 8)
     cfg = args.cfg if args.cfg is not None else (3.5 if args.mode == "raw" else 0.0)
@@ -114,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     preprocessing = prepare_depth_control(
         settings,
-        regions=(),
+        regions=regions,
         width=args.width,
         height=args.height,
         steps=steps,
@@ -134,6 +193,32 @@ def main(argv: list[str] | None = None) -> int:
         reserve_vram_gb=args.reserve_vram_gb,
     )
     report["model_load_seconds"] = time.monotonic() - started
+    loras = [
+        {
+            "id": f"validation-lora-{index}",
+            "name": path.stem,
+            "path": str(path),
+            "strength": args.lora_strength,
+            "global": True,
+            "region_ids": [],
+            "routing_mode": "standard",
+            "trigger_phrase": "",
+        }
+        for index, path in enumerate(args.lora)
+    ]
+    if args.verify_cleanup:
+        baseline_before = runtime.generate(
+            prompt=args.prompt,
+            width=args.width,
+            height=args.height,
+            steps=steps,
+            cfg=cfg,
+            seed=args.seed,
+            output_directory=args.output,
+            filename_prefix=f"depth-disabled-before-{args.mode}",
+            regional_prompting=False,
+        )
+        report["depth_disabled_before"] = baseline_before
     generation_started = time.monotonic()
     result = runtime.generate(
         prompt=args.prompt,
@@ -144,11 +229,33 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         output_directory=args.output,
         filename_prefix=f"depth-validation-{args.mode}",
+        regions=regions,
         regional_prompting=False,
         depth_control=settings,
+        loras=loras,
     )
     report["generation_seconds"] = time.monotonic() - generation_started
     report["generation"] = result
+    if args.verify_cleanup:
+        baseline_after = runtime.generate(
+            prompt=args.prompt,
+            width=args.width,
+            height=args.height,
+            steps=steps,
+            cfg=cfg,
+            seed=args.seed,
+            output_directory=args.output,
+            filename_prefix=f"depth-disabled-after-{args.mode}",
+            regional_prompting=False,
+        )
+        before_digest = _pixel_sha256(report["depth_disabled_before"]["image_path"])
+        after_digest = _pixel_sha256(baseline_after["image_path"])
+        report["depth_disabled_after"] = baseline_after
+        report["cleanup_verification"] = {
+            "pixel_sha256_before": before_digest,
+            "pixel_sha256_after": after_digest,
+            "identical": before_digest == after_digest,
+        }
     report["status"] = "complete"
     _write_report(args.output, report)
     print(json.dumps(report, indent=2))
