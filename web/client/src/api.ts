@@ -33,6 +33,19 @@ export interface CapabilityManifest {
     single_gpu_prediction_composite: boolean;
     strength_schedule: string;
   };
+  krea_depth_control?: {
+    version: number;
+    feature_flags: {
+      control: boolean;
+      regions: boolean;
+      override: boolean;
+      blender_bundle_import: boolean;
+    };
+    control_format: string;
+    checkpoint_sha256: string;
+    region_modes: string[];
+    single_sampler_trajectory: boolean;
+  };
 }
 
 export interface CredentialStatus {
@@ -309,6 +322,9 @@ export interface JobSubmitPayload {
   lora_file_ids?: string[];
   pose_control_lora_file_id?: string;
   pose_control_allow_unverified_legacy?: boolean;
+  depth_checkpoint_file_id?: string;
+  depth_image_file_id?: string;
+  depth_override_file_ids?: Record<string, string>;
   upscale_model_file_id?: string;
   selected_face_indices?: number[];
   manual_face_paths?: number[][][];

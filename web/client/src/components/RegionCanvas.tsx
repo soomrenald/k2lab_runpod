@@ -34,6 +34,10 @@ export interface RegionBox {
   pose: SubjectPoseState | null;
   enabled: boolean;
   priority?: number;
+  depthMode?: "inherit" | "emphasize" | "relax" | "ignore";
+  depthStrength?: number;
+  depthStartPercent?: number;
+  depthEndPercent?: number;
 }
 
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";

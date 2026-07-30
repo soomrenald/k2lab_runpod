@@ -46,6 +46,8 @@ interface Props {
   developmentBackend: boolean;
   poseSemanticRoutingAvailable: boolean;
   poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
+  depthRegionsAvailable: boolean;
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
@@ -66,7 +68,7 @@ interface StudioEvent {
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, poseControlLoraAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRoutingAvailable, poseControlLoraAvailable, depthControlAvailable, depthRegionsAvailable, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -85,7 +87,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "pose-control" | "upscale">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "pose-control" | "depth-checkpoint" | "depth-image" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -493,6 +495,18 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
     } else {
       setPoseControlCompatibility(null);
     }
+    const depthCheckpoint = byName(
+      poseControlFiles,
+      loaded.settings.generation.depth.checkpointName,
+    );
+    if (depthCheckpoint) {
+      loaded.settings.generation.depth.checkpointFileId = depthCheckpoint.id;
+    }
+    const depthImage = byName(
+      inputFiles,
+      loaded.settings.generation.depth.imageName,
+    );
+    if (depthImage) loaded.settings.generation.depth.imageFileId = depthImage.id;
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
     const runtime = loaded.settings.runtime;
@@ -818,6 +832,38 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
         return;
       }
     }
+    if (mode === "generation" && studioSettings.generation.depth.enabled) {
+      if (!depthControlAvailable) {
+        report("Depth control is disabled by this deployment's feature flags.", "error");
+        return;
+      }
+      if (
+        !depthRegionsAvailable
+        && regions.some((region) => (
+          region.layer === "generation"
+          && (region.depthMode ?? "inherit") !== "inherit"
+        ))
+      ) {
+        report("Regional depth weighting is disabled by this deployment's feature flags.", "error");
+        return;
+      }
+      if (studioSettings.generation.poseControlLoraEnabled) {
+        report("Depth control and volumetric pose control cannot be enabled in the same run.", "error");
+        return;
+      }
+      if (!studioSettings.generation.depth.checkpointFileId) {
+        report("Select the verified Krea depth adapter checkpoint before generating.", "error");
+        setAssetPurpose("depth-checkpoint");
+        setUtilityPanel("assets");
+        return;
+      }
+      if (!studioSettings.generation.depth.imageFileId) {
+        report("Select a grayscale PNG or TIFF depth image before generating.", "error");
+        setAssetPurpose("depth-image");
+        setUtilityPanel("assets");
+        return;
+      }
+    }
     if (
       mode === "generation"
       && studioSettings.generation.poseGating
@@ -884,6 +930,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             studioSettings.generation.poseControlLoraEnabled
             && studioSettings.generation.poseControlLegacyAcknowledged
           ),
+          depth_checkpoint_file_id: studioSettings.generation.depth.enabled
+            ? studioSettings.generation.depth.checkpointFileId
+            : undefined,
+          depth_image_file_id: studioSettings.generation.depth.enabled
+            ? studioSettings.generation.depth.imageFileId
+            : undefined,
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
@@ -1430,8 +1482,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
             onLoras={setLoras}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
             onChoosePoseControlLora={() => { setAssetPurpose("pose-control"); setUtilityPanel("assets"); }}
+            onChooseDepthCheckpoint={() => { setAssetPurpose("depth-checkpoint"); setUtilityPanel("assets"); }}
+            onChooseDepthImage={() => { setAssetPurpose("depth-image"); setUtilityPanel("assets"); }}
             onPreviewPoseControl={() => void previewPoseControl()}
             poseControlLoraAvailable={poseControlLoraAvailable}
+            depthControlAvailable={depthControlAvailable}
+            depthRegionsAvailable={depthRegionsAvailable}
             poseControlCompatibility={poseControlCompatibility}
             onInspectPoseControlLegacy={(allow) => {
               const fileId = studioSettings.generation.poseControlLoraFileId;
@@ -1720,7 +1776,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "pose-control" ? "krea_control_loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "pose-control" || assetPurpose === "depth-checkpoint" ? "krea_control_loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
@@ -1746,6 +1802,38 @@ export function WorkspaceStudio({ workspace, developmentBackend, poseSemanticRou
               },
             });
             void inspectPoseControlCheckpoint(file.id, false);
+          }
+          return;
+        }
+        if (assetPurpose === "depth-checkpoint") {
+          if (file.kind === "krea_control_loras") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                depth: {
+                  ...studioSettings.generation.depth,
+                  checkpointFileId: file.id,
+                  checkpointName: file.display_name,
+                },
+              },
+            });
+          }
+          return;
+        }
+        if (assetPurpose === "depth-image") {
+          if (file.kind === "inputs") {
+            setStudioSettings({
+              ...studioSettings,
+              generation: {
+                ...studioSettings.generation,
+                depth: {
+                  ...studioSettings.generation.depth,
+                  imageFileId: file.id,
+                  imageName: file.display_name,
+                },
+              },
+            });
           }
           return;
         }

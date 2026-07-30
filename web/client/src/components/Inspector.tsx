@@ -39,8 +39,12 @@ interface Props {
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
   onChoosePoseControlLora: () => void;
+  onChooseDepthCheckpoint: () => void;
+  onChooseDepthImage: () => void;
   onPreviewPoseControl: () => void;
   poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
+  depthRegionsAvailable: boolean;
   poseControlCompatibility: KreaControlCheckpointInspection | null;
   onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
@@ -69,8 +73,11 @@ export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
     onGlobalPrompt, onSettings, onLoras, onChooseLora, onChoosePoseControlLora,
+    onChooseDepthCheckpoint, onChooseDepthImage,
     onPreviewPoseControl,
     poseControlLoraAvailable,
+    depthControlAvailable,
+    depthRegionsAvailable,
     poseControlCompatibility, onInspectPoseControlLegacy,
     onChooseUpscaleModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
@@ -324,6 +331,22 @@ export function Inspector(props: Props) {
           </button>)}</div>
           {visibleRegions.length === 0 && <div className="empty-inspector"><Icon name="plus" /><span>Draw a box on the canvas to add a region.</span></div>}
           {selected && <>
+            {mode === "generation" && depthRegionsAvailable && settings.generation.depth.enabled && <>
+              <Choice
+                label="Depth behavior"
+                value={selected.depthMode ?? "inherit"}
+                options={[["inherit", "Inherit"], ["emphasize", "Emphasize"], ["relax", "Relax"], ["ignore", "Ignore"]]}
+                onChange={(depthMode) => onRegions(regions.map((item) => item.id === selected.id ? { ...item, depthMode: depthMode as NonNullable<RegionBox["depthMode"]> } : item))}
+              />
+              {(selected.depthMode === "emphasize" || selected.depthMode === "relax") && <LinkedValue
+                label="Regional depth strength"
+                value={selected.depthStrength ?? 1}
+                min={selected.depthMode === "emphasize" ? 1 : 0}
+                max={selected.depthMode === "emphasize" ? 3 : 1}
+                step={0.05}
+                onChange={(depthStrength) => onRegions(regions.map((item) => item.id === selected.id ? { ...item, depthStrength } : item))}
+              />}
+            </>}
             <div className="inline-actions region-depth-actions">
               <button className="tiny-button" disabled={visibleRegions[0]?.id === selected.id} onClick={() => moveSelected(-1)}>↑ Move forward</button>
               <button className="tiny-button" disabled={visibleRegions[visibleRegions.length - 1]?.id === selected.id} onClick={() => moveSelected(1)}>↓ Move backward</button>
@@ -334,7 +357,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChoosePoseControlLora={onChoosePoseControlLora} onPreviewPoseControl={onPreviewPoseControl} poseControlLoraAvailable={poseControlLoraAvailable} poseControlCompatibility={poseControlCompatibility} onInspectPoseControlLegacy={onInspectPoseControlLegacy} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChoosePoseControlLora={onChoosePoseControlLora} onChooseDepthCheckpoint={onChooseDepthCheckpoint} onChooseDepthImage={onChooseDepthImage} onPreviewPoseControl={onPreviewPoseControl} poseControlLoraAvailable={poseControlLoraAvailable} depthControlAvailable={depthControlAvailable} poseControlCompatibility={poseControlCompatibility} onInspectPoseControlLegacy={onInspectPoseControlLegacy} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
       </div>
     </aside>
   );
@@ -417,15 +440,18 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChoosePoseControlLora, onPreviewPoseControl, poseControlLoraAvailable, poseControlCompatibility, onInspectPoseControlLegacy, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChoosePoseControlLora, onChooseDepthCheckpoint, onChooseDepthImage, onPreviewPoseControl, poseControlLoraAvailable, depthControlAvailable, poseControlCompatibility, onInspectPoseControlLegacy, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   onChoosePoseControlLora: () => void;
+  onChooseDepthCheckpoint: () => void;
+  onChooseDepthImage: () => void;
   onPreviewPoseControl: () => void;
   poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
   poseControlCompatibility: KreaControlCheckpointInspection | null;
   onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
@@ -517,6 +543,44 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
     {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
+    {mode === "generation" && depthControlAvailable && <>
+      <SectionTitle text="Global depth control" />
+      <Check
+        label="Use a grayscale depth map"
+        checked={generation.depth.enabled}
+        onChange={(enabled) => updateGeneration({
+          depth: { ...generation.depth, enabled },
+          poseControlLoraEnabled: enabled ? false : generation.poseControlLoraEnabled,
+        })}
+      />
+      {generation.depth.enabled && <>
+        <button className="quiet-button full-button" onClick={onChooseDepthCheckpoint}>
+          {generation.depth.checkpointName || "Choose Krea depth adapter checkpoint…"}
+        </button>
+        <button className="quiet-button full-button" onClick={onChooseDepthImage}>
+          {generation.depth.imageName || "Choose grayscale PNG or TIFF depth map…"}
+        </button>
+        <Choice
+          label="Normalization"
+          value={generation.depth.normalization}
+          options={[["minmax", "Min/max"], ["percentile", "Percentile"], ["none", "Preserve encoded range"]]}
+          onChange={(normalization) => updateGeneration({ depth: { ...generation.depth, normalization: normalization as GenerationSettings["depth"]["normalization"] } })}
+        />
+        <Check
+          label="Invert depth convention"
+          checked={generation.depth.invert}
+          onChange={(invert) => updateGeneration({ depth: { ...generation.depth, invert } })}
+        />
+        <div className="settings-grid">
+          <LinkedValue label="Global strength" value={generation.depth.globalStrength} min={0} max={3} step={0.05} onChange={(globalStrength) => updateGeneration({ depth: { ...generation.depth, globalStrength } })} />
+          <LinkedValue label="Mask feather" value={generation.depth.featherPixels} min={0} max={2048} step={8} onChange={(featherPixels) => updateGeneration({ depth: { ...generation.depth, featherPixels } })} />
+          <LinkedValue label="Start" value={generation.depth.startPercent} min={0} max={generation.depth.endPercent} step={0.05} onChange={(startPercent) => updateGeneration({ depth: { ...generation.depth, startPercent } })} />
+          <LinkedValue label="End" value={generation.depth.endPercent} min={generation.depth.startPercent} max={1} step={0.05} onChange={(endPercent) => updateGeneration({ depth: { ...generation.depth, endPercent } })} />
+          <LinkedValue label="Gamma" value={generation.depth.gamma} min={0.1} max={4} step={0.05} onChange={(gamma) => updateGeneration({ depth: { ...generation.depth, gamma } })} />
+        </div>
+        <p className="field-help">The public adapter expects inverse depth: near objects white, far objects black. Use inversion only when the uploaded preview uses the opposite convention.</p>
+      </>}
+    </>}
     {mode === "generation" && <>
       <SectionTitle text="Volumetric pose gating" />
       <PoseGatingControls
