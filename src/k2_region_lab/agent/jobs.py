@@ -189,6 +189,12 @@ class JobManager:
         worker_python: Path,
         comfyui_root: Path,
         inference_backend: str = "comfyui",
+        native_tokenizer_path: Path = Path(
+            "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer"
+        ),
+        native_tokenizer_sha256: str = (
+            "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
+        ),
         executor_factory: Callable[[], WorkerExecutor] | None = None,
         readiness_callback: Callable[[bool], None] | None = None,
     ) -> None:
@@ -197,6 +203,8 @@ class JobManager:
         self._worker_python = worker_python
         self._comfyui_root = comfyui_root
         self._inference_backend = inference_backend
+        self._native_tokenizer_path = native_tokenizer_path
+        self._native_tokenizer_sha256 = native_tokenizer_sha256
         self._executor_factory = executor_factory or (
             lambda: SubprocessWorkerExecutor(worker_python, layout.root)
         )
@@ -662,6 +670,15 @@ class JobManager:
     async def _base_worker_payload(
         self, request: JobSubmitRequest, state: ProjectState
     ) -> dict[str, Any]:
+        diffusion_model_file, diffusion_model_sha256 = await self._optional_file_binding(
+            request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
+        )
+        text_encoder_file, text_encoder_sha256 = await self._optional_file_binding(
+            request.text_encoder_file_id, FileKind.TEXT_ENCODERS
+        )
+        vae_file, vae_sha256 = await self._optional_file_binding(
+            request.vae_file_id, FileKind.VAE
+        )
         face_detector_path: str | None = None
         if request.kind == JobKind.REFINE_FACES:
             face_detector_path = await self._optional_file_path(
@@ -688,13 +705,14 @@ class JobManager:
             "controlnet_models": str(
                 self._layout.destination(FileKind.CONTROLNET_MODELS.value)
             ),
-            "diffusion_model_file": await self._optional_file_path(
-                request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
-            ),
-            "text_encoder_file": await self._optional_file_path(
-                request.text_encoder_file_id, FileKind.TEXT_ENCODERS
-            ),
-            "vae_file": await self._optional_file_path(request.vae_file_id, FileKind.VAE),
+            "diffusion_model_file": diffusion_model_file,
+            "diffusion_model_sha256": diffusion_model_sha256,
+            "text_encoder_file": text_encoder_file,
+            "text_encoder_sha256": text_encoder_sha256,
+            "vae_file": vae_file,
+            "vae_sha256": vae_sha256,
+            "tokenizer_path": str(self._native_tokenizer_path),
+            "tokenizer_sha256": self._native_tokenizer_sha256,
             "face_detector_path": face_detector_path,
             "manifest_directory": str(self._layout.state_directory / "manifests"),
             "memory_policy": "custom",
@@ -773,10 +791,16 @@ class JobManager:
         return path
 
     async def _optional_file_path(self, file_id: str | None, kind: FileKind) -> str | None:
+        path, _sha256 = await self._optional_file_binding(file_id, kind)
+        return path
+
+    async def _optional_file_binding(
+        self, file_id: str | None, kind: FileKind
+    ) -> tuple[str | None, str | None]:
         if not file_id:
-            return None
-        _record, path = await self._transfers.resolve_file(file_id, required_kind=kind)
-        return str(path)
+            return None, None
+        record, path = await self._transfers.resolve_file(file_id, required_kind=kind)
+        return str(path), record.sha256
 
     def _commands(
         self, job_id: str, request: JobSubmitRequest, payload: dict[str, Any]
@@ -851,6 +875,8 @@ class JobManager:
                 "Every project LoRA must have one opaque cloud file binding.",
                 409,
             )
+        if self._inference_backend == "native":
+            self._validate_native_request(request, state)
         if (
             request.kind == JobKind.GENERATE
             and state.pose_gating_enabled
@@ -902,6 +928,54 @@ class JobManager:
             project["image_edit"]["associated_project"] = None
         project["background_image"] = None
         return state, project
+
+    @staticmethod
+    def _validate_native_request(
+        request: JobSubmitRequest, state: ProjectState
+    ) -> None:
+        if request.kind == JobKind.REFINE_FACES:
+            raise JobError(
+                "native_feature_unsupported",
+                "Face refinement is not implemented by the native K2 backend.",
+                409,
+            )
+        missing_components = [
+            name
+            for name, file_id in (
+                ("transformer", request.diffusion_model_file_id),
+                ("text encoder", request.text_encoder_file_id),
+                ("VAE", request.vae_file_id),
+            )
+            if not file_id
+        ]
+        if missing_components:
+            raise JobError(
+                "native_model_binding_required",
+                "Native jobs require explicit opaque file bindings for: "
+                + ", ".join(missing_components)
+                + ".",
+                409,
+            )
+        unsupported: list[str] = []
+        if request.kind == JobKind.GENERATE:
+            if state.pose_gating_enabled:
+                unsupported.append("volumetric pose gating")
+            if state.pose_control_lora_enabled:
+                unsupported.append("volumetric pose control")
+            if state.projector_enabled:
+                unsupported.append("projector conditioning")
+            if state.post_upscale:
+                unsupported.append("post-upscale")
+        elif request.kind == JobKind.EDIT_IMAGE and state.image_edit.reference_projector_enabled:
+            unsupported.append("reference projector conditioning")
+        if unsupported:
+            raise JobError(
+                "native_feature_unsupported",
+                "The native K2 backend does not yet support: "
+                + ", ".join(unsupported)
+                + ".",
+                409,
+            )
 
     def _write_project(self, project_id: str, project: dict[str, Any]) -> None:
         path = self._layout.resolve_child(FileKind.PROJECTS.value, f"{project_id}.json")

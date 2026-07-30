@@ -257,6 +257,55 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 inference_backend="mystery",
             )
 
+    def test_native_backend_rejects_unsupported_features_before_worker_start(
+        self,
+    ) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        document = self._project_document("portrait")
+        document["generation"]["projector_enabled"] = True
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "native-unsupported-projector",
+                "kind": "generate",
+                "project_id": "native-project",
+                "project": document,
+                "diffusion_model_file_id": "transformer",
+                "text_encoder_file_id": "textencoder",
+                "vae_file_id": "vae",
+            }
+        )
+        with self.assertRaisesRegex(Exception, "projector conditioning"):
+            app.state.job_manager._validate_request(request)
+
+    def test_native_backend_requires_explicit_model_bindings(self) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "native-missing-models",
+                "kind": "generate",
+                "project_id": "native-project",
+                "project": self._project_document("portrait"),
+            }
+        )
+        with self.assertRaisesRegex(Exception, "explicit opaque file bindings"):
+            app.state.job_manager._validate_request(request)
+
     async def test_subject_pose_gating_requires_mannequin_and_no_model(self) -> None:
         document = self._project_document("two people shaking hands")
         document["generation"].update(
@@ -470,6 +519,14 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(payload["diffusion_model_file"]).name, filenames[FileKind.DIFFUSION_MODELS])
         self.assertEqual(Path(payload["text_encoder_file"]).name, filenames[FileKind.TEXT_ENCODERS])
         self.assertEqual(Path(payload["vae_file"]).name, filenames[FileKind.VAE])
+        expected_model_hash = hashlib.sha256(b"selected model").hexdigest()
+        self.assertEqual(payload["diffusion_model_sha256"], expected_model_hash)
+        self.assertEqual(payload["text_encoder_sha256"], expected_model_hash)
+        self.assertEqual(payload["vae_sha256"], expected_model_hash)
+        self.assertEqual(
+            payload["tokenizer_sha256"],
+            "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d",
+        )
         self.assertIsNone(payload["face_detector_path"])
 
         invalid = request.model_copy(update={"filename_prefix": "../escape"})

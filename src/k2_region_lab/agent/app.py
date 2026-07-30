@@ -69,6 +69,12 @@ class AgentSettings:
         worker_python: Path,
         comfyui_root: Path = Path("/opt/ComfyUI"),
         inference_backend: str = "comfyui",
+        native_tokenizer_path: Path = Path(
+            "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer"
+        ),
+        native_tokenizer_sha256: str = (
+            "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
+        ),
         cuda_version: str | None = None,
         pytorch_version: str | None = None,
         read_requests_per_minute: int = 600,
@@ -93,6 +99,14 @@ class AgentSettings:
         if normalized_backend not in {"comfyui", "native"}:
             raise ValueError("inference backend must be 'comfyui' or 'native'")
         self.inference_backend = normalized_backend
+        self.native_tokenizer_path = native_tokenizer_path
+        normalized_tokenizer_hash = native_tokenizer_sha256.strip().casefold()
+        if len(normalized_tokenizer_hash) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in normalized_tokenizer_hash
+        ):
+            raise ValueError("native tokenizer SHA-256 must contain 64 hexadecimal characters")
+        self.native_tokenizer_sha256 = normalized_tokenizer_hash
         self.cuda_version = cuda_version
         self.pytorch_version = pytorch_version
         self.read_requests_per_minute = read_requests_per_minute
@@ -116,6 +130,16 @@ class AgentSettings:
             ),
             comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
             inference_backend=os.environ.get("K2LAB_INFERENCE_BACKEND", "comfyui"),
+            native_tokenizer_path=Path(
+                os.environ.get(
+                    "K2LAB_NATIVE_TOKENIZER_PATH",
+                    "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer",
+                )
+            ),
+            native_tokenizer_sha256=os.environ.get(
+                "K2LAB_NATIVE_TOKENIZER_SHA256",
+                "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d",
+            ),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
             read_requests_per_minute=int(os.environ.get("K2LAB_AGENT_READ_RATE_LIMIT", "600")),
@@ -190,6 +214,8 @@ def create_agent_app(
         worker_python=configured.worker_python,
         comfyui_root=configured.comfyui_root,
         inference_backend=configured.inference_backend,
+        native_tokenizer_path=configured.native_tokenizer_path,
+        native_tokenizer_sha256=configured.native_tokenizer_sha256,
         executor_factory=job_executor_factory,
         readiness_callback=lambda ready: setattr(application.state, "worker_ready", ready),
     )
