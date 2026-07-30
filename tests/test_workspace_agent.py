@@ -347,6 +347,103 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "explicit opaque file bindings"):
             app.state.job_manager._validate_request(request)
 
+    async def test_native_backend_rejects_unapproved_model_before_worker_start(
+        self,
+    ) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        app.state.layout.initialize()
+        records = {}
+        for kind, name in (
+            (FileKind.DIFFUSION_MODELS, "transformer.safetensors"),
+            (FileKind.TEXT_ENCODERS, "text-encoder.safetensors"),
+            (FileKind.VAE, "vae.safetensors"),
+        ):
+            path = app.state.layout.destination(kind.value) / name
+            path.write_bytes(self._safetensors_payload())
+            records[kind] = next(
+                record
+                for record in app.state.transfer_manager._scan_kind(kind)
+                if record.display_name == name
+            )
+        document = self._project_document("portrait")
+        request = {
+            "command_id": "native-unapproved-transformer",
+            "kind": "generate",
+            "project_id": "native-project",
+            "project": document,
+            "diffusion_model_file_id": records[FileKind.DIFFUSION_MODELS].id,
+            "text_encoder_file_id": records[FileKind.TEXT_ENCODERS].id,
+            "vae_file_id": records[FileKind.VAE].id,
+        }
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            response = await client.post(
+                "/v1/jobs", headers=self.headers, json=request
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["code"], "native_model_unsupported")
+        self.assertIn("selected transformer", response.json()["message"])
+
+    async def test_native_backend_rejects_missing_tokenizer_before_worker_start(
+        self,
+    ) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        app.state.layout.initialize()
+        approved_hashes = {
+            FileKind.DIFFUSION_MODELS: (
+                "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1"
+            ),
+            FileKind.TEXT_ENCODERS: (
+                "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094"
+            ),
+            FileKind.VAE: (
+                "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f"
+            ),
+        }
+
+        async def resolve_approved_file(file_id, *, required_kind):
+            return (
+                SimpleNamespace(sha256=approved_hashes[required_kind]),
+                Path(f"/opaque/{file_id}"),
+            )
+
+        app.state.transfer_manager.resolve_file = resolve_approved_file
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "native-missing-tokenizer",
+                "kind": "generate",
+                "project_id": "native-project",
+                "project": self._project_document("portrait"),
+                "diffusion_model_file_id": "transformer",
+                "text_encoder_file_id": "textencoder",
+                "vae_file_id": "vae",
+            }
+        )
+
+        with self.assertRaisesRegex(Exception, "tokenizer") as caught:
+            await app.state.job_manager.submit(request)
+
+        self.assertEqual(caught.exception.code, "native_tokenizer_invalid")
+
     async def test_subject_pose_gating_requires_mannequin_and_no_model(self) -> None:
         document = self._project_document("two people shaking hands")
         document["generation"].update(
