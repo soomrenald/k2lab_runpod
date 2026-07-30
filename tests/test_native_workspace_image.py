@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 import unittest
@@ -134,3 +135,26 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertNotIn(
             "The configured native tokenizer directory is unavailable", entrypoint
         )
+
+    def test_published_native_rc_evidence_is_immutable_and_signed(self) -> None:
+        evidence = json.loads(
+            (
+                ROOT
+                / "tests"
+                / "fixtures"
+                / "parity"
+                / "integration"
+                / "gate12_published_native_rc.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(evidence["status"], "published_signed_not_gpu_deployed")
+        self.assertRegex(
+            evidence["image"]["immutable"],
+            r"^ghcr\.io/soomrenald/k2lab-runpod-workspace@sha256:[0-9a-f]{64}$",
+        )
+        self.assertEqual(evidence["workflow"]["checks"]["trivy_high"], 0)
+        self.assertEqual(evidence["workflow"]["checks"]["trivy_critical"], 0)
+        self.assertTrue(evidence["signature"]["claims_validated"])
+        self.assertTrue(evidence["signature"]["transparency_log_verified"])
+        self.assertFalse(evidence["superseded_candidate"]["signed"])
