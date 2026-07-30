@@ -120,6 +120,7 @@ class MigrationChunkReceipt(BaseModel):
 class FileKind(StrEnum):
     DIFFUSION_MODELS = "diffusion_models"
     TEXT_ENCODERS = "text_encoders"
+    TOKENIZERS = "tokenizers"
     VAE = "vae"
     LORAS = "loras"
     KREA_CONTROL_LORAS = "krea_control_loras"

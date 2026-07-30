@@ -70,9 +70,7 @@ class AgentSettings:
         worker_python: Path,
         comfyui_root: Path = Path("/opt/ComfyUI"),
         inference_backend: str = "comfyui",
-        native_tokenizer_path: Path = Path(
-            "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer"
-        ),
+        native_tokenizer_path: Path | None = None,
         native_tokenizer_sha256: str = (
             "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
         ),
@@ -102,7 +100,11 @@ class AgentSettings:
         if normalized_backend not in {"comfyui", "native"}:
             raise ValueError("inference backend must be 'comfyui' or 'native'")
         self.inference_backend = normalized_backend
-        self.native_tokenizer_path = native_tokenizer_path
+        self.native_tokenizer_path = native_tokenizer_path or (
+            workspace_root / "models" / "tokenizers"
+            if normalized_backend == "native"
+            else Path("/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer")
+        )
         normalized_tokenizer_hash = native_tokenizer_sha256.strip().casefold()
         if len(normalized_tokenizer_hash) != 64 or any(
             character not in "0123456789abcdef"
@@ -129,20 +131,31 @@ class AgentSettings:
         token = os.environ.get("K2LAB_AGENT_SESSION_TOKEN", "")
         workspace_id = os.environ.get("K2LAB_WORKSPACE_ID", "")
         image_version = os.environ.get("K2LAB_IMAGE_VERSION", "")
+        workspace_root = Path(
+            os.environ.get("K2LAB_WORKSPACE_ROOT", "/workspace/k2lab")
+        )
+        inference_backend = os.environ.get(
+            "K2LAB_INFERENCE_BACKEND", "comfyui"
+        ).strip().casefold()
+        tokenizer_default = (
+            workspace_root / "models" / "tokenizers"
+            if inference_backend == "native"
+            else Path("/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer")
+        )
         return cls(
             session_token=token,
             workspace_id=workspace_id,
             image_version=image_version,
-            workspace_root=Path(os.environ.get("K2LAB_WORKSPACE_ROOT", "/workspace/k2lab")),
+            workspace_root=workspace_root,
             worker_python=Path(
                 os.environ.get("K2LAB_WORKER_PYTHON", "/opt/comfyui-venv/bin/python")
             ),
             comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
-            inference_backend=os.environ.get("K2LAB_INFERENCE_BACKEND", "comfyui"),
+            inference_backend=inference_backend,
             native_tokenizer_path=Path(
                 os.environ.get(
                     "K2LAB_NATIVE_TOKENIZER_PATH",
-                    "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer",
+                    str(tokenizer_default),
                 )
             ),
             native_tokenizer_sha256=os.environ.get(
@@ -343,7 +356,9 @@ def create_agent_app(
             container=True,
             agent=True,
             storage=writable,
-            models=layout.model_inventory_ready(),
+            models=layout.model_inventory_ready(
+                include_tokenizer=configured.inference_backend == "native"
+            ),
             worker=bool(application.state.worker_ready),
         )
         core_ready = readiness.container and readiness.agent and readiness.storage

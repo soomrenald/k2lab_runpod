@@ -120,6 +120,41 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(body["readiness"]["worker"])
         self.assertEqual(body["status"], "ready")
 
+    async def test_native_readiness_requires_workspace_tokenizer_assets(self) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            inference_backend="native",
+        )
+        app = create_agent_app(settings)
+        app.state.layout.initialize()
+        for kind in (
+            FileKind.DIFFUSION_MODELS,
+            FileKind.TEXT_ENCODERS,
+            FileKind.VAE,
+        ):
+            (app.state.layout.destination(kind.value) / "component").write_bytes(b"x")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            missing = await client.get("/v1/health", headers=self.headers)
+            (
+                app.state.layout.destination(FileKind.TOKENIZERS.value)
+                / "tokenizer.json"
+            ).write_bytes(b"{}")
+            ready = await client.get("/v1/health", headers=self.headers)
+
+        self.assertFalse(missing.json()["readiness"]["models"])
+        self.assertTrue(ready.json()["readiness"]["models"])
+        self.assertEqual(
+            settings.native_tokenizer_path,
+            self.root / "models" / "tokenizers",
+        )
+
     async def test_capabilities_are_versioned(self) -> None:
         response = await self.client.get("/v1/capabilities", headers=self.headers)
         body = response.json()
