@@ -151,6 +151,6 @@
     "C": "pass",
     "D": "pass",
     "E": "pass",
-    "F": "blocked by two pre-existing asynchronous infrastructure test hangs; not merged"
+    "F": "diagnostic complete: deterministic host-infrastructure incompatibility; narrow waiver pending approval; not merged"
   }
 }

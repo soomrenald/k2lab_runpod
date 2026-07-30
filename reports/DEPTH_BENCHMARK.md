@@ -8,8 +8,9 @@ Gates A through E pass. The public Krea 2 depth checkpoint produces a strong,
 repeatable response in both Raw and Turbo, regional soft weighting works
 without a rectangular seam, and a depth-enabled generation leaves the
 depth-disabled path pixel-identical afterward. Production feature flags remain
-off. Gate F is not cleared for merge because two pre-existing infrastructure
-tests hang in this host's async SQLite/ASGI environment; details are below.
+off. A bounded Gate F diagnostic classifies two pre-existing test hangs as a
+deterministic host-infrastructure incompatibility. The narrow waiver remains
+pending explicit approval, so the branch is not cleared for merge.
 
 The live run used an NVIDIA A40 (46,068 MiB), Torch 2.9.1+cu128, a 50 GB Pod
 memory limit, and checkpoint SHA-256
@@ -110,8 +111,8 @@ then passed.
 - Repository-wide Ruff: pass.
 - Depth evaluator, validation harness, runtime, and adapter selection: 15 pass,
   three expected no-Torch skips on the local host.
-- All Python modules except the two affected infrastructure-test modules:
-  222 pass, 15 expected accelerator/live-billing skips, six subtests.
+- Clean Ubuntu 24.04 full suite: 305 pass, 15 expected
+  accelerator/live-billing skips, 16 subtests.
 - Shared k2core feature branch: 225 pass, two environment skips, 14 subtests
   from the completed feature-branch sweep.
 - Studio project contract, including schema-v24 depth round trip and v23
@@ -121,14 +122,23 @@ then passed.
 - Live A40 Raw/Turbo, sequential cleanup, global LoRA coexistence, and regional
   visual checks: pass.
 
-The repository's full 320-test invocation reaches the control-plane tests and
-then blocks. Independently, both
+The restricted host's full 320-test invocation reaches the control-plane tests
+and then blocks. Independently, both
 `test_audit_store_redacts_nested_secrets_and_authenticated_urls` and
 `test_chunked_upload_resumes_verifies_and_updates_inventory` fail to terminate
-under bounded execution. A faulthandler trace for the first shows the main
-event loop awaiting work while the aiosqlite worker thread is idle. Neither
-test imports or exercises the depth implementation. They remain explicit Gate
-F blockers rather than being silently counted as passes.
+under bounded execution on this feature branch, stable `main`, and the
+pre-depth feature commit. Both pass individually and in both orders in clean
+Ubuntu 24.04 containers, including one with exact host dependency versions.
+The full clean-container suite passes.
+
+Thread/task dumps show the main event loop asleep after an idle SQLite or
+executor worker has completed its work. A repository-independent
+`loop.call_soon_threadsafe` reproduction confirms that this host context loses
+the selector wakeup until an unrelated timer fires. Branch modules are imported
+during app setup, but executed-line tracing does not reach the depth payload
+code. The complete evidence, exact commands, timeout behavior, and residual
+risk are in `test-hang-diagnostic/REPORT.md`. Gate F remains pending approval of
+that narrow waiver.
 
 Production rollout remains reversible: all four depth feature flags default to
 false, legacy projects load with depth disabled, and removing the flags and

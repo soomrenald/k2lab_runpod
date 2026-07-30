@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /home/wolfhard/k2lab_runpod/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /tmp/k2lab-depth-base-diagnostic-4048ad6
+configfile: pyproject.toml
+plugins: anyio-4.14.2, timeout-2.4.0
+collecting ... collected 1 item
+
+tests/test_runpod_backend.py::RunPodBackendTests::test_audit_store_redacts_nested_secrets_and_authenticated_urls
