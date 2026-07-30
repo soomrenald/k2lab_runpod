@@ -91,8 +91,15 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("push: false", workflow)
         self.assertIn("test ! -e /opt/ComfyUI", workflow)
         self.assertIn("Smoke native imports", workflow)
+        self.assertIn("Check locked Python environment", workflow)
+        self.assertIn("-m pip check", workflow)
+        self.assertIn("Boot native agent from an empty workspace", workflow)
+        self.assertIn("K2LAB_INFERENCE_BACKEND", workflow)
+        self.assertIn("/v1/health", workflow)
         self.assertIn("severity: HIGH,CRITICAL", workflow)
+        self.assertIn("version: v0.70.0", workflow)
         self.assertIn("native-workspace-image.spdx.json", workflow)
+        self.assertIn("syft-version: v1.42.3", workflow)
 
     def test_native_entrypoint_allows_empty_workspace_to_start_for_uploads(
         self,

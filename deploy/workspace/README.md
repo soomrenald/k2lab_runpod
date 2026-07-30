@@ -61,9 +61,10 @@ separate release operations; local tests never push an image or provision a Pod.
 `Dockerfile.native-workspace` is the clean-install candidate. It uses one K2Lab virtual
 environment, selects the native backend, and does not clone or install ComfyUI. The
 separate `Native workspace image` pull-request workflow builds it from the same required
-immutable base image, confirms `/opt/ComfyUI` is absent, runs an import smoke, scans it,
-and emits an SPDX SBOM. It never publishes an image; promotion remains an explicit
-release action.
+immutable base image, confirms `/opt/ComfyUI` is absent, runs import and dependency
+smokes, boots the authenticated agent from an empty temporary workspace, scans it with
+pinned Trivy, and emits an SPDX SBOM with pinned Syft. It never publishes an image;
+promotion remains an explicit release action.
 
 The web-runtime dependency closure is exported from `uv.lock` into
 `native-web-requirements.lock` with package hashes. Regenerate it after an intentional
