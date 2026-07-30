@@ -50,6 +50,10 @@ The base image is supplied through the required `RUNPOD_BASE_IMAGE` build argume
 Release evidence must record an immutable image digest, its license terms, and the
 CUDA/cuDNN and operating-system notices contained in that exact base image.
 
+`Dockerfile.native-workspace` is a separate release-candidate definition that does not
+clone or install ComfyUI. It retains the same Python, model, base-image, CUDA, and
+operating-system notice obligations listed above.
+
 ## Models and user-supplied assets
 
 The repository and workspace image do not grant rights to Krea, Qwen, LoRA,

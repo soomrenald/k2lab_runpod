@@ -1,0 +1,79 @@
+name: Native workspace image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.native-workspace
+      - deploy/workspace/**
+      - pyproject.toml
+      - src/**
+      - uv.lock
+      - .github/workflows/native-workspace-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LOCAL_IMAGE: k2lab-runpod-native-workspace:${{ github.sha }}
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Require immutable base image
+        env:
+          RUNPOD_BASE_IMAGE: ${{ vars.K2LAB_RUNPOD_BASE_IMAGE }}
+        run: |
+          case "${RUNPOD_BASE_IMAGE}" in
+            *@sha256:????????????????????????????????????????????????????????????????) ;;
+            *) printf '%s\n' 'K2LAB_RUNPOD_BASE_IMAGE must be an image@sha256 digest.' >&2; exit 64 ;;
+          esac
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build native-only workspace image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.native-workspace
+          build-args: RUNPOD_BASE_IMAGE=${{ vars.K2LAB_RUNPOD_BASE_IMAGE }}
+          tags: ${{ env.LOCAL_IMAGE }}
+          load: true
+          push: false
+          provenance: mode=max
+          sbom: true
+
+      - name: Assert the image has no ComfyUI installation
+        run: |
+          docker run --rm --entrypoint /bin/sh "${LOCAL_IMAGE}" -c \
+            'test ! -e /opt/ComfyUI && ! find /opt -maxdepth 3 -iname "*comfyui*" -print -quit | grep -q .'
+
+      - name: Smoke native imports
+        run: |
+          docker run --rm --entrypoint /opt/k2lab-venv/bin/python "${LOCAL_IMAGE}" \
+            -c 'import diffusers, k2_region_lab, k2core, safetensors, torch, transformers'
+
+      - name: Scan image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          artifact-name: native-workspace-image.spdx.json
+          output-file: native-workspace-image.spdx.json

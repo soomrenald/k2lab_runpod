@@ -176,7 +176,7 @@ export interface BrowserSession {
   expires_at: string;
 }
 
-export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "krea_control_loras" | "upscale_models" | "controlnet_models" | "face_detection" | "projects" | "inputs" | "outputs";
+export type FileKind = "diffusion_models" | "text_encoders" | "tokenizers" | "vae" | "loras" | "krea_control_loras" | "upscale_models" | "controlnet_models" | "face_detection" | "projects" | "inputs" | "outputs";
 
 export interface FileRecord {
   id: string;
