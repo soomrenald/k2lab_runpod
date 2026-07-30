@@ -737,6 +737,16 @@ class DevelopmentWorkspaceBackend:
         del file_id
         self._transfer_unavailable(workspace_id)
 
+    async def inspect_krea_control_checkpoint(
+        self,
+        workspace_id: str,
+        file_id: str,
+        *,
+        allow_unverified_legacy: bool = False,
+    ):
+        del file_id, allow_unverified_legacy
+        self._transfer_unavailable(workspace_id)
+
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest
     ) -> FileRecord:

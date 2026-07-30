@@ -7,10 +7,17 @@ import os
 import platform
 import sys
 import traceback
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from k2core.depth import KREA2_DEPTH_PUBLIC_SHA256, DepthControlSettings
+from k2_region_lab.depth.runtime import (
+    DepthControlPreparation,
+    encode_depth_control,
+    prepare_depth_control,
+)
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.image_edit import (
     composite_regional_edit,
@@ -20,6 +27,15 @@ from k2_region_lab.image_edit import (
     regional_composite_mask,
     regional_edit_conditioning,
     regional_reference_emphases,
+)
+from k2_region_lab.krea_control_lora import (
+    CONTROL_ATTACHMENT_KEY,
+    CONTROL_LATENT_MAPPING_KEY,
+    KreaControlError,
+    attach_krea_control_latents,
+    encode_control_bundle,
+    install_krea_control_lora,
+    krea_control_runtime_report,
 )
 from k2_region_lab.face_detail import (
     BACKEND as FACE_DETAIL_BACKEND,
@@ -48,6 +64,15 @@ from k2_region_lab.memory import (
     system_memory_snapshot,
 )
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.pose_gating import (
+    PoseGateController,
+    PoseGatePhases,
+    PoseGateRegionBinding,
+    PoseGatingSettings,
+    SigmaScheduleError,
+    installed_pose_gate_hook,
+    resolve_sigma_schedule,
+)
 from k2_region_lab.projector import (
     DEFAULT_PROJECTOR_PRESET,
     PROJECTOR_VECTOR_COUNT,
@@ -66,17 +91,43 @@ from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     PromptEmphasis,
     RegionalPromptPlan,
+    SubjectConditioningPromptPlan,
     character_identity_prompt,
     compile_regional_prompt_plan,
+    compile_subject_conditioning_prompt,
     krea_prompt_token_count,
 )
-from k2_region_lab.regions import RegionDefinition
+from k2_region_lab.semantic_conditioning import (
+    CURRENT_CONDITIONING_CONTEXT,
+    BoundSubjectPrompt,
+    ConditioningScope,
+    PoseSemanticMode,
+    PoseSemanticPlan,
+    PoseSemanticRuntime,
+    SEMANTIC_ATTENTION_PENALTY,
+    SemanticAttentionError,
+    SubjectSemanticConditioning,
+    annotate_conditioning,
+    installed_semantic_prediction_hook,
+    prompt_sha256,
+)
+from k2_region_lab.regions import CanvasGeometry, RegionDefinition
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
     DEFAULT_SCHEDULER,
     register_bong_tangent_scheduler,
     validate_sampler,
     validate_scheduler,
+)
+from k2_region_lab.volumetric_pose import (
+    VolumetricMaskBundle,
+    ownership_image_token_fields,
+    render_volumetric_masks,
+)
+from k2_region_lab.volumetric_control import (
+    K2_VOLUMETRIC_CONTROL_FORMAT,
+    KreaVolumetricControlBundle,
+    render_krea_volumetric_control_bundle,
 )
 from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
@@ -102,6 +153,8 @@ class LoraDeltaStatistics:
                 "step_image_count": 0,
                 "delta_reference": None,
                 "calls": 0,
+                "scope_calls": {},
+                "disabled_scope_count": 0,
             }
             for route in routes
         }
@@ -113,9 +166,25 @@ class LoraDeltaStatistics:
     def observe(self, route: LoraDeltaRoute, token_norms, *, route_kind: str) -> None:
         state = self.values[route.lora_id]
         state["calls"] += 1
+        scoped = route.current_scope_mask()
+        context = CURRENT_CONDITIONING_CONTEXT.get()
+        scope_name = (
+            "unscoped"
+            if context is None
+            else (
+                "full"
+                if context.scope.region_id is None
+                else f"subject:{context.scope.region_id}"
+            )
+        )
+        state["scope_calls"][scope_name] = (
+            state["scope_calls"].get(scope_name, 0) + 1
+        )
+        if not scoped.enabled:
+            state["disabled_scope_count"] += 1
         batch = int(token_norms.shape[0])
-        text_count = len(route.text_token_mask)
-        enabled_text = sum(value > 0.0 for value in route.text_token_mask)
+        text_count = len(scoped.text_token_mask)
+        enabled_text = sum(value > 0.0 for value in scoped.text_token_mask)
         if route_kind == "text_layerwise":
             text_norms = token_norms
             image_norms = None
@@ -141,7 +210,7 @@ class LoraDeltaStatistics:
                 state["step_text_energy"], text_energy
             )
             state["step_text_count"] += text_observations
-        enabled_image = sum(value > 0.0 for value in route.image_token_mask)
+        enabled_image = sum(value > 0.0 for value in scoped.image_token_mask)
         if image_norms is not None and enabled_image:
             image_energy = image_norms.square().sum()
             state["image_energy"] = self._add(state["image_energy"], image_energy)
@@ -160,6 +229,8 @@ class LoraDeltaStatistics:
         state = self.values[lora_id]
         return {
             "observed_forward_calls": state["calls"],
+            "scope_forward_calls": dict(state["scope_calls"]),
+            "disabled_scope_count": state["disabled_scope_count"],
             "text_delta_rms": self._rms(state["text_energy"], state["text_count"]),
             "image_delta_rms": self._rms(state["image_energy"], state["image_count"]),
             "outside_gate_delta_rms": 0.0,
@@ -451,6 +522,26 @@ def validate_model_artifacts(
     return artifacts, results
 
 
+def build_comfy_baseline_sigmas(
+    *,
+    model,
+    steps: int,
+    sampler_name: str,
+    scheduler: str,
+    comfy_samplers,
+):
+    """Use the installed ComfyUI KSampler path, including sampler exceptions."""
+    return comfy_samplers.KSampler(
+        model,
+        steps=steps,
+        device=model.load_device,
+        sampler=sampler_name,
+        scheduler=scheduler,
+        denoise=1.0,
+        model_options=model.model_options,
+    ).sigmas
+
+
 class ComfyBaselineRuntime:
     """Owns baseline Comfy model objects exclusively inside the GPU worker."""
 
@@ -650,7 +741,9 @@ class ComfyBaselineRuntime:
         text_token_count: int,
         regional_plan: RegionalPromptPlan | None,
         bound_plan: BoundRegionalPromptPlan | None,
-        event: Callable[[str, dict[str, Any]], None] | None,
+        pose_gate_binding: PoseGateRegionBinding | None = None,
+        bound_subject_plans: dict[str, BoundSubjectPrompt] | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         routes = compile_lora_delta_routes(
             specifications,
@@ -659,6 +752,8 @@ class ComfyBaselineRuntime:
             text_token_count=text_token_count,
             regional_plan=regional_plan,
             bound_plan=bound_plan,
+            pose_gate_binding=pose_gate_binding,
+            bound_subject_plans=bound_subject_plans,
         )
         routes_by_id = {route.lora_id: route for route in routes}
         reports: list[dict[str, Any]] = []
@@ -758,6 +853,7 @@ class ComfyBaselineRuntime:
     def _apply_global_projector_vector(
         self,
         *,
+        base_model=None,
         enabled: bool,
         preset: str,
         values,
@@ -791,12 +887,13 @@ class ComfyBaselineRuntime:
         }
         if not enabled or not any(effective_values):
             summary["status"] = "disabled" if not enabled else "zero_effect"
-            return self.model, summary
+            return base_model or self.model, summary
 
         import torch
 
         target = summary["target"]
-        target_weight = self.model.model.state_dict().get(target)
+        source_model = base_model or self.model
+        target_weight = source_model.model.state_dict().get(target)
         expected_shape = (1, PROJECTOR_VECTOR_COUNT)
         if target_weight is None:
             raise RuntimeError(f"Krea projector target is missing: {target}")
@@ -857,7 +954,7 @@ class ComfyBaselineRuntime:
                         self._mask_cache[cache_key] = mask
                     return functional.linear(x, weight) * mask
 
-            patched_model = self.model.clone()
+            patched_model = source_model.clone()
             patched_model.set_attachments(
                 "k2_projector_bypass_adapter",
                 {
@@ -879,7 +976,7 @@ class ComfyBaselineRuntime:
                 )
             return patched_model, summary
 
-        patched_model = self.model.clone()
+        patched_model = source_model.clone()
         patched_keys = patched_model.add_patches({target: ("diff", (delta,))})
         if target not in patched_keys:
             raise RuntimeError("could not install the Krea projector vector patch")
@@ -938,29 +1035,68 @@ class ComfyBaselineRuntime:
                 self._prepared.add(identity)
 
             def _mask(self, route, x):
+                scoped = route.current_scope_mask()
+                context = CURRENT_CONDITIONING_CONTEXT.get()
+                scope_key = (
+                    None
+                    if context is None
+                    else context.scope.cache_key
+                )
                 key = (
                     route.lora_id,
                     self.route_kind,
+                    scope_key,
                     tuple(x.shape),
                     x.device,
                     x.dtype,
                 )
-                mask = self._mask_cache.get(key)
+                dynamic = (
+                    (
+                        context is None
+                        or context.scope.kind.value == "full"
+                    )
+                    and
+                    route.pose_gate_binding is not None
+                    and self.route_kind not in {
+                        "text_layerwise",
+                        "text_projector",
+                        "text_refiner",
+                    }
+                    and bool(route.image_token_components)
+                )
+                mask = None if dynamic else self._mask_cache.get(key)
                 if mask is None:
-                    if route.global_scope:
+                    if not scoped.enabled:
+                        mask = torch.zeros((), device=x.device, dtype=x.dtype)
+                    elif route.global_scope:
                         mask = torch.ones((), device=x.device, dtype=x.dtype)
                     elif self.route_kind == "text_layerwise":
-                        values = route.layerwise_text_batch_mask(int(x.shape[0]))
+                        text_count = len(scoped.text_token_mask)
+                        if int(x.shape[0]) <= 0 or int(x.shape[0]) % text_count:
+                            raise ValueError(
+                                f"LoRA route {route.display_name!r} expected a "
+                                f"folded text batch divisible by {text_count}, "
+                                f"received {int(x.shape[0])}"
+                            )
+                        values = scoped.text_token_mask * (
+                            int(x.shape[0]) // text_count
+                        )
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(-1, 1, 1)
                     elif self.route_kind == "text_projector":
-                        values = route.sequence_mask(int(x.shape[1]), text_fusion=True)
+                        if int(x.shape[1]) != len(scoped.text_token_mask):
+                            raise ValueError(
+                                f"LoRA route {route.display_name!r} expected "
+                                f"{len(scoped.text_token_mask)} text tokens, "
+                                f"received {int(x.shape[1])}"
+                            )
+                        values = scoped.text_token_mask
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(
                             1, -1, 1, 1
                         )
                     else:
                         text_fusion = self.route_kind == "text_refiner"
-                        text_count = len(route.text_token_mask)
-                        image_count = len(route.image_token_mask)
+                        text_count = len(scoped.text_token_mask)
+                        image_count = len(scoped.image_token_mask)
                         expected_counts = (
                             {text_count}
                             if text_fusion
@@ -978,15 +1114,76 @@ class ComfyBaselineRuntime:
                                 f"expected one of {sorted(expected_counts)}"
                             )
                         token_axis = token_axes[0]
-                        values = route.sequence_mask(
-                            int(x.shape[token_axis]), text_fusion=text_fusion
-                        )
                         mask_shape = [1] * x.ndim
-                        mask_shape[token_axis] = len(values)
-                        mask = torch.tensor(
-                            values, device=x.device, dtype=x.dtype
-                        ).view(*mask_shape)
-                    self._mask_cache[key] = mask
+                        mask_shape[token_axis] = int(x.shape[token_axis])
+                        if dynamic:
+                            component_key = (*key, "pose_components")
+                            components = self._mask_cache.get(component_key)
+                            if components is None:
+                                normal_components = []
+                                hard_components = []
+                                combined = (
+                                    int(x.shape[token_axis])
+                                    == text_count + image_count
+                                )
+                                for normal, hard in route.image_token_components:
+                                    normal_values = (
+                                        scoped.text_token_mask + normal
+                                        if combined
+                                        else normal
+                                    )
+                                    hard_values = (
+                                        scoped.text_token_mask + hard
+                                        if combined
+                                        else hard
+                                    )
+                                    normal_components.append(normal_values)
+                                    hard_components.append(hard_values)
+                                components = (
+                                    torch.tensor(
+                                        normal_components,
+                                        device=x.device,
+                                        dtype=x.dtype,
+                                    ),
+                                    torch.tensor(
+                                        hard_components,
+                                        device=x.device,
+                                        dtype=x.dtype,
+                                    ),
+                                )
+                                self._mask_cache[component_key] = components
+                            normal, hard = components
+                            gate = route.pose_gate_binding.gate_strength
+                            values = normal if gate <= 0.0 else (
+                                hard if gate >= 1.0 else normal + gate * (hard - normal)
+                            )
+                            mask = values.amax(dim=0).view(*mask_shape)
+                        else:
+                            sequence_length = int(x.shape[token_axis])
+                            if text_fusion and sequence_length == text_count:
+                                values = scoped.text_token_mask
+                            elif not text_fusion and sequence_length == image_count:
+                                values = scoped.image_token_mask
+                            elif (
+                                not text_fusion
+                                and sequence_length == text_count + image_count
+                            ):
+                                values = (
+                                    scoped.text_token_mask
+                                    + scoped.image_token_mask
+                                )
+                            else:
+                                raise ValueError(
+                                    f"LoRA route {route.display_name!r} expected "
+                                    f"{text_count} text, {image_count} image, or "
+                                    f"{text_count + image_count} combined tokens, "
+                                    f"received {sequence_length}"
+                                )
+                            mask = torch.tensor(
+                                values, device=x.device, dtype=x.dtype
+                            ).view(*mask_shape)
+                    if not dynamic:
+                        self._mask_cache[key] = mask
                 return mask
 
             def h(self, x, base_out):
@@ -1081,14 +1278,35 @@ class ComfyBaselineRuntime:
     @staticmethod
     def _release_generation_model(generation_model) -> None:
         import comfy.model_management
+        import comfy.patcher_extension
 
         comfy.model_management.unload_all_models()
         generation_model.remove_injections("k2_routed_loras")
         generation_model.remove_injections("k2_projector_delta")
+        generation_model.remove_injections(CONTROL_ATTACHMENT_KEY)
+        generation_model.remove_wrappers_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+            CONTROL_ATTACHMENT_KEY,
+        )
+        generation_model.remove_callbacks_with_key(
+            comfy.patcher_extension.CallbacksMP.ON_DETACH,
+            CONTROL_ATTACHMENT_KEY,
+        )
+        generation_model.remove_callbacks_with_key(
+            comfy.patcher_extension.CallbacksMP.ON_CLEANUP,
+            CONTROL_ATTACHMENT_KEY,
+        )
         remove_attachments = getattr(generation_model, "remove_attachments", None)
         if callable(remove_attachments):
             remove_attachments("lora_metadata")
             remove_attachments("projector_settings")
+            remove_attachments(CONTROL_ATTACHMENT_KEY)
+        transformer_options = generation_model.model_options.get(
+            "transformer_options",
+            {},
+        )
+        if isinstance(transformer_options, dict):
+            transformer_options.pop(CONTROL_LATENT_MAPPING_KEY, None)
         patches = getattr(generation_model, "patches", None)
         if isinstance(patches, dict):
             patches.clear()
@@ -1441,9 +1659,11 @@ class ComfyBaselineRuntime:
         self,
         *,
         prompt: str,
+        shared_visual_prompt: str = "",
         width: int,
         height: int,
         steps: int,
+        cfg: float = 1.0,
         sampler: str = DEFAULT_SAMPLER,
         scheduler: str = DEFAULT_SCHEDULER,
         seed: int,
@@ -1460,6 +1680,16 @@ class ComfyBaselineRuntime:
         regional_late_step_scale: float = 0.35,
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
+        pose_gating: PoseGatingSettings | None = None,
+        pose_semantic_mode: PoseSemanticMode | str = PoseSemanticMode.PREDICTION_COMPOSITE,
+        pose_control_lora_enabled: bool = False,
+        pose_control_lora_path: Path | None = None,
+        pose_control_lora_file_id: str | None = None,
+        pose_control_lora_strength: float = 1.0,
+        pose_control_format: str = K2_VOLUMETRIC_CONTROL_FORMAT,
+        pose_control_allow_unverified_legacy: bool = False,
+        depth_control: DepthControlSettings | None = None,
+        depth_override_enabled: bool = False,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1480,6 +1710,8 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        if not 0.0 <= cfg <= 20.0:
+            raise ValueError("CFG must be between zero and 20")
         sampler = validate_sampler(sampler)
         scheduler = validate_scheduler(scheduler)
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
@@ -1491,12 +1723,73 @@ class ComfyBaselineRuntime:
                 raise ValueError("select a readable neural upscaler model before generation")
         filename_prefix = validate_filename_prefix(filename_prefix)
         lora_specifications = list(loras or [])
+        pose_gating = pose_gating or PoseGatingSettings()
+        semantic_mode = PoseSemanticMode(pose_semantic_mode)
+        if depth_control is not None and depth_control.enabled and pose_control_lora_enabled:
+            raise KreaControlError(
+                "krea_control_lora_target_conflict",
+                "Depth control and volumetric pose control cannot share one Krea input projection.",
+            )
+        if not 0.0 <= pose_control_lora_strength <= 2.0:
+            raise ValueError("Krea pose-adapter strength must be between zero and two")
+        if pose_control_format != K2_VOLUMETRIC_CONTROL_FORMAT:
+            raise KreaControlError(
+                "krea_control_format_mismatch",
+                "The project pose-control format is incompatible with this runtime.",
+            )
+        if pose_control_lora_enabled and (
+            pose_control_lora_path is None
+            or not pose_control_lora_path.expanduser().is_file()
+        ):
+            raise KreaControlError(
+                "krea_control_checkpoint_invalid",
+                "Select a readable Krea volumetric pose adapter checkpoint.",
+            )
+        pose_phases = pose_gating.phases(steps)
+        pose_mask_bundle: VolumetricMaskBundle | None = None
+        if pose_gating.enabled and pose_gating.hard_steps + pose_gating.soft_steps > 0:
+            pose_mask_bundle = render_volumetric_masks(
+                regions=regions,
+                width=width,
+                height=height,
+            )
+            if pose_mask_bundle.summary.subject_count == 0:
+                raise ValueError(
+                    "enable at least one subject mannequin before using volumetric "
+                    "pose gating"
+                )
+        control_bundle: KreaVolumetricControlBundle | None = None
+        if pose_control_lora_enabled:
+            control_bundle = render_krea_volumetric_control_bundle(
+                regions=regions,
+                width=width,
+                height=height,
+                include_subjects=(
+                    pose_mask_bundle is not None
+                    and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+                ),
+            )
+            if not control_bundle.full.region_ids:
+                raise KreaControlError(
+                    "krea_control_scope_missing",
+                    "Enable at least one subject mannequin for the Krea pose adapter.",
+                )
+            if control_bundle.full.coverage <= 0:
+                raise KreaControlError(
+                    "krea_control_scope_missing",
+                    "Enabled subject mannequins do not overlap the output canvas.",
+                )
+        semantic_regional_plan_required = (
+            pose_mask_bundle is not None
+            and semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+        )
         regional_plan = (
             compile_regional_prompt_plan(
                 width,
                 height,
                 prompt,
                 regions,
+                shared_visual_prompt=shared_visual_prompt,
                 strength=regional_prompt_strength,
                 outside_penalty=regional_outside_penalty,
                 falloff_pixels=regional_feather_pixels,
@@ -1508,25 +1801,86 @@ class ComfyBaselineRuntime:
                     lora_specifications
                 ),
             )
-            if regional_prompting and (regions or emphases)
+            if (
+                regional_prompting
+                and (regions or emphases or shared_visual_prompt.strip())
+            )
+            or semantic_regional_plan_required
             else None
         )
+        if regional_plan is None and shared_visual_prompt.strip():
+            regional_plan = compile_regional_prompt_plan(
+                width,
+                height,
+                prompt,
+                (),
+                shared_visual_prompt=shared_visual_prompt,
+                strength=regional_prompt_strength,
+                outside_penalty=regional_outside_penalty,
+                falloff_pixels=regional_feather_pixels,
+                subject_competition=regional_subject_competition,
+                subject_fill=regional_subject_fill,
+                late_step_scale=regional_late_step_scale,
+            )
+        triggers_by_region = character_identity_triggers(lora_specifications)
+        subject_prompt_plans: tuple[SubjectConditioningPromptPlan, ...] = ()
+        if (
+            pose_mask_bundle is not None
+            and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+        ):
+            owned_ids = {
+                subject.region_id for subject in pose_mask_bundle.subjects
+            }
+            subject_prompt_plans = tuple(
+                compile_subject_conditioning_prompt(
+                    shared_visual_prompt=shared_visual_prompt,
+                    region=region,
+                    identity_triggers=triggers_by_region.get(region.region_id, ()),
+                    emphases=emphases,
+                )
+                for region in regions
+                if region.region_id in owned_ids
+            )
 
         oom_message: str | None = None
         try:
             return self._generate_once(
                 prompt=prompt,
+                shared_visual_prompt=shared_visual_prompt,
                 width=width,
                 height=height,
                 steps=steps,
+                cfg=cfg,
                 sampler=sampler,
                 scheduler=scheduler,
                 seed=seed,
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                subject_prompt_plans=subject_prompt_plans,
+                semantic_mode=semantic_mode,
                 regional_lora_delta_adaptation=regional_lora_delta_adaptation,
                 regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+                pose_gating=pose_gating,
+                pose_phases=pose_phases,
+                pose_mask_bundle=pose_mask_bundle,
+                pose_subject_region_ids=tuple(
+                    region.region_id
+                    for region in regions
+                    if region.region_type == "subject"
+                ),
+                pose_control_lora_path=(
+                    pose_control_lora_path if pose_control_lora_enabled else None
+                ),
+                pose_control_lora_file_id=pose_control_lora_file_id,
+                pose_control_lora_strength=pose_control_lora_strength,
+                control_bundle=control_bundle,
+                pose_control_allow_unverified_legacy=(
+                    pose_control_allow_unverified_legacy
+                ),
+                depth_control=depth_control,
+                depth_override_enabled=depth_override_enabled,
+                regions=regions,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1561,17 +1915,39 @@ class ComfyBaselineRuntime:
         self._recover_from_oom(event)
         return self._generate_once(
             prompt=prompt,
+            shared_visual_prompt=shared_visual_prompt,
             width=width,
             height=height,
             steps=steps,
+            cfg=cfg,
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            subject_prompt_plans=subject_prompt_plans,
+            semantic_mode=semantic_mode,
             regional_lora_delta_adaptation=regional_lora_delta_adaptation,
             regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+            pose_gating=pose_gating,
+            pose_phases=pose_phases,
+            pose_mask_bundle=pose_mask_bundle,
+            pose_subject_region_ids=tuple(
+                region.region_id
+                for region in regions
+                if region.region_type == "subject"
+            ),
+            pose_control_lora_path=(
+                pose_control_lora_path if pose_control_lora_enabled else None
+            ),
+            pose_control_lora_file_id=pose_control_lora_file_id,
+            pose_control_lora_strength=pose_control_lora_strength,
+            control_bundle=control_bundle,
+            pose_control_allow_unverified_legacy=pose_control_allow_unverified_legacy,
+            depth_control=depth_control,
+            depth_override_enabled=depth_override_enabled,
+            regions=regions,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1592,17 +1968,33 @@ class ComfyBaselineRuntime:
         self,
         *,
         prompt: str,
+        shared_visual_prompt: str,
         width: int,
         height: int,
         steps: int,
+        cfg: float,
         sampler: str,
         scheduler: str,
         seed: int,
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        subject_prompt_plans: tuple[SubjectConditioningPromptPlan, ...],
+        semantic_mode: PoseSemanticMode,
         regional_lora_delta_adaptation: bool,
         regional_lora_delta_adaptation_gain: float,
+        pose_gating: PoseGatingSettings,
+        pose_phases: PoseGatePhases,
+        pose_mask_bundle: VolumetricMaskBundle | None,
+        pose_subject_region_ids: tuple[str, ...],
+        pose_control_lora_path: Path | None,
+        pose_control_lora_file_id: str | None,
+        pose_control_lora_strength: float,
+        control_bundle: KreaVolumetricControlBundle | None,
+        pose_control_allow_unverified_legacy: bool,
+        depth_control: DepthControlSettings | None,
+        depth_override_enabled: bool,
+        regions: tuple[RegionDefinition, ...],
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1640,7 +2032,6 @@ class ComfyBaselineRuntime:
         conditioned_prompt = (
             regional_plan.prompt
             if regional_plan is not None
-            and (regional_plan.regions or regional_plan.emphases)
             else prompt
         )
         positive = self.clip.encode_from_tokens_scheduled(
@@ -1654,15 +2045,117 @@ class ComfyBaselineRuntime:
             raise RuntimeError("Krea conditioning must use one text sequence length")
         conditioning_text_token_count = text_token_counts.pop()
         bound_regional_plan: BoundRegionalPromptPlan | None = None
-        if regional_plan is not None and (
-            regional_plan.regions or regional_plan.emphases
-        ):
+        if regional_plan is not None:
             bound_regional_plan = regional_plan.bind_tokens(
                 lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
                 conditioning_text_token_count=conditioning_text_token_count,
             )
             if event is not None:
                 event("Unified spatial prompt prepared", bound_regional_plan.summary())
+        semantic_plan: PoseSemanticPlan | None = None
+        bound_subject_plans: dict[str, BoundSubjectPrompt] = {}
+        if (
+            pose_mask_bundle is not None
+            and semantic_mode == PoseSemanticMode.PREDICTION_COMPOSITE
+        ):
+            full_scope = ConditioningScope.full()
+            full_hash = prompt_sha256(conditioned_prompt)
+            full_conditioning = annotate_conditioning(
+                positive,
+                scope=full_scope,
+                prompt_hash=full_hash,
+                text_token_count=conditioning_text_token_count,
+            )
+            mask_by_region = {
+                subject.region_id: subject for subject in pose_mask_bundle.subjects
+            }
+            subject_conditionings: list[SubjectSemanticConditioning] = []
+            combined_positive: list[list[Any]] = list(full_conditioning)
+            for subject_plan in subject_prompt_plans:
+                encoded = self.clip.encode_from_tokens_scheduled(
+                    self.clip.tokenize(subject_plan.prompt)
+                )
+                if not encoded:
+                    raise RuntimeError(
+                        f"Krea text encoder returned no conditioning for "
+                        f"subject {subject_plan.region_name!r}"
+                    )
+                token_counts = {
+                    int(condition[0].shape[1]) for condition in encoded
+                }
+                if len(token_counts) != 1:
+                    raise RuntimeError(
+                        "subject conditioning must use one text sequence length"
+                    )
+                subject_token_count = token_counts.pop()
+                bound_subject = subject_plan.bind_tokens(
+                    lambda prefix: krea_prompt_token_count(
+                        self.clip.tokenize(prefix)
+                    ),
+                    conditioning_text_token_count=subject_token_count,
+                )
+                bound_subject_plans[bound_subject.region_id] = bound_subject
+                scope = ConditioningScope.subject(bound_subject.region_id)
+                annotated = annotate_conditioning(
+                    encoded,
+                    scope=scope,
+                    prompt_hash=bound_subject.prompt_sha256,
+                    text_token_count=subject_token_count,
+                )
+                combined_positive.extend(annotated)
+                try:
+                    masks = mask_by_region[bound_subject.region_id]
+                except KeyError as error:
+                    raise RuntimeError(
+                        f"subject conditioning {bound_subject.region_id!r} "
+                        "has no volumetric ownership mask"
+                    ) from error
+                subject_conditionings.append(
+                    SubjectSemanticConditioning(
+                        scope=scope,
+                        bound_prompt=bound_subject,
+                        conditioning=tuple(annotated),
+                        ownership_mask=masks.ownership,
+                        ownership_coverage=float(masks.ownership.mean()),
+                    )
+                )
+            if len(subject_conditionings) != len(pose_mask_bundle.subjects):
+                raise RuntimeError(
+                    "every volumetric ownership mask requires subject conditioning"
+                )
+            positive = combined_positive
+            semantic_plan = PoseSemanticPlan(
+                mode=semantic_mode,
+                full_scope=full_scope,
+                full_conditioning=tuple(full_conditioning),
+                subjects=tuple(subject_conditionings),
+                shared_visual_prompt_sha256=prompt_sha256(shared_visual_prompt),
+                estimated_forwards_per_gated_evaluation=(
+                    1 + len(subject_conditionings)
+                ),
+            )
+            if event is not None:
+                event(
+                    "pose_semantic_conditioning_prepared",
+                    {
+                        "version": 1,
+                        "mode": semantic_mode.value,
+                        "full_prompt_sha256": full_hash,
+                        "subjects": [
+                            {
+                                "region_id": subject.bound_prompt.region_id,
+                                "region_name": subject.bound_prompt.region_name,
+                                "prompt_sha256": (
+                                    subject.bound_prompt.prompt_sha256
+                                ),
+                                "text_token_count": (
+                                    subject.bound_prompt.text_token_count
+                                ),
+                            }
+                            for subject in subject_conditionings
+                        ],
+                    },
+                )
         self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
@@ -1675,7 +2168,82 @@ class ComfyBaselineRuntime:
         noise = comfy.sample.prepare_noise(latent, seed)
         if loras:
             self._ensure_memory("before LoRA loading", event)
+        generation_model = self.model
+        control_latents = None
+        control_compatibility = None
+        depth_preparation: DepthControlPreparation | None = None
+        depth_latents = None
+        if pose_control_lora_path is not None:
+            self._ensure_memory("before Krea pose adapter loading", event)
+            generation_model, control_compatibility = install_krea_control_lora(
+                generation_model,
+                pose_control_lora_path,
+                strength=pose_control_lora_strength,
+                allow_unverified_legacy=pose_control_allow_unverified_legacy,
+            )
+            if control_bundle is None:
+                raise KreaControlError(
+                    "krea_control_encode_failed",
+                    "The volumetric control image was not prepared.",
+                )
+            control_latents = encode_control_bundle(
+                self.vae,
+                generation_model,
+                control_bundle,
+            )
+            generation_model = attach_krea_control_latents(
+                generation_model,
+                control_latents,
+            )
+            if event is not None:
+                event(
+                    "krea_volumetric_pose_control_prepared",
+                    {
+                        "checkpoint": control_compatibility.document(),
+                        "strength": pose_control_lora_strength,
+                        "full_control_sha256": control_bundle.full.sha256,
+                        "subject_control_count": len(control_bundle.subjects),
+                        "vae_encode_seconds": control_latents.encode_seconds,
+                    },
+                )
+        if depth_control is not None and depth_control.enabled:
+            self._ensure_memory("before Krea depth adapter loading", event)
+            depth_preparation = prepare_depth_control(
+                depth_control,
+                regions=regions,
+                width=width,
+                height=height,
+                steps=steps,
+                allow_override=depth_override_enabled,
+            )
+            generation_model, control_compatibility = install_krea_control_lora(
+                generation_model,
+                depth_control.checkpoint,
+                strength=1.0,
+                allow_unverified_legacy=True,
+                expected_sha256=KREA2_DEPTH_PUBLIC_SHA256,
+                adapter_format_id="krea2-depth-control-lora-v1",
+            )
+            depth_latents = encode_depth_control(
+                self.vae,
+                generation_model,
+                depth_preparation,
+            )
+            generation_model = attach_krea_control_latents(
+                generation_model,
+                depth_latents,
+                token_strength=depth_preparation.schedule,
+            )
+            if event is not None:
+                event(
+                    "krea_depth_control_prepared",
+                    {
+                        **depth_preparation.document(),
+                        "vae_encode_seconds": depth_latents.encode_seconds,
+                    },
+                )
         generation_model, projector_summary = self._apply_global_projector_vector(
+            base_model=generation_model,
             enabled=projector_enabled,
             preset=projector_preset,
             values=projector_values,
@@ -1684,6 +2252,90 @@ class ComfyBaselineRuntime:
             bound_plan=bound_regional_plan,
             event=event,
         )
+        pose_gate_binding: PoseGateRegionBinding | None = None
+        pose_controller: PoseGateController | None = None
+        pose_support_tensor = None
+        resolved_sigmas_tensor = None
+        effective_steps = steps
+        pose_summary_document: dict[str, Any] = {
+            "enabled": False,
+            "format": "k2-volumetric-pose-v1",
+        }
+        if pose_mask_bundle is not None:
+            effective_steps = pose_phases.effective_steps
+            baseline_sigmas_tensor = build_comfy_baseline_sigmas(
+                model=generation_model,
+                steps=effective_steps,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                comfy_samplers=comfy.samplers,
+            )
+            resolved_schedule = resolve_sigma_schedule(
+                baseline_sigmas=tuple(
+                    float(value)
+                    for value in baseline_sigmas_tensor.detach().to("cpu").tolist()
+                ),
+                phases=pose_phases,
+                request=pose_gating.resolved_sigma_request(),
+            )
+            resolved_sigmas_tensor = baseline_sigmas_tensor.new_tensor(
+                resolved_schedule.resolved_sigmas
+            )
+            resolved_device_values = [
+                float(value)
+                for value in resolved_sigmas_tensor.detach().to("cpu").tolist()
+            ]
+            if any(
+                left <= right
+                for left, right in zip(
+                    resolved_device_values,
+                    resolved_device_values[1:],
+                )
+            ):
+                raise SigmaScheduleError(
+                    "resolved sigma intervals collapse in the sampler tensor dtype"
+                )
+            pose_controller = PoseGateController(
+                phases=pose_phases,
+                soft_schedule=pose_gating.soft_schedule,
+                resolved_sigmas=resolved_schedule,
+            )
+            geometry = CanvasGeometry.resolve(width, height)
+            hard_image_fields = ownership_image_token_fields(
+                pose_mask_bundle,
+                geometry,
+            )
+            empty_ownership = (0.0,) * geometry.image_lane_count
+            for region_id in pose_subject_region_ids:
+                hard_image_fields.setdefault(region_id, empty_ownership)
+            pose_gate_binding = PoseGateRegionBinding(
+                controller=pose_controller,
+                hard_image_fields=hard_image_fields,
+            )
+            pose_support_tensor = torch.from_numpy(
+                pose_mask_bundle.union_support.copy()
+            ).unsqueeze(0)
+            pose_summary_document = {
+                "enabled": True,
+                "checkpoint_file_id": pose_control_lora_file_id,
+                "format": "k2-volumetric-pose-v1",
+                "effective_steps": effective_steps,
+                "phases": {
+                    "hard": pose_phases.hard_steps,
+                    "soft": pose_phases.soft_steps,
+                    "normal": pose_phases.normal_steps,
+                },
+                "soft_schedule": pose_gating.soft_schedule.value,
+                "gate_strengths": list(pose_controller.strengths),
+                "sigma_mode": resolved_schedule.mode.value,
+                "normalized_positions": list(resolved_schedule.normalized_positions),
+                "baseline_sigmas": list(resolved_schedule.baseline_sigmas),
+                "resolved_sigmas": list(resolved_schedule.resolved_sigmas),
+                "phase_shares": resolved_schedule.phase_shares,
+                "masks": pose_mask_bundle.summary.document(),
+            }
+            if event is not None:
+                event("pose_gating_prepared", pose_summary_document)
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
             loras,
             base_model=generation_model,
@@ -1692,11 +2344,20 @@ class ComfyBaselineRuntime:
             text_token_count=conditioning_text_token_count,
             regional_plan=regional_plan,
             bound_plan=bound_regional_plan,
+            pose_gate_binding=pose_gate_binding,
+            bound_subject_plans=bound_subject_plans,
             event=event,
         )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
+            phase = "normal"
+            gate_strength = 0.0
+            if pose_controller is not None:
+                if step != pose_controller.current_transition:
+                    raise RuntimeError("pose gate callback and sampler step diverged")
+                phase = pose_controller.phase
+                gate_strength = pose_controller.gate_strength
             if attention_override is not None:
                 attention_override.set_denoising_progress(step + 1, total)
                 if regional_lora_delta_adaptation:
@@ -1707,6 +2368,19 @@ class ComfyBaselineRuntime:
                     )
                     lora_statistics.reset_step_measurements()
             snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
+            if pose_controller is not None:
+                resolved = pose_controller.resolved_sigmas
+                snapshot.update(
+                    {
+                        "pose_gate_phase": phase,
+                        "pose_gate_strength": gate_strength,
+                        "sigma": resolved.resolved_sigmas[step],
+                        "next_sigma": resolved.resolved_sigmas[step + 1],
+                        "normalized_trajectory_progress": (
+                            resolved.normalized_positions[step + 1]
+                        ),
+                    }
+                )
             if progress is not None:
                 progress(
                     step + 1,
@@ -1719,15 +2393,39 @@ class ComfyBaselineRuntime:
                     f"{step + 1}/{total}: "
                     f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
                 )
+            if pose_controller is not None:
+                pose_controller.mark_transition_complete(step)
+            if depth_preparation is not None:
+                depth_preparation.schedule.advance_after(step, total)
 
         attention_override = (
             KreaSpatialAttentionOverride(
                 bound_regional_plan,
                 lora_delta_adaptation=regional_lora_delta_adaptation,
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+                pose_gate_binding=pose_gate_binding,
+                semantic_mode=semantic_mode,
             )
             if bound_regional_plan is not None
             and (bound_regional_plan.spans or bound_regional_plan.emphases)
+            else None
+        )
+        semantic_runtime = (
+            PoseSemanticRuntime(
+                mode=semantic_mode,
+                pose_controller=pose_controller,
+                plan=semantic_plan,
+                progress=(
+                    (
+                        lambda payload: event(
+                            "Pose semantic prediction progress", payload
+                        )
+                    )
+                    if event is not None
+                    else None
+                ),
+            )
+            if semantic_plan is not None and pose_controller is not None
             else None
         )
         if regional_lora_delta_adaptation and attention_override is not None and event is not None:
@@ -1742,28 +2440,48 @@ class ComfyBaselineRuntime:
         previous_override = transformer_options.get(
             "optimized_attention_override", missing
         )
-        if attention_override is not None:
-            if previous_override is not missing:
-                raise RuntimeError(
-                    "another optimized-attention override is already installed"
-                )
-            transformer_options["optimized_attention_override"] = attention_override
         try:
-            samples = comfy.sample.sample(
-                generation_model,
-                noise,
-                steps,
-                1.0,
-                sampler,
-                scheduler,
-                positive,
-                negative,
-                latent,
-                denoise=1.0,
-                callback=callback,
-                disable_pbar=True,
-                seed=seed,
+            if attention_override is not None:
+                if previous_override is not missing:
+                    raise RuntimeError(
+                        "another optimized-attention override is already installed"
+                    )
+                transformer_options["optimized_attention_override"] = attention_override
+            hook_context = (
+                installed_pose_gate_hook(
+                    generation_model.model_options,
+                    pose_controller,
+                )
+                if pose_controller is not None
+                else nullcontext()
             )
+            semantic_hook_context = (
+                installed_semantic_prediction_hook(
+                    generation_model.model_options,
+                    semantic_runtime,
+                    comfy.samplers,
+                )
+                if semantic_runtime is not None
+                else nullcontext()
+            )
+            with hook_context, semantic_hook_context:
+                samples = comfy.sample.sample(
+                    generation_model,
+                    noise,
+                    effective_steps,
+                    cfg,
+                    sampler,
+                    scheduler,
+                    positive,
+                    negative,
+                    latent,
+                    denoise=1.0,
+                    noise_mask=pose_support_tensor,
+                    sigmas=resolved_sigmas_tensor,
+                    callback=callback,
+                    disable_pbar=True,
+                    seed=seed,
+                )
         finally:
             if attention_override is not None:
                 attention_override.clear()
@@ -1771,13 +2489,64 @@ class ComfyBaselineRuntime:
                     transformer_options.pop("optimized_attention_override", None)
                 else:
                     transformer_options["optimized_attention_override"] = previous_override
+        if pose_controller is not None:
+            if pose_controller.current_transition != effective_steps:
+                raise RuntimeError(
+                    "volumetric pose gate did not observe every sampler transition"
+                )
+            if event is not None:
+                event("pose_gating_completed", pose_summary_document)
+        semantic_summary_document: dict[str, Any] = {
+            "version": 1,
+            "mode": semantic_mode.value,
+            "enabled": (
+                pose_controller is not None
+                and semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+            ),
+        }
+        if semantic_runtime is not None:
+            semantic_summary_document = semantic_runtime.diagnostics.document(
+                semantic_runtime.plan
+            )
+            semantic_summary_document["enabled"] = True
+            semantic_summary_document["full_prompt_sha256"] = prompt_sha256(
+                conditioned_prompt
+            )
+            expected_full = effective_steps
+            expected_subject = (
+                (pose_phases.hard_steps + pose_phases.soft_steps)
+                * len(semantic_runtime.plan.subjects)
+            )
+            if (
+                sampler == "euler"
+                and (
+                    semantic_runtime.diagnostics.full_forward_calls
+                    != expected_full
+                    or semantic_runtime.diagnostics.subject_forward_calls
+                    != expected_subject
+                )
+            ):
+                raise RuntimeError(
+                    "Prediction composite forward counts diverged from the Euler "
+                    "transition schedule"
+                )
         if attention_override is not None:
             if attention_override.matched_calls == 0:
-                raise RuntimeError(
+                error_type = (
+                    SemanticAttentionError
+                    if semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                    else RuntimeError
+                )
+                raise error_type(
                     "Krea main-stream attention was not reached by the spatial override"
                 )
             if attention_override.text_refiner_calls == 0:
-                raise RuntimeError(
+                error_type = (
+                    SemanticAttentionError
+                    if semantic_mode != PoseSemanticMode.SPATIAL_ONLY
+                    else RuntimeError
+                )
+                raise error_type(
                     "Krea text-refiner attention was not reached by the regional "
                     "text partition"
                 )
@@ -1794,16 +2563,111 @@ class ComfyBaselineRuntime:
                         "LoRA delta-adaptive spatial guidance finalized",
                         attention_override.summary(),
                     )
+        lora_scope_summary: dict[str, dict[str, Any]] = {}
         for report in lora_reports:
             if report.get("status") not in {"applied_global", "applied_regional"}:
                 continue
             delta_summary = lora_statistics.summary(str(report["id"]))
+            lora_scope_summary[str(report["id"])] = delta_summary
             report["delta_statistics"] = delta_summary
             if event is not None:
                 event(
                     f"LoRA delta measured for {report['display_name']}",
                     {"lora_id": report["id"], **delta_summary},
                 )
+        semantic_summary_document["semantic_isolation"] = {
+            "hard_blocks": (
+                attention_override.semantic_hard_blocks
+                if attention_override is not None
+                else 0
+            ),
+            "soft_blocks": (
+                attention_override.semantic_soft_blocks
+                if attention_override is not None
+                else 0
+            ),
+            "soft_penalty": SEMANTIC_ATTENTION_PENALTY,
+            "image_to_image_isolation": (
+                semantic_summary_document["enabled"]
+                and semantic_mode
+                in {
+                    PoseSemanticMode.ATTENTION_ISOLATION,
+                    PoseSemanticMode.PREDICTION_COMPOSITE,
+                }
+            ),
+        }
+        semantic_summary_document["lora_scope_summary"] = lora_scope_summary
+        if semantic_summary_document["enabled"] and event is not None:
+            event(
+                "pose_semantic_conditioning_completed",
+                semantic_summary_document,
+            )
+        control_summary_document: dict[str, Any] = {
+            "version": 1,
+            "enabled": False,
+        }
+        if (
+            pose_control_lora_path is not None
+            and control_bundle is not None
+            and control_latents is not None
+            and control_compatibility is not None
+            and control_compatibility.checkpoint is not None
+        ):
+            runtime_report = krea_control_runtime_report(generation_model)
+            checkpoint = control_compatibility.checkpoint
+            control_summary_document = {
+                "version": 1,
+                "enabled": True,
+                "checkpoint_sha256": checkpoint.sha256,
+                "checkpoint_metadata": {
+                    "rank": checkpoint.rank,
+                    "base_model": checkpoint.metadata.get("k2lab_base_model", ""),
+                    "control_format": checkpoint.format_id,
+                    "verified": checkpoint.verified,
+                },
+                "strength": pose_control_lora_strength,
+                "full_control_sha256": control_bundle.full.sha256,
+                "full_control_coverage": control_bundle.full.coverage,
+                "subject_controls": {
+                    region_id: {
+                        "sha256": image.sha256,
+                        "coverage": image.coverage,
+                        "latent_shape": list(control_latents.subjects[region_id].shape),
+                    }
+                    for region_id, image in control_bundle.subjects.items()
+                },
+                "vae_encode_seconds": control_latents.encode_seconds,
+                "format_sha256": control_bundle.full.format_sha256,
+                "renderer_version": control_bundle.full.renderer_version,
+                **runtime_report.document(),
+            }
+            if event is not None:
+                event(
+                    "krea_volumetric_pose_control_completed",
+                    control_summary_document,
+                )
+        depth_summary_document: dict[str, Any] = {
+            "version": 1,
+            "enabled": False,
+        }
+        if (
+            depth_control is not None
+            and depth_control.enabled
+            and depth_preparation is not None
+            and depth_latents is not None
+        ):
+            runtime_report = krea_control_runtime_report(generation_model)
+            depth_summary_document = {
+                "version": 1,
+                "enabled": True,
+                **depth_preparation.document(),
+                "control_latent_sha256": depth_latents.source_hashes["full"],
+                "control_latent_shape": list(depth_latents.full.shape),
+                "vae_encode_seconds": depth_latents.encode_seconds,
+                "runtime": runtime_report.document(),
+            }
+            if event is not None:
+                event("krea_depth_control_completed", depth_summary_document)
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -1851,6 +2715,8 @@ class ComfyBaselineRuntime:
         metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
+        metadata.add_text("cfg", str(cfg))
+        metadata.add_text("effective_steps", str(effective_steps))
         metadata.add_text("sampler", sampler)
         metadata.add_text("scheduler", scheduler)
         metadata.add_text("size", f"{output_image.width}x{output_image.height}")
@@ -1865,6 +2731,19 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("pose_gating", json.dumps(pose_summary_document))
+        metadata.add_text(
+            "pose_semantic_runtime",
+            json.dumps(semantic_summary_document),
+        )
+        metadata.add_text(
+            "pose_control_lora_runtime",
+            json.dumps(control_summary_document),
+        )
+        metadata.add_text(
+            "depth_control_runtime",
+            json.dumps(depth_summary_document),
+        )
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
@@ -1886,15 +2765,20 @@ class ComfyBaselineRuntime:
             "base_width": width,
             "base_height": height,
             "steps": steps,
+            "effective_steps": effective_steps,
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
+            "pose_gating": pose_summary_document,
+            "pose_semantic_runtime": semantic_summary_document,
+            "pose_control_lora_runtime": control_summary_document,
+            "depth_control_runtime": depth_summary_document,
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
             "sampler": sampler,
             "scheduler": scheduler,
-            "cfg": 1.0,
+            "cfg": cfg,
             "memory_policy": self.memory_policy_key,
             "system_ram_guard_enabled": self.system_ram_guard_enabled,
             "requested_vram_mode": self.requested_vram_mode,

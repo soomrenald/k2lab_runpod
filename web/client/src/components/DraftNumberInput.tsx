@@ -8,10 +8,11 @@ interface Props {
   step?: number;
   className?: string;
   ariaLabel?: string;
+  disabled?: boolean;
   onCommit: (value: number) => void;
 }
 
-export function DraftNumberInput({ value, min, max, step, className, ariaLabel, onCommit }: Props) {
+export function DraftNumberInput({ value, min, max, step, className, ariaLabel, disabled, onCommit }: Props) {
   const [draft, setDraft] = useState(String(value));
   const [editing, setEditing] = useState(false);
   const cancelNextBlur = useRef(false);
@@ -34,6 +35,7 @@ export function DraftNumberInput({ value, min, max, step, className, ariaLabel, 
   return (
     <input
       aria-label={ariaLabel}
+      disabled={disabled}
       className={className}
       type="number"
       min={min}

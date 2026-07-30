@@ -30,6 +30,7 @@ from k2_region_lab.agent.domain import (
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    KreaControlCheckpointInspection,
     ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
@@ -41,7 +42,12 @@ from k2_region_lab.agent.domain import (
 )
 from k2_region_lab.project import project_state
 from k2_region_lab.regional_lora import character_identity_triggers
-from k2_region_lab.regional_prompting import compile_regional_prompt_plan
+from k2_region_lab.regional_prompting import (
+    compile_regional_prompt_plan,
+    compile_subject_conditioning_prompt,
+)
+from k2_region_lab.semantic_conditioning import PoseSemanticError
+from k2_region_lab.volumetric_control import render_krea_volumetric_control
 
 from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
 from k2_region_lab.web.domain import (
@@ -99,7 +105,7 @@ def backend_from_environment() -> WorkspaceBackend:
         credential_vault=DatabaseCredentialVault(state_store, encryption_key),
         state_store=state_store,
         image_digest=image_digest,
-        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.1.17"),
+        image_version=os.environ.get("K2LAB_RUNPOD_IMAGE_VERSION", "0.3.0"),
     )
 
 
@@ -120,6 +126,11 @@ class UnifiedPromptPreviewRequest(BaseModel):
     project: dict[str, Any]
 
 
+class VolumetricControlPreviewRequest(BaseModel):
+    project: dict[str, Any]
+    subject_region_id: str | None = Field(default=None, max_length=128)
+
+
 class UnifiedPromptPreviewRegion(BaseModel):
     id: str
     name: str
@@ -130,6 +141,7 @@ class UnifiedPromptPreviewRegion(BaseModel):
 class UnifiedPromptPreview(BaseModel):
     prompt: str
     regions: list[UnifiedPromptPreviewRegion]
+    conditioning_prompts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def create_app(
@@ -167,7 +179,7 @@ def create_app(
 
     application = FastAPI(
         title="K2 Region Lab Control Plane",
-        version="0.1.17",
+        version="0.3.0",
         description=(
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."
@@ -242,6 +254,7 @@ def create_app(
                 state.canvas_height,
                 state.global_prompt,
                 state.regions,
+                shared_visual_prompt=state.shared_visual_prompt,
                 strength=state.regional_prompt_strength,
                 outside_penalty=state.regional_outside_penalty,
                 falloff_pixels=state.regional_feather_pixels,
@@ -255,7 +268,23 @@ def create_app(
                     list(request.project.get("loras", []))
                 ),
             )
-        except (KeyError, TypeError, ValueError) as error:
+            triggers = character_identity_triggers(
+                list(request.project.get("loras", []))
+            )
+            subject_plans = [
+                compile_subject_conditioning_prompt(
+                    shared_visual_prompt=state.shared_visual_prompt,
+                    region=region,
+                    identity_triggers=triggers.get(region.region_id, ()),
+                    emphases=state.prompt_emphases,
+                )
+                for region in state.regions
+                if region.enabled
+                and region.region_type == "subject"
+                and region.pose is not None
+                and region.pose.enabled
+            ]
+        except (KeyError, TypeError, ValueError, PoseSemanticError) as error:
             raise WorkspaceError(
                 "invalid_project",
                 f"The project cannot be compiled: {error}",
@@ -272,6 +301,59 @@ def create_app(
                 )
                 for region in plan.regions
             ],
+            conditioning_prompts=[
+                {
+                    "kind": "full",
+                    "region_id": None,
+                    "region_name": "Full scene",
+                    "prompt": plan.prompt,
+                },
+                *[
+                    {
+                        "kind": "subject",
+                        "region_id": subject.region_id,
+                        "region_name": subject.region_name,
+                        "prompt": subject.prompt,
+                    }
+                    for subject in subject_plans
+                ],
+            ],
+        )
+
+    @application.post("/api/v1/projects/volumetric-control-preview")
+    async def preview_volumetric_control(
+        request: VolumetricControlPreviewRequest,
+    ) -> Response:
+        try:
+            preview_project = dict(request.project)
+            preview_generation = dict(preview_project.get("generation", {}))
+            # The canonical control raster belongs to the mannequin geometry, not
+            # checkpoint selection. Let users inspect it before choosing an adapter.
+            preview_generation["pose_control_lora_enabled"] = False
+            preview_project["generation"] = preview_generation
+            state = project_state(preview_project)
+            image = render_krea_volumetric_control(
+                regions=state.regions,
+                width=state.canvas_width,
+                height=state.canvas_height,
+                subject_region_id=request.subject_region_id,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise WorkspaceError(
+                "krea_control_preview_invalid",
+                "The volumetric pose control preview could not be rendered.",
+                status_code=422,
+            ) from error
+        return Response(
+            content=image.png_bytes,
+            media_type="image/png",
+            headers={
+                "X-K2-Control-Format": image.format_id,
+                "X-K2-Control-SHA256": image.sha256,
+                "X-K2-Control-Coverage": f"{image.coverage:.12f}",
+                "X-K2-Control-Width": str(image.width),
+                "X-K2-Control-Height": str(image.height),
+            },
         )
 
     @application.get("/api/v1/credentials/runpod", response_model=CredentialStatus)
@@ -411,6 +493,21 @@ def create_app(
     )
     async def delete_file(workspace_id: str, file_id: str) -> FileRecord:
         return await workspace_backend.delete_file(workspace_id, file_id)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/krea-control-checkpoints/{file_id}",
+        response_model=KreaControlCheckpointInspection,
+    )
+    async def inspect_krea_control_checkpoint(
+        workspace_id: str,
+        file_id: str,
+        allow_unverified_legacy: bool = False,
+    ) -> KreaControlCheckpointInspection:
+        return await workspace_backend.inspect_krea_control_checkpoint(
+            workspace_id,
+            file_id,
+            allow_unverified_legacy=allow_unverified_legacy,
+        )
 
     @application.put(
         "/api/v1/workspaces/{workspace_id}/projects/{filename}", response_model=FileRecord

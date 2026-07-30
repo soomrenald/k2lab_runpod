@@ -3,10 +3,16 @@ from __future__ import annotations
 import sys
 import unittest
 from types import ModuleType
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
+from k2_region_lab.pose_gating import (
+    PoseGateController,
+    PoseGatePhases,
+    PoseGateRegionBinding,
+    SoftGateSchedule,
+)
 from k2_region_lab.regional_lora import (
     compile_lora_delta_routes,
     route_allows_adapter_target,
@@ -138,6 +144,41 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         self.assertEqual(route.region_ids, ("left", "right"))
         self.assertEqual(route.image_token_mask, (1.0, 1.0))
         self.assertEqual(route.region_names, ("Left subject", "Right subject"))
+
+    def test_pose_gating_routes_image_delta_from_ownership_back_to_box(self) -> None:
+        plan, bound = self._plans()
+        controller = PoseGateController(
+            phases=PoseGatePhases(1, 1, 1),
+            soft_schedule=SoftGateSchedule.LINEAR,
+        )
+        binding = PoseGateRegionBinding(
+            controller=controller,
+            hard_image_fields={"right": (1.0, 0.0)},
+        )
+        route = compile_lora_delta_routes(
+            [{
+                "id": "face",
+                "name": "Face",
+                "global": False,
+                "region_ids": ["right"],
+            }],
+            width=32,
+            height=16,
+            text_token_count=bound.text_token_count,
+            regional_plan=plan,
+            bound_plan=bound,
+            pose_gate_binding=binding,
+        )[0]
+
+        self.assertEqual(route.image_token_mask, (0.0, 1.0))
+        self.assertEqual(route.effective_image_token_mask(), (1.0, 0.0))
+        controller.mark_transition_complete(0)
+        self.assertEqual(
+            route.effective_image_token_mask(),
+            (0.5, 0.5),
+        )
+        controller.mark_transition_complete(1)
+        self.assertEqual(route.effective_image_token_mask(), (0.0, 1.0))
 
     def test_character_identity_route_keeps_full_regional_text_coverage(self) -> None:
         regions = (
@@ -619,11 +660,28 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         management.soft_empty_cache = lambda force=False: calls.append(
             f"empty:{force}"
         )
+        patcher_extension = ModuleType("comfy.patcher_extension")
+        patcher_extension.WrappersMP = SimpleNamespace(
+            DIFFUSION_MODEL="diffusion_model"
+        )
+        patcher_extension.CallbacksMP = SimpleNamespace(
+            ON_DETACH="on_detach",
+            ON_CLEANUP="on_cleanup",
+        )
         comfy.model_management = management
+        comfy.patcher_extension = patcher_extension
 
         class FakeGenerationModel:
+            model_options = {"transformer_options": {}}
+
             def remove_injections(self, key):
                 self.assert_unloaded(key)
+
+            def remove_wrappers_with_key(self, wrapper_type, key):
+                calls.append(f"remove-wrapper:{wrapper_type}:{key}")
+
+            def remove_callbacks_with_key(self, callback_type, key):
+                calls.append(f"remove-callback:{callback_type}:{key}")
 
             @staticmethod
             def assert_unloaded(key):
@@ -634,19 +692,29 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         runtime = object.__new__(ComfyBaselineRuntime)
         with patch.dict(
             sys.modules,
-            {"comfy": comfy, "comfy.model_management": management},
+            {
+                "comfy": comfy,
+                "comfy.model_management": management,
+                "comfy.patcher_extension": patcher_extension,
+            },
         ):
             runtime._prepare_vae_handoff(FakeGenerationModel(), None)
 
-        self.assertEqual(
+        self.assertEqual(calls[0:4], [
+            "unload",
+            "remove:k2_routed_loras",
+            "remove:k2_projector_delta",
+            "remove:k2_krea_volumetric_control_lora",
+        ])
+        self.assertIn(
+            "remove-wrapper:diffusion_model:k2_krea_volumetric_control_lora",
             calls,
-            [
-                "unload",
-                "remove:k2_routed_loras",
-                "remove:k2_projector_delta",
-                "empty:True",
-            ],
         )
+        self.assertIn(
+            "remove-callback:on_cleanup:k2_krea_volumetric_control_lora",
+            calls,
+        )
+        self.assertEqual(calls[-1], "empty:True")
 
     def test_vae_handoff_discards_lora_patch_tensors_from_generation_clone(self) -> None:
         comfy = ModuleType("comfy")
@@ -654,16 +722,38 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         management = ModuleType("comfy.model_management")
         management.unload_all_models = lambda: None
         management.soft_empty_cache = lambda force=False: None
+        patcher_extension = ModuleType("comfy.patcher_extension")
+        patcher_extension.WrappersMP = SimpleNamespace(
+            DIFFUSION_MODEL="diffusion_model"
+        )
+        patcher_extension.CallbacksMP = SimpleNamespace(
+            ON_DETACH="on_detach",
+            ON_CLEANUP="on_cleanup",
+        )
         comfy.model_management = management
+        comfy.patcher_extension = patcher_extension
 
         class FakeGenerationModel:
             def __init__(self):
                 self.patches = {"diffusion_model.block.weight": [object()]}
                 self.removed_attachments = []
+                self.removed_wrappers = []
+                self.removed_callbacks = []
+                self.model_options = {
+                    "transformer_options": {
+                        "k2_krea_volumetric_control_latents": object()
+                    }
+                }
                 self.cleaned = False
 
             def remove_injections(self, _key):
                 return None
+
+            def remove_wrappers_with_key(self, wrapper_type, key):
+                self.removed_wrappers.append((wrapper_type, key))
+
+            def remove_callbacks_with_key(self, callback_type, key):
+                self.removed_callbacks.append((callback_type, key))
 
             def remove_attachments(self, key):
                 self.removed_attachments.append(key)
@@ -674,14 +764,26 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         generation_model = FakeGenerationModel()
         with patch.dict(
             sys.modules,
-            {"comfy": comfy, "comfy.model_management": management},
+            {
+                "comfy": comfy,
+                "comfy.model_management": management,
+                "comfy.patcher_extension": patcher_extension,
+            },
         ):
             ComfyBaselineRuntime._release_generation_model(generation_model)
 
         self.assertEqual(generation_model.patches, {})
         self.assertEqual(
             generation_model.removed_attachments,
-            ["lora_metadata", "projector_settings"],
+            [
+                "lora_metadata",
+                "projector_settings",
+                "k2_krea_volumetric_control_lora",
+            ],
+        )
+        self.assertNotIn(
+            "k2_krea_volumetric_control_latents",
+            generation_model.model_options["transformer_options"],
         )
         self.assertTrue(generation_model.cleaned)
 

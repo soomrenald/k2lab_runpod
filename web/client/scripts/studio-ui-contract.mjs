@@ -3,7 +3,27 @@ import { readFile } from "node:fs/promises";
 import { committedNumber } from "../src/numericDraft.ts";
 import { sortOutputFiles } from "../src/outputSort.ts";
 import { SerialRequestLane } from "../src/requestQueue.ts";
+import {
+  clearPendingJobSubmission,
+  isAmbiguousJobSubmissionError,
+  loadPendingJobSubmission,
+  savePendingJobSubmission,
+  uniqueJobs,
+} from "../src/submissionRecovery.ts";
 import { COMFYUI_SCHEDULERS } from "../src/studioProject.ts";
+import {
+  providerFreshnessEvent,
+  scheduleProviderPoll,
+} from "../src/providerFreshness.ts";
+import {
+  POSE_LIMB_GROUPS,
+  POSE_JOINT_NAMES,
+  POSE_TORSO_JOINTS,
+  poseGroupCenter,
+  rotatePoseGroup,
+  standingPose,
+  translatePoseGroup,
+} from "../src/pose.ts";
 
 assert.equal(committedNumber("", 1, 100), null, "an empty editing draft must remain transient");
 assert.equal(committedNumber("-", -10, 10), null, "an incomplete signed draft must remain transient");
@@ -13,6 +33,24 @@ assert.ok(
   COMFYUI_SCHEDULERS.includes("bong_tangent"),
   "The scheduler selector must expose the worker's bong_tangent implementation",
 );
+
+const fakeTimers = [];
+const timerId = scheduleProviderPoll((callback, delay) => {
+  fakeTimers.push({ callback, delay });
+  return fakeTimers.length;
+}, () => fakeTimers.push({ fired: true }));
+assert.equal(timerId, 1);
+assert.equal(fakeTimers[0].delay, 5_000);
+fakeTimers[0].callback();
+assert.equal(fakeTimers[1].fired, true);
+const staleWarning = providerFreshnessEvent(false, true);
+assert.equal(staleWarning.kind, "warning");
+assert.equal(staleWarning.source, "provider");
+assert.match(staleWarning.message, /completed jobs and cloud outputs are unaffected/);
+assert.equal(providerFreshnessEvent(true, true), null, "repeated stale polls must dedupe");
+const recoveredProvider = providerFreshnessEvent(true, false);
+assert.equal(recoveredProvider.kind, "info");
+assert.match(recoveredProvider.message, /reachable again/);
 
 const requestLane = new SerialRequestLane();
 let activeRequests = 0;
@@ -33,6 +71,90 @@ assert.deepEqual(
   await Promise.all([firstRequest, lowPriorityRequest, urgentRequest]),
   ["first", "low", "urgent"],
 );
+
+const recoveryStorage = new Map();
+const storageAdapter = {
+  getItem: (key) => recoveryStorage.get(key) ?? null,
+  setItem: (key, value) => recoveryStorage.set(key, value),
+  removeItem: (key) => recoveryStorage.delete(key),
+};
+const pendingRecovery = {
+  version: 1,
+  workspaceId: "workspace-1",
+  payloads: [{
+    command_id: "stable-command-id",
+    kind: "generate",
+    project_id: "studio-workspace-1",
+    project: { schema: "k2-region-lab-project" },
+    filename_prefix: "k2lab",
+  }],
+  acknowledgedJobs: [],
+  createdAt: "2026-07-27T00:00:00Z",
+  lastError: "The workspace agent did not finish before its network timeout.",
+};
+savePendingJobSubmission(storageAdapter, pendingRecovery);
+assert.deepEqual(
+  loadPendingJobSubmission(storageAdapter, "workspace-1"),
+  pendingRecovery,
+  "A timed-out POST must retain its exact idempotent payload across a page refresh",
+);
+assert.equal(isAmbiguousJobSubmissionError({ status: 504, code: "agent_read_timeout" }), true);
+assert.equal(isAmbiguousJobSubmissionError({ status: 400, code: "invalid_job" }), false);
+assert.deepEqual(
+  uniqueJobs([
+    { id: "same", command_id: "one", state: "queued" },
+    { id: "same", command_id: "one", state: "running" },
+  ]).map((item) => item.state),
+  ["running"],
+  "Recovered job receipts must replace, rather than duplicate, an existing tracked job",
+);
+clearPendingJobSubmission(storageAdapter, "workspace-1");
+assert.equal(loadPendingJobSubmission(storageAdapter, "workspace-1"), null);
+
+const standing = standingPose();
+const movedArm = translatePoseGroup(standing, POSE_LIMB_GROUPS.left_arm, 0.1, -0.05);
+for (const name of POSE_LIMB_GROUPS.left_arm) {
+  const before = standing.joints.find((joint) => joint.name === name);
+  const after = movedArm.joints.find((joint) => joint.name === name);
+  assert.ok(Math.abs(after.x - before.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(after.y - before.y + 0.05) < 1e-9);
+}
+assert.deepEqual(
+  movedArm.joints.find((joint) => joint.name === "right_elbow"),
+  standing.joints.find((joint) => joint.name === "right_elbow"),
+  "A limb group handle must not move the opposite limb",
+);
+const movedTorso = translatePoseGroup(standing, POSE_TORSO_JOINTS, 0.08, 0.03, true);
+assert.ok(Math.abs(movedTorso.head.cx - standing.head.cx - 0.08) < 1e-9);
+assert.ok(Math.abs(movedTorso.head.cy - standing.head.cy - 0.03) < 1e-9);
+const torsoCenter = poseGroupCenter(standing, [
+  "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+]);
+const rotatedTorso = rotatePoseGroup(
+  standing,
+  POSE_JOINT_NAMES,
+  torsoCenter,
+  Math.PI / 3,
+  400,
+  900,
+  true,
+);
+const beforeShoulder = standing.joints.find((joint) => joint.name === "left_shoulder");
+const afterShoulder = rotatedTorso.joints.find((joint) => joint.name === "left_shoulder");
+assert.ok(Math.abs(
+  Math.hypot(
+    (beforeShoulder.x - torsoCenter.x) * 400,
+    (beforeShoulder.y - torsoCenter.y) * 900,
+  ) - Math.hypot(
+    (afterShoulder.x - torsoCenter.x) * 400,
+    (afterShoulder.y - torsoCenter.y) * 900,
+  ),
+) < 1e-8, "Torso rotation must preserve joint distance in canvas space");
+assert.notDeepEqual(
+  rotatedTorso.joints.find((joint) => joint.name === "right_ankle"),
+  standing.joints.find((joint) => joint.name === "right_ankle"),
+  "The torso rotation handle must rotate the entire figure, including distal limbs",
+);
 assert.equal(peakRequests, 1, "Each browser request lane must remain strictly serialized");
 assert.deepEqual(
   requestOrder,
@@ -41,6 +163,9 @@ assert.deepEqual(
 );
 
 const inspector = await readFile(new URL("../src/components/Inspector.tsx", import.meta.url), "utf8");
+const poseGatingControls = await readFile(new URL("../src/components/PoseGatingControls.tsx", import.meta.url), "utf8");
+const poseSource = await readFile(new URL("../src/pose.ts", import.meta.url), "utf8");
+const canonicalPoseJoints = poseSource.split("POSE_JOINT_NAMES = [", 2)[1].split("] as const", 1)[0];
 const promptSection = inspector.split('{tab === "prompt"', 2)[1].split('{tab === "regions"', 1)[0];
 const regionsSection = inspector.split('{tab === "regions" && mode !== "face"', 2)[1].split('{tab === "loras"', 1)[0];
 
@@ -83,6 +208,22 @@ assert.ok(
     && inspector.includes("reconcileEmphases(selected.id, patch.prompt)"),
   "Prompt edits must repair or remove stale phrase emphasis metadata",
 );
+assert.ok(
+  inspector.includes("Subject box · mannequin")
+    && inspector.includes("Region box · no mannequin")
+    && inspector.includes("Volumetric pose gating")
+    && poseGatingControls.includes("Constrain generation to subject mannequins")
+    && poseGatingControls.includes("Hard gate steps")
+    && poseGatingControls.includes("Sigma schedule"),
+  "The inspector must distinguish volumetric subject boxes and expose pose-gating controls",
+);
+assert.ok(
+  canonicalPoseJoints.includes('"left_ankle"')
+    && poseSource.includes("PoseHeadState")
+    && !canonicalPoseJoints.includes('"nose"')
+    && !canonicalPoseJoints.includes('"left_eye"'),
+  "The canonical browser mannequin must use 13 body joints plus a head ellipse and no face handles",
+);
 
 for (const relativePath of [
   "../src/components/Inspector.tsx",
@@ -105,8 +246,9 @@ assert.ok(
 assert.ok(
   workspaceStudio.includes('loraFiles = await allFiles("loras")')
     && workspaceStudio.includes('outputFiles = await allFiles("outputs")')
+    && !workspaceStudio.includes('pose_controlnet_file_id')
     && !workspaceStudio.includes('allFiles("loras"), allFiles("upscale_models")'),
-  "Project restoration must not burst all Pod inventory requests concurrently",
+  "Project restoration must remain sequential and pose submission must not require ControlNet",
 );
 assert.ok(
   setupPanel.includes("for (const { kind } of modelKinds)")
@@ -149,8 +291,14 @@ assert.ok(
   "A missing provider Pod must open migration-or-cleanup recovery instead of the studio",
 );
 assert.ok(
-  app.includes('.filter((item) => item.state !== "deleted").at(-1)'),
+  app.includes("workspace: activeWorkspaces.at(-1) ?? null"),
   "Startup must prefer the newest active workspace record",
+);
+assert.ok(
+  app.includes("existingWorkspaces={state.workspaces}")
+    && app.includes("onWorkspaceMenu")
+    && app.includes("workspace: null"),
+  "The studio must be able to return to the workspace menu without deleting a Pod",
 );
 assert.ok(
   workspaceStudio.includes('href="https://console.runpod.io/pods"'),
@@ -173,6 +321,13 @@ assert.ok(
 );
 
 const onboarding = await readFile(new URL("../src/components/CloudOnboarding.tsx", import.meta.url), "utf8");
+assert.ok(
+  onboarding.includes("Existing cloud workspaces")
+    && onboarding.includes("Reconnect without recreating")
+    && onboarding.includes("controlPlane.workspace(workspace.id)")
+    && onboarding.includes("Connect"),
+  "The creation menu must list and reconnect existing managed Pods without starting them",
+);
 assert.ok(
   onboarding.includes("request.lease_unlimited")
     && onboarding.includes("keep running and billing until you manually stop it"),
@@ -212,6 +367,15 @@ assert.ok(
   "Starting a new job must retain the current output until its replacement completes",
 );
 assert.ok(
+  runRemoteJob.includes("isAmbiguousJobSubmissionError")
+    && runRemoteJob.includes("rememberSubmissionRecovery(recovery)")
+    && workspaceStudio.includes("recoverTimedOutSubmission")
+    && workspaceStudio.includes("Recover submission")
+    && workspaceStudio.includes("Cancel all remote work")
+    && workspaceStudio.includes("submissionRecovery.payloads[0].command_id"),
+  "An ambiguous job POST must retain its command ID and present safe recovery and cancel-all remedies",
+);
+assert.ok(
   runRemoteJob.includes('...(mode === "face"')
     && runRemoteJob.includes('face_detector_file_id: mode === "face"'),
   "Generation and image editing must not require or submit a face detector",
@@ -243,6 +407,8 @@ assert.ok(
 );
 const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const icon = await readFile(new URL("../src/components/Icon.tsx", import.meta.url), "utf8");
+const studioProject = await readFile(new URL("../src/studioProject.ts", import.meta.url), "utf8");
 assert.ok(
   regionCanvas.includes("(sourceUrl || resultUrl)")
     && regionCanvas.includes("Clear canvas"),
@@ -261,6 +427,41 @@ assert.ok(
   "Transient output delivery failures must retry instead of leaving the canvas permanently blank",
 );
 assert.ok(
+  regionCanvas.includes("const [regionsHidden, setRegionsHidden] = useState(false)")
+    && regionCanvas.includes('aria-pressed={regionsHidden}')
+    && regionCanvas.includes('regionsHidden ? "Show regions" : "Hide regions"')
+    && regionCanvas.includes('mode !== "face"')
+    && regionCanvas.includes("disabled={drag !== null}"),
+  "Generate/Edit canvases must expose an accessible, drag-safe region visibility toggle",
+);
+assert.ok(
+  regionCanvas.includes("if (!regionsHidden && drawMode) onDrawMode(null)")
+    && regionCanvas.includes("if (regionsHidden)")
+    && regionCanvas.includes("onDrawMode(nextMode)")
+    && regionCanvas.includes("!regionOverlayHidden && orderedRegions.map")
+    && regionCanvas.includes("onPointerDown={regionOverlayHidden ? undefined : beginDraw}")
+    && styles.includes(".region-overlay.regions-hidden { pointer-events: none; }"),
+  "Hidden regions must render no annotation groups, accept no pointer input, and reveal before drawing",
+);
+const visibilityFunctions = regionCanvas
+  .split("function toggleRegionsHidden()", 2)[1]
+  .split("return (", 1)[0];
+assert.ok(
+  regionCanvas.includes('toggleDrawMode("region")')
+    && regionCanvas.includes('toggleDrawMode("subject")')
+    && !visibilityFunctions.includes("onRegions(")
+    && regionCanvas.includes('className="pose-mannequin"')
+    && regionCanvas.includes("!regionOverlayHidden && orderedRegions.map"),
+  "The pose canvas must reveal before either drawing mode and hide the entire mannequin without mutating region or pose data",
+);
+assert.ok(
+  icon.includes('| "eye"')
+    && icon.includes('| "eyeOff"')
+    && !studioProject.includes("regionsHidden")
+    && !studioProject.includes("regions_hidden"),
+  "The visibility control must use dedicated icons and remain outside canonical project JSON",
+);
+assert.ok(
   regionCanvas.includes("orderedRegions")
     && regionCanvas.includes("visibleRegions.filter((region) => region.id !== selectedId)")
     && regionCanvas.includes("onPointerDown={region.id === selectedId")
@@ -273,6 +474,15 @@ assert.ok(
     && regionCanvas.includes("availableHeight / canvasHeight")
     && regionCanvas.includes('aspectRatio: `${canvasWidth} / ${canvasHeight}`'),
   "The canvas frame must scale uniformly against both available axes when the event dock is resized",
+);
+assert.ok(
+  regionCanvas.includes("pose-torso-move")
+    && regionCanvas.includes("pose-rotate-handle")
+    && regionCanvas.includes("POSE_LIMB_GROUPS")
+    && regionCanvas.includes("translatePoseGroup")
+    && regionCanvas.includes("rotatePoseGroup")
+    && regionCanvas.includes("pose-volume pose-neck"),
+  "The volumetric mannequin must expose attached torso translation/rotation and whole-limb controls",
 );
 const uploadQueue = await readFile(new URL("../src/useUploadQueue.ts", import.meta.url), "utf8");
 assert.ok(

@@ -9,7 +9,9 @@ FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
 if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
-    from k2_region_lab.project import PROJECT_VERSION
+    from k2_region_lab.pose import default_volumetric_subject_pose
+    from k2_region_lab.project import PROJECT_VERSION, ProjectState, project_document
+    from k2_region_lab.regions import PixelBox, RegionDefinition
     from k2_region_lab.web.app import create_app
     from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
     from k2_region_lab.web.security import ControlPlaneSecuritySettings
@@ -116,6 +118,47 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("brown hair and green eyes", body["prompt"])
         self.assertIn("lface", body["prompt"])
+
+    async def test_volumetric_control_preview_is_the_canonical_png(self) -> None:
+        project = project_document(
+            ProjectState(
+                canvas_width=512,
+                canvas_height=768,
+                regions=(
+                    RegionDefinition(
+                        region_id="subject-a",
+                        name="Subject A",
+                        box=PixelBox(80, 40, 420, 730),
+                        prompt="a standing subject",
+                        priority=1,
+                        spatial_role="subject",
+                        region_type="subject",
+                        pose=default_volumetric_subject_pose(),
+                    ),
+                ),
+            )
+        )
+        project["generation"]["pose_control_lora_enabled"] = True
+        project["generation"]["pose_control_lora_model"] = None
+
+        first = await self.client.post(
+            "/api/v1/projects/volumetric-control-preview",
+            json={"project": project, "subject_region_id": None},
+        )
+        second = await self.client.post(
+            "/api/v1/projects/volumetric-control-preview",
+            json={"project": project, "subject_region_id": "subject-a"},
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.headers["content-type"], "image/png")
+        self.assertEqual(
+            first.headers["x-k2-control-format"],
+            "k2-volumetric-pose-control-v1",
+        )
+        self.assertEqual(first.content, second.content)
+        self.assertRegex(first.headers["x-k2-control-sha256"], r"^[a-f0-9]{64}$")
+        self.assertGreater(float(first.headers["x-k2-control-coverage"]), 0)
 
     async def test_credentials_are_required_and_never_echoed(self) -> None:
         blocked = await self.client.get("/api/v1/gpus")

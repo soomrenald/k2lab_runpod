@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "date": "2026-07-30",
+  "pod_id": "zft7no3tyahubk",
+  "hardware": {
+    "gpu": "NVIDIA A40",
+    "vram_mib": 46068,
+    "compute_capability": "8.6",
+    "driver": "580.159.04",
+    "torch": "2.9.1+cu128",
+    "bf16_supported": true,
+    "pod_ram_bytes": 49999998976
+  },
+  "software": {
+    "runpod_branch": "feature/blender-depth-regions",
+    "runpod_commit": "dfed24f",
+    "k2core_commit": "50f60d3c70371966829ec4d3cc6818a94e590b00",
+    "checkpoint_sha256": "fb80547ed79b47c1e3fea7bb9d36297e3917b2115fab6700ca1501350f9f483c",
+    "depth_estimator": "depth-anything/Depth-Anything-V2-Small-hf"
+  },
+  "generation_cases": {
+    "raw-correct": {
+      "model_load_seconds": 111.50995405798312,
+      "generation_seconds": 120.98544816393405,
+      "steps": 28,
+      "cfg": 3.5,
+      "vram_mode": "dynamic",
+      "oom_recovered": false,
+      "gpu_free_bytes_at_completion": 38734266368,
+      "gpu_reserved_bytes_at_completion": 8613003264,
+      "ram_available_bytes_at_completion": 16900313088
+    },
+    "raw-shuffled": {
+      "model_load_seconds": 85.29614220291842,
+      "generation_seconds": 113.76540560007561,
+      "steps": 28,
+      "cfg": 3.5,
+      "vram_mode": "dynamic",
+      "oom_recovered": false
+    },
+    "raw-zero": {
+      "model_load_seconds": 64.86425271001644,
+      "generation_seconds": 112.15919473092072,
+      "steps": 28,
+      "cfg": 3.5,
+      "vram_mode": "dynamic",
+      "oom_recovered": false
+    },
+    "turbo-correct": {
+      "model_load_seconds": 18.61373817292042,
+      "generation_seconds": 122.48106516199186,
+      "steps": 8,
+      "cfg": 0.0,
+      "vram_mode": "high_vram",
+      "oom_recovered": false,
+      "gpu_free_bytes_at_completion": 14220656640,
+      "gpu_reserved_bytes_at_completion": 33126612992,
+      "ram_available_bytes_at_completion": 42777669632
+    },
+    "turbo-shuffled": {
+      "model_load_seconds": 6.042829288984649,
+      "generation_seconds": 42.3684396360768,
+      "steps": 8,
+      "cfg": 0.0,
+      "vram_mode": "high_vram",
+      "oom_recovered": false
+    },
+    "turbo-zero": {
+      "model_load_seconds": 6.224440485937521,
+      "generation_seconds": 42.47547520394437,
+      "steps": 8,
+      "cfg": 0.0,
+      "vram_mode": "high_vram",
+      "oom_recovered": false
+    }
+  },
+  "depth_response_metrics": {
+    "raw-correct": {
+      "depth_correlation": 0.14935215596301196,
+      "depth_rank_correlation": 0.2822755457378719,
+      "edge_alignment": 0.13855399582864494,
+      "silhouette_edge_iou": 0.22289380695555142
+    },
+    "raw-shuffled": {
+      "depth_correlation": 0.40357513511922716,
+      "depth_rank_correlation": 0.11551989317744467,
+      "edge_alignment": 0.027038082474831863,
+      "silhouette_edge_iou": 0.09227574750830565
+    },
+    "raw-zero": {
+      "depth_correlation": 0.3104573886453469,
+      "depth_rank_correlation": 0.1513299215473209,
+      "edge_alignment": 0.018141158156883334,
+      "silhouette_edge_iou": 0.06823166274063845
+    },
+    "turbo-correct": {
+      "depth_correlation": 0.3079196153939254,
+      "depth_rank_correlation": 0.6578108389436403,
+      "edge_alignment": 0.46246511423368875,
+      "silhouette_edge_iou": 0.35340125553154267
+    },
+    "turbo-shuffled": {
+      "depth_correlation": 0.17880026722394415,
+      "depth_rank_correlation": 0.2960615915578965,
+      "edge_alignment": -0.006952517709730073,
+      "silhouette_edge_iou": 0.07136456211812628
+    },
+    "turbo-zero": {
+      "depth_correlation": 0.07741948016953892,
+      "depth_rank_correlation": 0.6018979982858282,
+      "edge_alignment": 0.02736676692937476,
+      "silhouette_edge_iou": 0.04447621316813597
+    }
+  },
+  "integration": {
+    "depth_disabled_before_sha256": "db5a0db6aeecd807f3eaf4bc83d3341cb3f174b07dca03cb4d3db1cb5ac9349e",
+    "depth_disabled_after_sha256": "db5a0db6aeecd807f3eaf4bc83d3341cb3f174b07dca03cb4d3db1cb5ac9349e",
+    "depth_disabled_pixels_identical": true,
+    "ordinary_lora": {
+      "name": "krea2_turbo_distill_r256",
+      "strength": 0.5,
+      "matched_targets": 265,
+      "applied_targets": 265,
+      "status": "applied_global"
+    },
+    "regional_depth": {
+      "region_id": "subject",
+      "mode": "relax",
+      "multiplier": 0.2,
+      "feather_pixels": 32.0,
+      "token_minimum": 0.20000003278255463,
+      "token_maximum": 1.0,
+      "token_mean": 0.9394186735153198,
+      "transition_count": 8,
+      "visual_seam": false
+    }
+  },
+  "artifacts": {
+    "global_contact_sheet": {
+      "path": "a40-global-response.jpg",
+      "sha256": "42f579d433bc4ae0ba2bedb781511202a7e713f1a4c34036583c779285a86c3c"
+    },
+    "integration_contact_sheet": {
+      "path": "a40-integration-response.jpg",
+      "sha256": "10a0ab6cbd4717bd366e860ae7969ea055359209c1389c3c6f42437efb0d7a4f"
+    }
+  },
+  "gates": {
+    "A": "pass",
+    "B": "pass",
+    "C": "pass",
+    "D": "pass",
+    "E": "pass",
+    "F": "pass via approved narrow host-only waiver for two named async tests; clean-container and CI validation remain mandatory"
+  }
+}

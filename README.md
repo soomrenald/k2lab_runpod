@@ -37,6 +37,8 @@ application talks directly to RunPod and to the authenticated agent on your Pod.
 - Unified global and regional prompting with soft latent-space and attention guidance.
 - Subject and background region roles with explicit front-to-back ordering.
 - Regional LoRA routing and dedicated character-identity LoRA routing.
+- Optional volumetric mannequin pose conditioning and Krea-native pose Control LoRA routing.
+- Feature-gated global and regional Krea depth conditioning with Blender authoring tools.
 - Image editing with separate reference-layout and edit-target layers.
 - Optional face detection and selected-face refinement. Face detection is not required for
   normal generation or image editing.
@@ -207,6 +209,10 @@ Pod whose agent version or immutable image does not match the workspace record.
 - [Projector defaults and source provenance](docs/user_guide.md#projector-preset-defaults-and-source-provenance)
 - [RunPod lifecycle and migration runbook](docs/runpod_workspace_operations.md)
 - [Regional isolation parity](docs/regional_isolation_parity.md)
+- [Volumetric pose control](docs/krea_volumetric_pose_control.md)
+- [Subject pose controls](docs/subject_pose_control.md)
+- [Depth control](docs/DEPTH_CONTROL.md)
+- [Blender depth workflow](docs/BLENDER_DEPTH_WORKFLOW.md)
 - [Web/desktop parity notes](docs/web_desktop_parity.md)
 - [RunPod web workspace specification](docs/runpod_web_workspace_spec.md)
 

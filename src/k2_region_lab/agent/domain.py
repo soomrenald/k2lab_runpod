@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from k2core.depth import DepthFeatureFlags
 from k2_region_lab.agent import AGENT_API_VERSION, AGENT_VERSION, WORKER_PROTOCOL_VERSION
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION
 
@@ -37,6 +38,48 @@ class AgentCapabilities(BaseModel):
     pytorch_version: str | None = None
     supported_job_kinds: list[str] = Field(
         default_factory=lambda: ["generate", "edit_image", "refine_faces"]
+    )
+    volumetric_pose_gating: dict[str, object] = Field(
+        default_factory=lambda: {
+            "format": "k2-volumetric-pose-v1",
+            "soft_schedules": ["cosine", "linear", "exponential", "stepped"],
+            "sigma_modes": ["automatic", "phase_weighted", "advanced"],
+        }
+    )
+    pose_semantic_routing: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "modes": [
+                "spatial_only",
+                "attention_isolation",
+                "prediction_composite",
+            ],
+            "subject_prompt_encoding": True,
+            "scope_aware_regional_lora": True,
+            "single_sampler_trajectory": True,
+            "multigpu_prediction_composite": False,
+        }
+    )
+    krea_volumetric_pose_control_lora: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "control_formats": ["k2-volumetric-pose-control-v1"],
+            "scope_aware": True,
+            "single_gpu_prediction_composite": True,
+            "strength_schedule": "constant_all_steps",
+        }
+    )
+    krea_depth_control: dict[str, object] = Field(
+        default_factory=lambda: {
+            "version": 1,
+            "feature_flags": DepthFeatureFlags.from_environment().document(),
+            "control_format": "krea2-depth-control-lora-v1",
+            "checkpoint_sha256": (
+                "fb80547ed79b47c1e3fea7bb9d36297e3917b2115fab6700ca1501350f9f483c"
+            ),
+            "region_modes": ["inherit", "emphasize", "relax", "ignore"],
+            "single_sampler_trajectory": True,
+        }
     )
 
 
@@ -76,7 +119,9 @@ class FileKind(StrEnum):
     TEXT_ENCODERS = "text_encoders"
     VAE = "vae"
     LORAS = "loras"
+    KREA_CONTROL_LORAS = "krea_control_loras"
     UPSCALE_MODELS = "upscale_models"
+    CONTROLNET_MODELS = "controlnet_models"
     FACE_DETECTION = "face_detection"
     PROJECTS = "projects"
     INPUTS = "inputs"
@@ -95,6 +140,14 @@ class FileRecord(BaseModel):
 class FilePage(BaseModel):
     items: list[FileRecord]
     next_cursor: str | None = None
+
+
+class KreaControlCheckpointInspection(BaseModel):
+    compatible: bool
+    verified: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    checkpoint: dict[str, object] | None = None
 
 
 class UploadCreateRequest(BaseModel):
@@ -260,6 +313,14 @@ class JobSubmitRequest(BaseModel):
     vae_file_id: str | None = Field(default=None, max_length=64)
     face_detector_file_id: str | None = Field(default=None, max_length=64)
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
+    pose_control_lora_file_id: str | None = Field(default=None, max_length=64)
+    pose_control_allow_unverified_legacy: bool = False
+    depth_checkpoint_file_id: str | None = Field(default=None, max_length=64)
+    depth_image_file_id: str | None = Field(default=None, max_length=64)
+    depth_override_file_ids: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=128,
+    )
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
     filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)

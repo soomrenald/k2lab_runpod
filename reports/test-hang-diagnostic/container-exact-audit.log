@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /opt/diag-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /src
+configfile: pyproject.toml
+plugins: anyio-4.14.2, timeout-2.4.0
+timeout: 30.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 1 item
+
+src/tests/test_runpod_backend.py::RunPodBackendTests::test_audit_store_redacts_nested_secrets_and_authenticated_urls <- ../home/wolfhard/k2lab_runpod/tests/test_runpod_backend.py PASSED
+
+=============================== warnings summary ===============================
+opt/diag-venv/lib/python3.12/site-packages/_pytest/cacheprovider.py:469
+  /opt/diag-venv/lib/python3.12/site-packages/_pytest/cacheprovider.py:469: PytestCacheWarning: cache could not write path /src/.pytest_cache/v/cache/nodeids: [Errno 30] Read-only file system: '/src/.pytest_cache/v/cache/nodeids'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= 1 passed, 1 warning in 0.40s =========================

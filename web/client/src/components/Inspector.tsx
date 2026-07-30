@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
-import type { DetectedFaceRecord, WorkerMemoryStatus } from "../api";
+import type { DetectedFaceRecord, KreaControlCheckpointInspection, WorkerMemoryStatus } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
 import { DraftNumberInput } from "./DraftNumberInput";
+import { PoseGatingControls } from "./PoseGatingControls";
 import {
   COMFYUI_SAMPLERS,
   COMFYUI_SCHEDULERS,
@@ -21,6 +22,7 @@ import {
   promptEmphasisMatches,
   reconcilePromptEmphases,
 } from "../promptEmphasis.ts";
+import { mirrorPose, squattingPose, standingPose } from "../pose.ts";
 
 type InspectorTab = "prompt" | "regions" | "loras" | "advanced";
 
@@ -36,6 +38,15 @@ interface Props {
   onSettings: (settings: StudioSettings) => void;
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
+  onChoosePoseControlLora: () => void;
+  onChooseDepthCheckpoint: () => void;
+  onChooseDepthImage: () => void;
+  onPreviewPoseControl: () => void;
+  poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
+  depthRegionsAvailable: boolean;
+  poseControlCompatibility: KreaControlCheckpointInspection | null;
+  onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   faces: DetectedFaceRecord[];
@@ -61,7 +72,14 @@ interface Props {
 export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
-    onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
+    onGlobalPrompt, onSettings, onLoras, onChooseLora, onChoosePoseControlLora,
+    onChooseDepthCheckpoint, onChooseDepthImage,
+    onPreviewPoseControl,
+    poseControlLoraAvailable,
+    depthControlAvailable,
+    depthRegionsAvailable,
+    poseControlCompatibility, onInspectPoseControlLegacy,
+    onChooseUpscaleModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
@@ -221,7 +239,7 @@ export function Inspector(props: Props) {
         {tab === "prompt" && <>
           <div className="inspector-section">
             <label className="field-label" htmlFor="global-prompt">
-              {mode === "edit" && activeLayer === "targets" ? "Edit instruction" : mode === "edit" ? "Original global prompt · reference" : mode === "face" ? "Generation prompt · reference" : "Global prompt"}
+              {mode === "edit" && activeLayer === "targets" ? "Edit instruction" : mode === "edit" ? "Original global prompt · reference" : mode === "face" ? "Generation prompt · reference" : "Scene prompt"}
             </label>
             <textarea ref={globalPromptRef} id="global-prompt" className="prompt-area global-area"
               placeholder={mode === "edit" ? "Describe the overall edit intent…" : "Describe the complete scene…"}
@@ -232,23 +250,50 @@ export function Inspector(props: Props) {
                 }
               }} />
             {mode === "edit" && activeLayer === "targets" && <p className="field-help">Combined with each target prompt. Leave blank for box-only instructions.</p>}
+            {mode === "generation" && <>
+              <label className="field-label" htmlFor="shared-visual-prompt">Shared visual context</label>
+              <textarea
+                id="shared-visual-prompt"
+                className="prompt-area identity-area"
+                placeholder="Lighting, lens, medium, palette, and visual style…"
+                value={settings.generation.sharedVisualPrompt}
+                onChange={(event) => updateGeneration({ sharedVisualPrompt: event.target.value })}
+              />
+              <p className="field-help">Lighting, lens, medium, palette, and visual style shared by the scene and every subject-only conditioning branch. Do not put scene objects or background content here.</p>
+            </>}
           </div>
           {mode !== "face" && <div className="inspector-section">
             <div className="section-inline-title"><span>{selected ? selected.name : "Regional prompt"}</span>{selected && <span className="active-pill">Selected</span>}</div>
             {selected ? <>
               <input className="text-input compact-input" value={selected.name} onChange={(event) => updateSelected({ name: event.target.value })} />
-              <label className="field-label">Spatial role</label>
-              <select className="select-input compact-select" value={selected.spatialRole} onChange={(event) => updateSelected({ spatialRole: event.target.value as RegionBox["spatialRole"] })}>
-                <option value="auto">Auto (based on box width)</option><option value="subject">Subject target</option><option value="background">Background band</option>
-              </select>
+              <label className="field-label">Box type</label>
+              <div className="box-type-readout">
+                <strong>{selected.regionType === "subject" ? "Subject box · mannequin" : "Region box · no mannequin"}</strong>
+                <small>{selected.regionType === "subject" ? "Contributes volumetric pose gating when enabled." : "Use for objects, scenery, or background areas."}</small>
+              </div>
+              {selected.regionType === "region" && <>
+                <label className="field-label">Spatial role</label>
+                <select className="select-input compact-select" value={selected.spatialRole} onChange={(event) => updateSelected({ spatialRole: event.target.value as RegionBox["spatialRole"] })}>
+                  <option value="auto">Auto (based on box width)</option><option value="subject">Subject target</option><option value="background">Background band</option>
+                </select>
+              </>}
               <label className="field-label">Region prompt</label>
               <textarea ref={regionPromptRef} className="prompt-area" value={selected.prompt}
                 placeholder={mode === "edit" && activeLayer === "targets" ? "Describe the edit inside this box…" : "Describe this region…"}
                 onChange={(event) => updateSelected({ prompt: event.target.value })} />
-              <label className="field-label">Face identity prompt</label>
-              <textarea className="prompt-area identity-area" value={selected.faceIdentityPrompt}
-                placeholder="Stable facial identity, person class, face, and hair…"
-                onChange={(event) => updateSelected({ faceIdentityPrompt: event.target.value })} />
+              {selected.regionType === "subject" && <>
+                <label className="field-label">Face identity prompt</label>
+                <textarea className="prompt-area identity-area" value={selected.faceIdentityPrompt}
+                  placeholder="Stable facial identity, person class, face, and hair…"
+                  onChange={(event) => updateSelected({ faceIdentityPrompt: event.target.value })} />
+                <label className="check-row compact-check"><input type="checkbox" checked={selected.pose?.enabled ?? false} onChange={(event) => updateSelected({ pose: { ...(selected.pose ?? standingPose()), enabled: event.target.checked } })} /><span><strong>Enable this mannequin</strong></span></label>
+                <div className="inline-actions pose-preset-actions">
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: standingPose() })}>Standing</button>
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: squattingPose() })}>Squatting</button>
+                  <button className="tiny-button" onClick={() => updateSelected({ pose: mirrorPose(selected.pose ?? standingPose()) })}>Mirror</button>
+                </div>
+                <p className="field-help">Drag body joints and the three head controls directly on the canvas. The center head control moves it; the right and bottom controls resize it. Limbs may extend outside the subject box.</p>
+              </>}
             </> : <div className="empty-inspector"><Icon name="layers" /><span>Select a region to edit its prompt.</span></div>}
           </div>}
           {emphasisAvailable && <div className="inspector-section emphasis-panel">
@@ -281,11 +326,27 @@ export function Inspector(props: Props) {
           <div className="section-inline-title"><span>{activeLayer === "reference" ? "Reference regions · front to back" : activeLayer === "targets" ? "Edit targets · front to back" : "Scene regions · front to back"}</span></div>
           <div className="region-list">{visibleRegions.map((region, index) => <button className={`region-list-row ${selectedId === region.id ? "selected" : ""}`} key={region.id} onClick={() => onSelect(region.id)}>
             <span className="region-swatch" style={{ opacity: region.enabled ? 1 : 0.35 }}>{index + 1}</span>
-            <span className="region-list-copy"><strong>{region.name}</strong><small>{region.spatialRole} · {Math.round(region.width)} × {Math.round(region.height)}</small></span>
+            <span className="region-list-copy"><strong>{region.name}</strong><small>{region.regionType === "subject" ? "Subject · mannequin" : `Region · ${region.spatialRole}`} · {Math.round(region.width)} × {Math.round(region.height)}</small></span>
             <input type="checkbox" aria-label={`Enable ${region.name}`} checked={region.enabled} onClick={(event) => event.stopPropagation()} onChange={(event) => onRegions(regions.map((item) => item.id === region.id ? { ...item, enabled: event.target.checked } : item))} />
           </button>)}</div>
           {visibleRegions.length === 0 && <div className="empty-inspector"><Icon name="plus" /><span>Draw a box on the canvas to add a region.</span></div>}
           {selected && <>
+            {mode === "generation" && depthRegionsAvailable && settings.generation.depth.enabled && <>
+              <Choice
+                label="Depth behavior"
+                value={selected.depthMode ?? "inherit"}
+                options={[["inherit", "Inherit"], ["emphasize", "Emphasize"], ["relax", "Relax"], ["ignore", "Ignore"]]}
+                onChange={(depthMode) => onRegions(regions.map((item) => item.id === selected.id ? { ...item, depthMode: depthMode as NonNullable<RegionBox["depthMode"]> } : item))}
+              />
+              {(selected.depthMode === "emphasize" || selected.depthMode === "relax") && <LinkedValue
+                label="Regional depth strength"
+                value={selected.depthStrength ?? 1}
+                min={selected.depthMode === "emphasize" ? 1 : 0}
+                max={selected.depthMode === "emphasize" ? 3 : 1}
+                step={0.05}
+                onChange={(depthStrength) => onRegions(regions.map((item) => item.id === selected.id ? { ...item, depthStrength } : item))}
+              />}
+            </>}
             <div className="inline-actions region-depth-actions">
               <button className="tiny-button" disabled={visibleRegions[0]?.id === selected.id} onClick={() => moveSelected(-1)}>↑ Move forward</button>
               <button className="tiny-button" disabled={visibleRegions[visibleRegions.length - 1]?.id === selected.id} onClick={() => moveSelected(1)}>↓ Move backward</button>
@@ -296,7 +357,7 @@ export function Inspector(props: Props) {
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
 
-        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
+        {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChoosePoseControlLora={onChoosePoseControlLora} onChooseDepthCheckpoint={onChooseDepthCheckpoint} onChooseDepthImage={onChooseDepthImage} onPreviewPoseControl={onPreviewPoseControl} poseControlLoraAvailable={poseControlLoraAvailable} depthControlAvailable={depthControlAvailable} poseControlCompatibility={poseControlCompatibility} onInspectPoseControlLegacy={onInspectPoseControlLegacy} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} enabledMannequinCount={regions.filter((region) => region.layer === "generation" && region.enabled && region.regionType === "subject" && region.pose?.enabled).length} />}
       </div>
     </aside>
   );
@@ -379,12 +440,20 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
   </div>;
 }
 
-function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory }: {
+function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEdit, updateFace, updateRuntime, onChoosePoseControlLora, onChooseDepthCheckpoint, onChooseDepthImage, onPreviewPoseControl, poseControlLoraAvailable, depthControlAvailable, poseControlCompatibility, onInspectPoseControlLegacy, onChooseUpscaleModel, onPreviewUnifiedPrompt, workerMemory, memoryRefreshing, memoryActionsDisabled, onRefreshMemory, onReleaseMemory, enabledMannequinCount }: {
   mode: StudioMode; activeLayer: RegionLayer; settings: StudioSettings;
   updateGeneration: (patch: Partial<GenerationSettings>) => void;
   updateEdit: (patch: Partial<StudioSettings["edit"]>) => void;
   updateFace: (patch: Partial<StudioSettings["face"]>) => void;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
+  onChoosePoseControlLora: () => void;
+  onChooseDepthCheckpoint: () => void;
+  onChooseDepthImage: () => void;
+  onPreviewPoseControl: () => void;
+  poseControlLoraAvailable: boolean;
+  depthControlAvailable: boolean;
+  poseControlCompatibility: KreaControlCheckpointInspection | null;
+  onInspectPoseControlLegacy: (allow: boolean) => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   workerMemory: WorkerMemoryStatus | null;
@@ -392,6 +461,7 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
   memoryActionsDisabled: boolean;
   onRefreshMemory: () => void;
   onReleaseMemory: () => void;
+  enabledMannequinCount: number;
 }) {
   const generation = settings.generation;
   const edit = settings.edit;
@@ -473,6 +543,59 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
     {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
     {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
     {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
+    {mode === "generation" && depthControlAvailable && <>
+      <SectionTitle text="Global depth control" />
+      <Check
+        label="Use a grayscale depth map"
+        checked={generation.depth.enabled}
+        onChange={(enabled) => updateGeneration({
+          depth: { ...generation.depth, enabled },
+          poseControlLoraEnabled: enabled ? false : generation.poseControlLoraEnabled,
+        })}
+      />
+      {generation.depth.enabled && <>
+        <button className="quiet-button full-button" onClick={onChooseDepthCheckpoint}>
+          {generation.depth.checkpointName || "Choose Krea depth adapter checkpoint…"}
+        </button>
+        <button className="quiet-button full-button" onClick={onChooseDepthImage}>
+          {generation.depth.imageName || "Choose grayscale PNG or TIFF depth map…"}
+        </button>
+        <Choice
+          label="Normalization"
+          value={generation.depth.normalization}
+          options={[["minmax", "Min/max"], ["percentile", "Percentile"], ["none", "Preserve encoded range"]]}
+          onChange={(normalization) => updateGeneration({ depth: { ...generation.depth, normalization: normalization as GenerationSettings["depth"]["normalization"] } })}
+        />
+        <Check
+          label="Invert depth convention"
+          checked={generation.depth.invert}
+          onChange={(invert) => updateGeneration({ depth: { ...generation.depth, invert } })}
+        />
+        <div className="settings-grid">
+          <LinkedValue label="Global strength" value={generation.depth.globalStrength} min={0} max={3} step={0.05} onChange={(globalStrength) => updateGeneration({ depth: { ...generation.depth, globalStrength } })} />
+          <LinkedValue label="Mask feather" value={generation.depth.featherPixels} min={0} max={2048} step={8} onChange={(featherPixels) => updateGeneration({ depth: { ...generation.depth, featherPixels } })} />
+          <LinkedValue label="Start" value={generation.depth.startPercent} min={0} max={generation.depth.endPercent} step={0.05} onChange={(startPercent) => updateGeneration({ depth: { ...generation.depth, startPercent } })} />
+          <LinkedValue label="End" value={generation.depth.endPercent} min={generation.depth.startPercent} max={1} step={0.05} onChange={(endPercent) => updateGeneration({ depth: { ...generation.depth, endPercent } })} />
+          <LinkedValue label="Gamma" value={generation.depth.gamma} min={0.1} max={4} step={0.05} onChange={(gamma) => updateGeneration({ depth: { ...generation.depth, gamma } })} />
+        </div>
+        <p className="field-help">The public adapter expects inverse depth: near objects white, far objects black. Use inversion only when the uploaded preview uses the opposite convention.</p>
+      </>}
+    </>}
+    {mode === "generation" && <>
+      <SectionTitle text="Volumetric pose gating" />
+      <PoseGatingControls
+        generation={generation}
+        hasEnabledMannequin={enabledMannequinCount > 0}
+        subjectCount={enabledMannequinCount}
+        onChooseControlLora={onChoosePoseControlLora}
+        onPreviewControl={onPreviewPoseControl}
+        controlLoraAvailable={poseControlLoraAvailable}
+        compatibility={poseControlCompatibility}
+        onInspectLegacy={onInspectPoseControlLegacy}
+        onChange={updateGeneration}
+      />
+      <p className="field-help">Filled mannequins define early denoising volumes and subject ownership. Ordinary region boxes remain available for objects and backgrounds and never add mannequin gating.</p>
+    </>}
     <Check label="Separate overlapping subject targets" checked={values.subjectCompetition} onChange={(subjectCompetition) => update({ subjectCompetition })} />
     <Check label="Make subjects fill their boxes" checked={values.subjectFill} onChange={(subjectFill) => update({ subjectFill })} />
     {mode === "generation" && <Check label="Relax spatial guidance during late steps" checked={generation.relaxation} onChange={(relaxation) => updateGeneration({ relaxation })} />}
