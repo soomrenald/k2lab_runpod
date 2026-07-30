@@ -11,6 +11,7 @@ LAYOUT_VERSION: Final = 1
 MODEL_KINDS: Final = {
     "diffusion_models",
     "text_encoders",
+    "tokenizers",
     "vae",
     "loras",
     "krea_control_loras",
@@ -112,8 +113,10 @@ class WorkspaceLayout:
             except FileNotFoundError:
                 pass
 
-    def model_inventory_ready(self) -> bool:
-        required = ("diffusion_models", "text_encoders", "vae")
+    def model_inventory_ready(self, *, include_tokenizer: bool = False) -> bool:
+        required = ["diffusion_models", "text_encoders", "vae"]
+        if include_tokenizer:
+            required.append("tokenizers")
         return all(any(self.destination(kind).iterdir()) for kind in required)
 
     def _validate_root(self) -> None:

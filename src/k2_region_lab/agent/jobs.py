@@ -267,9 +267,7 @@ class JobManager:
         worker_python: Path,
         comfyui_root: Path,
         inference_backend: str = "comfyui",
-        native_tokenizer_path: Path = Path(
-            "/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer"
-        ),
+        native_tokenizer_path: Path | None = None,
         native_tokenizer_sha256: str = (
             "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
         ),
@@ -283,7 +281,11 @@ class JobManager:
         self._worker_python = worker_python
         self._comfyui_root = comfyui_root
         self._inference_backend = inference_backend
-        self._native_tokenizer_path = native_tokenizer_path
+        self._native_tokenizer_path = native_tokenizer_path or (
+            layout.root / "models" / "tokenizers"
+            if inference_backend == "native"
+            else Path("/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer")
+        )
         self._native_tokenizer_sha256 = native_tokenizer_sha256
         self._worker_startup_timeout_seconds = worker_startup_timeout_seconds
         self._generation_timeout_seconds = generation_timeout_seconds
