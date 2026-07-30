@@ -2,9 +2,11 @@
 
 Date: 2026-07-30
 
-Feature branch: `feature/blender-depth-regions` at `1bef6ae`
+Feature implementation/evidence branch: `feature/blender-depth-regions` at
+`270f108e8dd31e93942c1c696a5d8f3cb0f2466b`
 
-Stable branch control: `main` at `9e2cfc64`
+Stable branch control: `main` at
+`9e2cfc64ca8c589756f782c5adfa6d5325c9165b`
 
 Pre-depth feature control: `4048ad6`
 
@@ -27,8 +29,25 @@ cross-thread handoff:
 - the upload test waits for an idle executor worker to deliver an ASGI file
   inventory result to the event loop.
 
-This is not a branch regression. No production flag was changed and the branch
-was not merged.
+This is not a branch regression. No production flag was changed.
+
+## Waiver disposition
+
+Gate F's narrow waiver was explicitly approved on 2026-07-30 for only these
+two tests and only for their results in the affected host environment:
+
+1. `tests/test_runpod_backend.py::RunPodBackendTests::test_audit_store_redacts_nested_secrets_and_authenticated_urls`
+2. `tests/test_workspace_agent.py::WorkspaceAgentTests::test_chunked_upload_resumes_verifies_and_updates_inventory`
+
+Neither test is waived in a clean container or CI, and no other failure is
+waived. A new failure, a clean-container or CI failure of either named test, or
+a branch change affecting either execution path invalidates the waiver.
+
+The approval applies to feature evidence commit
+`270f108e8dd31e93942c1c696a5d8f3cb0f2466b` against stable-main control commit
+`9e2cfc64ca8c589756f782c5adfa6d5325c9165b`. The clean Ubuntu 24.04 result
+supporting approval is `305 passed, 15 skipped, 16 subtests passed` in 11.66
+seconds.
 
 ## Exact tests and commands
 
@@ -233,5 +252,6 @@ Residual risk:
 - the 30-second hard timeout stops the process at the first timeout, so a
   subsequent CI run must be used to discover additional timeouts.
 
-This evidence supports the narrow waiver, but it remains pending explicit
-approval. No merge should occur before that approval.
+This evidence supports the approved narrow waiver. It does not convert either
+host timeout into a passing test and does not relax clean-container or CI
+requirements.

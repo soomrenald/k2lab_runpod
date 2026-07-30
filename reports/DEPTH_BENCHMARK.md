@@ -9,8 +9,8 @@ repeatable response in both Raw and Turbo, regional soft weighting works
 without a rectangular seam, and a depth-enabled generation leaves the
 depth-disabled path pixel-identical afterward. Production feature flags remain
 off. A bounded Gate F diagnostic classifies two pre-existing test hangs as a
-deterministic host-infrastructure incompatibility. The narrow waiver remains
-pending explicit approval, so the branch is not cleared for merge.
+deterministic host-infrastructure incompatibility. The narrow host-only waiver
+was explicitly approved; clean-container and CI results remain mandatory.
 
 The live run used an NVIDIA A40 (46,068 MiB), Torch 2.9.1+cu128, a 50 GB Pod
 memory limit, and checkpoint SHA-256
@@ -137,8 +137,8 @@ executor worker has completed its work. A repository-independent
 the selector wakeup until an unrelated timer fires. Branch modules are imported
 during app setup, but executed-line tracing does not reach the depth payload
 code. The complete evidence, exact commands, timeout behavior, and residual
-risk are in `test-hang-diagnostic/REPORT.md`. Gate F remains pending approval of
-that narrow waiver.
+risk are in `test-hang-diagnostic/REPORT.md`. Gate F is accepted through that
+approved narrow waiver, subject to a green final merge-candidate container run.
 
 Production rollout remains reversible: all four depth feature flags default to
 false, legacy projects load with depth disabled, and removing the flags and
