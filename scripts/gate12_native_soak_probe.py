@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--count", type=int, default=100)
+    parser.add_argument("--width", type=int, default=512)
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--hourly-cost-usd", type=float, default=0.44)
     parser.add_argument(
@@ -329,6 +332,9 @@ def generation_timings(
 def base_payload(args: argparse.Namespace, fixture: dict[str, Any]) -> dict[str, Any]:
     return {
         **fixture,
+        "width": args.width,
+        "height": args.height,
+        "steps": args.steps,
         "inference_backend": "native",
         "comfyui_root": "/opt/ComfyUI",
         "diffusion_models": str(args.transformer.parent),
@@ -353,18 +359,28 @@ def base_payload(args: argparse.Namespace, fixture: dict[str, Any]) -> dict[str,
 
 
 def load_state(args: argparse.Namespace) -> dict[str, Any]:
+    workload = {
+        "width": args.width,
+        "height": args.height,
+        "steps": args.steps,
+        "sampler": "euler",
+        "scheduler": "simple",
+    }
     if args.state.is_file():
         state = json.loads(args.state.read_text(encoding="utf-8"))
         if state.get("target_count") != args.count:
             raise ValueError("existing state target count does not match --count")
         if state.get("fixture_sha256") != sha256_file(args.fixture):
             raise ValueError("existing state fixture does not match --fixture")
+        if state.get("workload") != workload:
+            raise ValueError("existing state workload does not match requested workload")
         return state
     return {
         "schema_version": "k2lab-native-soak/1",
         "status": "running",
         "target_count": args.count,
         "fixture_sha256": sha256_file(args.fixture),
+        "workload": workload,
         "model_hashes": {
             "transformer": args.transformer_sha256,
             "text_encoder": args.text_encoder_sha256,
@@ -380,6 +396,8 @@ def main() -> int:
     args = parse_args()
     if not 1 <= args.count <= 1000:
         raise ValueError("count must be between 1 and 1000")
+    if args.width <= 0 or args.height <= 0 or args.steps <= 0:
+        raise ValueError("width, height, and steps must be positive")
     if args.timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
     if args.hourly_cost_usd < 0:

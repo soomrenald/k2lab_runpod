@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -53,3 +55,31 @@ class Gate12NativeSoakProbeTests(unittest.TestCase):
         self.assertEqual(result["p50_generation_seconds"], 3.0)
         self.assertEqual(result["p95_generation_seconds"], 5.0)
         self.assertEqual(result["mean_transformer_seconds"], 2.0)
+
+    def test_state_records_and_rejects_workload_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "fixture.json"
+            fixture.write_text(json.dumps({"prompt": "synthetic"}), encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "state": root / "state.json",
+                    "count": 100,
+                    "fixture": fixture,
+                    "width": 512,
+                    "height": 512,
+                    "steps": 8,
+                    "transformer_sha256": "1" * 64,
+                    "text_encoder_sha256": "2" * 64,
+                    "vae_sha256": "3" * 64,
+                    "tokenizer_sha256": "4" * 64,
+                },
+            )()
+            state = PROBE.load_state(args)
+            PROBE.atomic_json(args.state, state)
+            args.steps = 2
+
+            with self.assertRaisesRegex(ValueError, "workload"):
+                PROBE.load_state(args)
