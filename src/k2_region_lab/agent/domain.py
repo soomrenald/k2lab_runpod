@@ -40,6 +40,20 @@ class AgentCapabilities(BaseModel):
     supported_job_kinds: list[str] = Field(
         default_factory=lambda: ["generate", "edit_image", "refine_faces"]
     )
+    timeout_classification: list[str] = Field(
+        default_factory=lambda: [
+            "client_timeout",
+            "agent_connect_timeout",
+            "agent_request_queue_timeout",
+            "agent_write_timeout",
+            "agent_read_timeout",
+            "worker_startup_timeout",
+            "generation_timeout",
+            "provider_timeout",
+            "provider_resource_unavailable",
+            "worker_disconnected",
+        ]
+    )
     volumetric_pose_gating: dict[str, object] = Field(
         default_factory=lambda: {
             "format": "k2-volumetric-pose-v1",
