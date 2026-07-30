@@ -39,6 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--strength", type=float, default=1.0)
     parser.add_argument(
+        "--vram-mode",
+        choices=("auto", "high_vram", "dynamic", "low_vram"),
+        default="auto",
+    )
+    parser.add_argument("--reserve-vram-gb", type=float, default=4.0)
+    parser.add_argument(
         "--normalization",
         choices=tuple(mode.value for mode in DepthNormalizationMode),
         default=DepthNormalizationMode.MINMAX.value,
@@ -101,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         "mode": args.mode,
         "steps": steps,
         "cfg": cfg,
+        "vram_mode": args.vram_mode,
+        "reserve_vram_gb": args.reserve_vram_gb,
         "checkpoint": checkpoint.document(),
         "depth_control": settings.to_payload(),
     }
@@ -122,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     report["model_load"] = runtime.load(
         _artifact_set(args),
         memory_policy_key="safe_16gb",
-        vram_mode="auto",
+        vram_mode=args.vram_mode,
+        reserve_vram_gb=args.reserve_vram_gb,
     )
     report["model_load_seconds"] = time.monotonic() - started
     generation_started = time.monotonic()

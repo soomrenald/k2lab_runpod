@@ -740,7 +740,11 @@ def _control_wrapper(projection: KreaControlInputProjection, scope_calls: dict[s
             if callable(getattr(token_strength, "current_values", None)):
                 token_strength = token_strength.current_values()
             if token_strength is not None:
-                projection.token_strength = torch.as_tensor(token_strength)
+                projection.token_strength = (
+                    token_strength
+                    if torch.is_tensor(token_strength)
+                    else torch.tensor(token_strength)
+                )
             diffusion_model.first = projection
             return executor(*args, **kwargs)
         finally:
