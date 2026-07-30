@@ -174,3 +174,35 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         )
         self.assertTrue(deployment["cleanup"]["pod_deleted"])
         self.assertTrue(deployment["cleanup"]["pod_volume_deleted"])
+
+    def test_licensed_native_rc_evidence_is_published_scanned_and_signed(self) -> None:
+        evidence = json.loads(
+            (
+                ROOT
+                / "tests"
+                / "fixtures"
+                / "parity"
+                / "integration"
+                / "gate12_licensed_native_rc.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(evidence["status"], "published_scanned_signed")
+        self.assertEqual(
+            evidence["source"]["commit"],
+            "cc905bb584149e7e12f0b65121aa6747826197c8",
+        )
+        self.assertRegex(
+            evidence["image"]["immutable"],
+            r"^ghcr\.io/soomrenald/k2lab-runpod-workspace@sha256:[0-9a-f]{64}$",
+        )
+        self.assertEqual(evidence["workflow"]["checks"]["trivy_high"], 0)
+        self.assertEqual(evidence["workflow"]["checks"]["trivy_critical"], 0)
+        self.assertTrue(evidence["signature"]["workflow_sign_step_passed"])
+        scope = evidence["distribution_scope"]
+        self.assertTrue(scope["apache_license_in_native_image_definition"])
+        self.assertTrue(scope["model_use_policy_in_native_image_definition"])
+        self.assertFalse(scope["model_weights_bundled"])
+        self.assertTrue(scope["operator_requested_upstream_downloads_supported"])
+        self.assertFalse(scope["public_shared_inference_approved"])
+        self.assertTrue(evidence["gpu_evidence"]["inherited"])
