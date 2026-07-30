@@ -77,8 +77,12 @@ uv export --frozen --extra web --no-dev --no-emit-project \
 ```
 
 The image installs that file with pip hash enforcement, installs k2core separately from
-its exact commit, and installs the local RunPod package with `--no-deps`. This prevents
-ranged web dependencies from drifting during a later image build.
+its exact commit, and installs the local RunPod package with `--no-deps`. The build runs
+`pip check` before removing pip, setuptools, and wheel from the runtime image; none of
+those build tools are required by the agent. Only the package sources, entrypoint, and
+third-party notices are copied into the runtime application directory. This prevents
+ranged web dependencies and local development artifacts from drifting into a later image
+build.
 
 Native tokenizer files live in the durable
 `/workspace/k2lab/models/tokenizers` model kind. Upload or remotely transfer every file
