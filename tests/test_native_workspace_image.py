@@ -136,7 +136,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
             "The configured native tokenizer directory is unavailable", entrypoint
         )
 
-    def test_published_native_rc_evidence_is_immutable_and_signed(self) -> None:
+    def test_published_native_rc_evidence_is_signed_and_gpu_accepted(self) -> None:
         evidence = json.loads(
             (
                 ROOT
@@ -148,7 +148,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(evidence["status"], "published_signed_not_gpu_deployed")
+        self.assertEqual(evidence["status"], "published_signed_gpu_accepted")
         self.assertRegex(
             evidence["image"]["immutable"],
             r"^ghcr\.io/soomrenald/k2lab-runpod-workspace@sha256:[0-9a-f]{64}$",
@@ -158,3 +158,18 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertTrue(evidence["signature"]["claims_validated"])
         self.assertTrue(evidence["signature"]["transparency_log_verified"])
         self.assertFalse(evidence["superseded_candidate"]["signed"])
+        deployment = evidence["runpod_gpu_deployment"]
+        self.assertEqual(deployment["status"], "passed")
+        self.assertRegex(deployment["pod_id_suffix"], r"^[a-z0-9]{6}$")
+        self.assertEqual(
+            deployment["failure_recovery"]["expected_error_code"],
+            "native_feature_unsupported",
+        )
+        self.assertEqual(deployment["native_generation"]["backend"], "native")
+        self.assertTrue(deployment["rollback"]["same_pod"])
+        self.assertEqual(
+            deployment["rollback"]["generation"]["backend"],
+            "comfyui",
+        )
+        self.assertTrue(deployment["cleanup"]["pod_deleted"])
+        self.assertTrue(deployment["cleanup"]["pod_volume_deleted"])
