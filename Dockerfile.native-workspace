@@ -58,9 +58,13 @@ RUN python3.12 -m venv /opt/k2lab-venv \
         --requirement /tmp/native-web-requirements.lock
 
 WORKDIR /opt/k2lab-runpod
-COPY . /opt/k2lab-runpod
+COPY pyproject.toml README.md THIRD_PARTY_NOTICES.md /opt/k2lab-runpod/
+COPY src /opt/k2lab-runpod/src
+COPY deploy/workspace/entrypoint.sh /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 
 RUN /opt/k2lab-venv/bin/python -m pip install --no-deps /opt/k2lab-runpod \
+    && /opt/k2lab-venv/bin/python -m pip check \
+    && /opt/k2lab-venv/bin/python -m pip uninstall -y pip setuptools wheel \
     && chmod 0755 /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 
 EXPOSE 8080

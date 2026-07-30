@@ -38,6 +38,10 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("--require-hashes", dockerfile)
         self.assertIn("native-web-requirements.lock", dockerfile)
         self.assertIn("pip install --no-deps /opt/k2lab-runpod", dockerfile)
+        self.assertIn("python -m pip check", dockerfile)
+        self.assertIn("python -m pip uninstall -y pip setuptools wheel", dockerfile)
+        self.assertIn("COPY src /opt/k2lab-runpod/src", dockerfile)
+        self.assertNotIn("COPY . /opt/k2lab-runpod", dockerfile)
         self.assertNotIn("COMFYUI_REPOSITORY", dockerfile)
         self.assertNotIn("COMFYUI_REF", dockerfile)
         self.assertNotIn("/opt/ComfyUI", dockerfile)
@@ -92,7 +96,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("test ! -e /opt/ComfyUI", workflow)
         self.assertIn("Smoke native imports", workflow)
         self.assertIn("Check locked Python environment", workflow)
-        self.assertIn("-m pip check", workflow)
+        self.assertIn("test ! -e /opt/k2lab-venv/bin/pip", workflow)
         self.assertIn("Boot native agent from an empty workspace", workflow)
         self.assertIn("K2LAB_INFERENCE_BACKEND", workflow)
         self.assertIn("/v1/health", workflow)
@@ -100,6 +104,9 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("version: v0.70.0", workflow)
         self.assertIn("native-workspace-image.spdx.json", workflow)
         self.assertIn("syft-version: v1.42.3", workflow)
+
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        self.assertIn("**/node_modules", dockerignore)
 
     def test_native_entrypoint_allows_empty_workspace_to_start_for_uploads(
         self,

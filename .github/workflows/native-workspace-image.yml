@@ -64,11 +64,10 @@ jobs:
 
       - name: Check locked Python environment
         run: |
-          docker run --rm --entrypoint /opt/k2lab-venv/bin/python "${LOCAL_IMAGE}" \
-            -m pip check
           docker run --rm --entrypoint /bin/sh "${LOCAL_IMAGE}" -c \
             'test "${K2LAB_INFERENCE_BACKEND}" = native &&
-             test "${K2LAB_WORKER_PYTHON}" = /opt/k2lab-venv/bin/python'
+             test "${K2LAB_WORKER_PYTHON}" = /opt/k2lab-venv/bin/python &&
+             test ! -e /opt/k2lab-venv/bin/pip'
 
       - name: Boot native agent from an empty workspace
         run: |
