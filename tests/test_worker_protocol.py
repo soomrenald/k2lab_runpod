@@ -144,7 +144,15 @@ class WorkerProtocolTests(unittest.TestCase):
             selected_inference_backend({"inference_backend": "mystery"})
 
     def test_native_worker_loads_generates_emits_output_and_unloads(self) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "gate11"
+            / "native_clean_generation.json"
+        )
+        generation_fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         payload = {
+            **generation_fixture,
             "inference_backend": "native",
             "comfyui_root": "/opt/ComfyUI",
             "diffusion_models": "/workspace/models/diffusion_models",
@@ -158,13 +166,6 @@ class WorkerProtocolTests(unittest.TestCase):
             "vae_sha256": "3" * 64,
             "tokenizer_path": "/workspace/tokenizer",
             "tokenizer_sha256": "4" * 64,
-            "output_directory": "/workspace/outputs",
-            "filename_prefix": "native-contract",
-            "prompt": "a red teapot",
-            "width": 256,
-            "height": 256,
-            "steps": 2,
-            "seed": 7,
         }
         commands = (
             {"command_id": "load", "kind": "load_model", "payload": payload},
@@ -210,6 +211,12 @@ class WorkerProtocolTests(unittest.TestCase):
         request = backend.generate.call_args.args[0]
         self.assertIsInstance(request, GenerationRequest)
         self.assertEqual(request.correlation_id, "generate")
+        self.assertEqual(request.prompt, generation_fixture["prompt"])
+        self.assertEqual(request.seed, generation_fixture["seed"])
+        self.assertEqual(request.sampler, generation_fixture["sampler"])
+        self.assertEqual(request.scheduler, generation_fixture["scheduler"])
+        self.assertEqual(request.regions[0].region_id, "teapot")
+        self.assertEqual(request.prompt_emphases[0].phrase, "ceramic")
         backend.unload.assert_called_once()
         events = [json.loads(line) for line in stdout.getvalue().splitlines()]
         output = next(
