@@ -1,0 +1,68 @@
+{
+  "schema": "k2lab-gate12-licensed-native-rc/1",
+  "status": "published_scanned_signed",
+  "recorded_at": "2026-07-30T09:04:44Z",
+  "source": {
+    "repository": "soomrenald/k2lab_runpod",
+    "commit": "cc905bb584149e7e12f0b65121aa6747826197c8",
+    "tag": "native-v0.4.0-rc.3",
+    "k2core_commit": "903166f756614b13c0add0196fb5705206370dc3"
+  },
+  "workflow": {
+    "name": "Native workspace image",
+    "run_id": 30528145539,
+    "run_url": "https://github.com/soomrenald/k2lab_runpod/actions/runs/30528145539",
+    "conclusion": "success",
+    "duration_seconds": 959,
+    "checks": {
+      "immutable_base": true,
+      "no_comfyui_installation": true,
+      "native_imports": true,
+      "locked_python_environment": true,
+      "empty_workspace_authenticated_health": true,
+      "trivy_high": 0,
+      "trivy_critical": 0,
+      "spdx_sbom": true,
+      "github_oidc_signature": true
+    }
+  },
+  "image": {
+    "tag": "ghcr.io/soomrenald/k2lab-runpod-workspace:native-v0.4.0-rc.3",
+    "immutable": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede",
+    "index_sha256": "491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede",
+    "amd64_manifest_sha256": "67f96c606c95867320b0dda567d94cb7d6ac0d7ecd9e684c9ead1e0ab0ca6976",
+    "config_sha256": "f4c2e3214b29df83f75c0e9936c071572e777b0d5a7d32e4f6b467a6a1b10acc",
+    "attestation_manifest_sha256": "220b135ce23da0d1c2f25dfd4b1a2a70be18cbe5a43f0174dfdeedf926017f88"
+  },
+  "sbom": {
+    "format": "SPDX-2.3",
+    "artifact_id": 8753952626,
+    "artifact_name": "native-workspace-image.spdx.json",
+    "archive_sha256": "a74085c2f63d990c3df4c490e928d3d42c84c52984dd8a915f63dab1a9b3a957",
+    "json_sha256": "8794a259d85dcdde39054ca1aad246feb59e86c631485a3d82268833fa7fe449",
+    "json_size_bytes": 5470483,
+    "packages": 243,
+    "files": 6041,
+    "relationships": 7107
+  },
+  "signature": {
+    "tool": "cosign v3.0.6",
+    "certificate_identity": "https://github.com/soomrenald/k2lab_runpod/.github/workflows/native-workspace-image.yml@refs/tags/native-v0.4.0-rc.3",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "workflow_sign_step_passed": true
+  },
+  "distribution_scope": {
+    "apache_license_in_native_image_definition": true,
+    "model_use_policy_in_native_image_definition": true,
+    "model_weights_bundled": false,
+    "prepopulated_model_cache": false,
+    "operator_requested_upstream_downloads_supported": true,
+    "public_shared_inference_approved": false
+  },
+  "gpu_evidence": {
+    "candidate": "native-v0.4.0-rc.2",
+    "fixture": "gate12_published_native_rc.json",
+    "inherited": true,
+    "reason": "The k2core change from the GPU-accepted executable checkpoint to the licensed pin only expands ComfyUI capability metadata and adds documentation, tests, and license files; native runtime source is unchanged."
+  }
+}
