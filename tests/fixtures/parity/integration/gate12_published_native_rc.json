@@ -1,7 +1,7 @@
 {
   "schema": "k2lab-gate12-published-native-rc/1",
-  "status": "published_signed_not_gpu_deployed",
-  "recorded_at": "2026-07-30T04:37:03Z",
+  "status": "published_signed_gpu_accepted",
+  "recorded_at": "2026-07-30T05:28:21Z",
   "source": {
     "repository": "soomrenald/k2lab_runpod",
     "commit": "4b091c54162fc689833b5115f78e47b1955525cb",
@@ -57,14 +57,50 @@
     "deploy": false
   },
   "runpod_gpu_deployment": {
-    "status": "pending",
-    "required_checks": [
-      "clean-install authenticated health",
-      "structured failure recovery",
-      "native generation",
-      "swap to preserved ComfyUI image",
-      "post-rollback authenticated health and generation",
-      "disposable Pod and volume deletion"
-    ]
+    "status": "passed",
+    "started_at": "2026-07-30T05:15:10.200457+00:00",
+    "completed_at": "2026-07-30T05:28:21.626060+00:00",
+    "gpu": {
+      "id": "NVIDIA A40",
+      "hourly_usd": 0.44
+    },
+    "pod_id_suffix": "186ppe",
+    "candidate_health": "ready",
+    "model_revision": "67751d8bd092b59c4398ad05634d605f1d8b6a2f",
+    "tokenizer_directory_sha256": "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d",
+    "artifact_sha256": {
+      "diffusion_models": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
+      "text_encoders": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
+      "vae": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f"
+    },
+    "failure_recovery": {
+      "expected_state": "rejected",
+      "expected_error_code": "native_feature_unsupported",
+      "expected_status_code": 409
+    },
+    "native_generation": {
+      "state": "completed",
+      "backend": "native",
+      "output_sha256": "f50c865a3a5d9d70fb13317c8dbb554f81da6b0f52ca6ed17a81c24af5e5c7b5",
+      "output_size_bytes": 76974
+    },
+    "rollback": {
+      "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435",
+      "same_pod": true,
+      "health": "ready",
+      "inventory": "hash_verified",
+      "generation": {
+        "state": "completed",
+        "backend": "comfyui",
+        "output_sha256": "695744d1adb6dfa5f8af258d6d4f184deff4ea2eee47c060f9a60a985765d391",
+        "output_size_bytes": 76509
+      }
+    },
+    "cleanup": {
+      "pod_deleted": true,
+      "pod_volume_deleted": true
+    },
+    "elapsed_seconds": 791.4214903200045,
+    "estimated_compute_cost_usd": 0.09672929326133388
   }
 }
