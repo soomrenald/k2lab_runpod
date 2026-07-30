@@ -15,6 +15,8 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from PIL import Image
+from k2core.backends.native_loading import SUPPORTED_KREA2_COMPONENT_HASHES
+from k2core.model import ArtifactKind, sha256_directory
 
 from k2_region_lab.pose import volumetric_subject_pose_document
 from k2_region_lab.agent.domain import (
@@ -308,6 +310,12 @@ class JobManager:
 
     async def submit(self, request: JobSubmitRequest) -> GenerationJob:
         state, project = self._validate_request(request)
+        async with self._lock:
+            existing = self._find_command(request.command_id)
+            if existing is not None:
+                return existing
+        if self._inference_backend == "native":
+            await self._validate_native_assets(request)
         async with self._lock:
             existing = self._find_command(request.command_id)
             if existing is not None:
@@ -1079,6 +1087,55 @@ class JobManager:
                 "The native K2 backend does not yet support: "
                 + ", ".join(unsupported)
                 + ".",
+                409,
+            )
+
+    async def _validate_native_assets(self, request: JobSubmitRequest) -> None:
+        selections = (
+            (
+                "transformer",
+                request.diffusion_model_file_id,
+                FileKind.DIFFUSION_MODELS,
+                ArtifactKind.TRANSFORMER,
+            ),
+            (
+                "text encoder",
+                request.text_encoder_file_id,
+                FileKind.TEXT_ENCODERS,
+                ArtifactKind.TEXT_ENCODER,
+            ),
+            (
+                "VAE",
+                request.vae_file_id,
+                FileKind.VAE,
+                ArtifactKind.VAE,
+            ),
+        )
+        for label, file_id, file_kind, artifact_kind in selections:
+            assert file_id is not None
+            record, _path = await self._transfers.resolve_file(
+                file_id, required_kind=file_kind
+            )
+            approved = SUPPORTED_KREA2_COMPONENT_HASHES.get(
+                artifact_kind, frozenset()
+            )
+            if record.sha256 not in approved:
+                raise JobError(
+                    "native_model_unsupported",
+                    f"The selected {label} is not supported by this native K2 release. "
+                    "Select an approved Krea 2 component and retry.",
+                    409,
+                )
+
+        try:
+            tokenizer_sha256 = sha256_directory(self._native_tokenizer_path)
+        except (FileNotFoundError, NotADirectoryError, OSError):
+            tokenizer_sha256 = ""
+        if tokenizer_sha256 != self._native_tokenizer_sha256:
+            raise JobError(
+                "native_tokenizer_invalid",
+                "The approved native tokenizer files are missing or do not match this "
+                "K2 release. Restore the workspace tokenizer assets and retry.",
                 409,
             )
 
