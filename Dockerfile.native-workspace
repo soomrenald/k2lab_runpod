@@ -2,7 +2,7 @@ ARG RUNPOD_BASE_IMAGE
 FROM ${RUNPOD_BASE_IMAGE}
 
 ARG K2CORE_REPOSITORY=https://github.com/soomrenald/k2core.git
-ARG K2CORE_REF=237fd23dc4a578e9d1a095fac0587d4d6bdf88e4
+ARG K2CORE_REF=903166f756614b13c0add0196fb5705206370dc3
 ARG TORCH_VERSION=2.9.1
 ARG TORCHVISION_VERSION=0.24.1
 ARG TORCHAUDIO_VERSION=2.9.1
@@ -58,7 +58,7 @@ RUN python3.12 -m venv /opt/k2lab-venv \
         --requirement /tmp/native-web-requirements.lock
 
 WORKDIR /opt/k2lab-runpod
-COPY pyproject.toml README.md THIRD_PARTY_NOTICES.md /opt/k2lab-runpod/
+COPY LICENSE MODEL_USE_POLICY.md pyproject.toml README.md THIRD_PARTY_NOTICES.md /opt/k2lab-runpod/
 COPY src /opt/k2lab-runpod/src
 COPY deploy/workspace/entrypoint.sh /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 

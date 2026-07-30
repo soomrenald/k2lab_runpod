@@ -1,6 +1,6 @@
 # Third-party notices
 
-Last reviewed: 2026-07-29
+Last reviewed: 2026-07-30
 
 This file records the direct third-party software boundaries used by the K2Lab RunPod
 service and workspace image. It is an engineering inventory, not a legal opinion or a
@@ -20,10 +20,9 @@ replacement for upstream license texts. `pyproject.toml`, `uv.lock`, and
 | Transformers | <https://github.com/huggingface/transformers> | Apache-2.0 |
 | ONNX Runtime | <https://github.com/microsoft/onnxruntime> | MIT |
 
-The separately pinned `k2core` repository is maintained with K2Lab but currently has
-no declared project license. The K2Lab RunPod repository also has no declared
-first-party project license. Both must be resolved by their copyright owner before a
-publicly licensed distribution.
+The K2Lab RunPod source and separately pinned `k2core` source are licensed under
+Apache-2.0. Their `LICENSE` files cover first-party software only and do not grant
+rights to separately supplied models or user assets.
 
 ## Web-service dependencies
 
@@ -58,13 +57,20 @@ operating-system notice obligations listed above.
 
 The repository and workspace image do not grant rights to Krea, Qwen, LoRA,
 face-detector, pose-adapter, or upscaler weights mounted into `/workspace`. File hashes
-prove identity, not permission to use or redistribute an asset. A release that
-downloads or bundles any model must preserve its license, model-card restrictions,
-attribution, and redistribution terms separately.
+prove identity, not permission to use or redistribute an asset.
 
-The FantasyPortrait face detector and the pose-training external repositories retain
-open provenance/license findings and must not be represented as redistributable until
-those records are completed.
+The approved `MODEL_USE_POLICY.md` prohibits releases and images from bundling or
+redistributing model weights, shipping prepopulated model caches, or acquiring weights
+automatically during install/startup. Operators may explicitly upload an authorized
+asset or request a direct download from an authorized upstream provider into their
+private workspace. They accept upstream terms directly and review prompts and outputs.
+Public/shared deployments require content filtering or an equivalent review process
+appropriate to the current Krea terms and the use case.
+
+The exact tested FantasyPortrait detector hash has an official Apache-2.0 source
+record. The pose-training external repositories retain their separately recorded
+provenance/license boundaries. The reviewed converted Qwen FP8 encoder's notice chain
+remains unresolved for redistribution, which this policy prohibits.
 
 ## Distribution checklist
 
@@ -72,8 +78,8 @@ Before publishing an image:
 
 1. generate a complete bill of materials from the final lockfile and built image;
 2. include license and notice files from every Python package and OS/CUDA component;
-3. resolve the K2Lab and `k2core` first-party licenses;
-4. record licenses for every downloaded or bundled model;
+3. include the K2Lab RunPod and `k2core` Apache-2.0 licenses;
+4. enforce `MODEL_USE_POLICY.md` and confirm the image contains no model weights;
 5. verify the ComfyUI license remains present while the compatibility image includes it;
 6. repeat review whenever a dependency, base-image digest, source revision, or model
    hash changes.

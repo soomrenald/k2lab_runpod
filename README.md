@@ -254,3 +254,8 @@ The live suite covers both a billable persistent Pod and a portable network-volu
 It verifies upload persistence across persistent stop/start and verifies an allowlisted SHA-256
 manifest across portable Pod termination/recreation. Cleanup permanently deletes every test Pod
 and the explicitly tracked disposable network volume.
+
+## License
+
+K2 Lab RunPod is licensed under the Apache License 2.0. Model weights are not included
+and retain their own terms; see `THIRD_PARTY_NOTICES.md` and `MODEL_USE_POLICY.md`.
