@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from k2core.depth import DepthFeatureFlags, DepthRegionMode
 from k2_region_lab.pose import volumetric_subject_pose_document
 from k2_region_lab.agent.domain import (
     FileKind,
@@ -508,6 +509,65 @@ class JobManager:
                     request.pose_control_lora_file_id,
                     FileKind.KREA_CONTROL_LORAS,
                 )
+            depth_payload = state.depth_control.to_payload()
+            depth_flags = DepthFeatureFlags.from_environment()
+            if state.depth_control.enabled:
+                if not depth_flags.control:
+                    raise JobError(
+                        "depth_feature_disabled",
+                        "Depth control is disabled on this worker.",
+                        409,
+                    )
+                if state.depth_control.regions and not depth_flags.regions:
+                    raise JobError(
+                        "depth_regions_disabled",
+                        "Regional depth weighting is disabled on this worker.",
+                        409,
+                    )
+                if any(
+                    region.mode == DepthRegionMode.OVERRIDE
+                    for region in state.depth_control.regions
+                ) and not depth_flags.override:
+                    raise JobError(
+                        "depth_override_disabled",
+                        "Regional depth override is disabled on this worker.",
+                        409,
+                    )
+                if not request.depth_checkpoint_file_id:
+                    raise JobError(
+                        "depth_checkpoint_invalid",
+                        "Select the Krea depth adapter checkpoint.",
+                        409,
+                    )
+                if not request.depth_image_file_id:
+                    raise JobError(
+                        "depth_image_invalid",
+                        "Select a grayscale depth image.",
+                        409,
+                    )
+                depth_payload["checkpoint"] = await self._optional_file_path(
+                    request.depth_checkpoint_file_id,
+                    FileKind.KREA_CONTROL_LORAS,
+                )
+                depth_payload["depth_image"] = await self._optional_file_path(
+                    request.depth_image_file_id,
+                    FileKind.INPUTS,
+                )
+                for region in depth_payload["regions"]:
+                    if region.get("mode") != DepthRegionMode.OVERRIDE.value:
+                        continue
+                    region_id = str(region["region_id"])
+                    file_id = request.depth_override_file_ids.get(region_id)
+                    if not file_id:
+                        raise JobError(
+                            "depth_image_invalid",
+                            f"Select an override depth image for region {region_id}.",
+                            409,
+                        )
+                    region["override_image"] = await self._optional_file_path(
+                        file_id,
+                        FileKind.INPUTS,
+                    )
             base.update(
                 {
                     "prompt": state.global_prompt,
@@ -545,6 +605,8 @@ class JobManager:
                     "pose_control_allow_unverified_legacy": (
                         request.pose_control_allow_unverified_legacy
                     ),
+                    "depth_control": depth_payload,
+                    "depth_override_enabled": depth_flags.override,
                     "pose_hard_gate_steps": state.pose_hard_gate_steps,
                     "pose_soft_gate_steps": state.pose_soft_gate_steps,
                     "pose_soft_gate_schedule": state.pose_soft_gate_schedule,

@@ -9,6 +9,7 @@ description = "RunPod-hosted web workspace for K2 regional generation, editing, 
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "k2core @ git+https://github.com/soomrenald/k2core.git@50f60d3c70371966829ec4d3cc6818a94e590b00",
     "numpy>=2.1",
     "pillow>=12.3.0",
     "pydantic>=2.10",
@@ -43,7 +44,7 @@ k2lab-web = "k2_region_lab.web.app:main"
 k2lab-runpod = "k2_region_lab.web.local_runpod:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/k2_region_lab"]
+packages = ["src/k2_region_lab", "src/k2lab"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -52,6 +53,9 @@ exclude = [
     "/k2lab_volumetric_pose_gating_spec.md",
     "/my-bash.*",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

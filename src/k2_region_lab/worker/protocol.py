@@ -128,6 +128,17 @@ WORKER_ERROR_MESSAGES = {
     "krea_control_hook_incompatible": (
         "Another sampling hook conflicts with Krea volumetric pose control."
     ),
+    "depth_checkpoint_incompatible": (
+        "The selected depth adapter is incompatible with this Krea 2 runtime."
+    ),
+    "depth_encode_failed": (
+        "The depth image could not be encoded with the selected Krea/Qwen VAE."
+    ),
+    "depth_feature_disabled": "Depth control is disabled on this worker.",
+    "depth_regions_disabled": "Regional depth weighting is disabled on this worker.",
+    "depth_override_disabled": "Regional depth override is disabled on this worker.",
+    "depth_checkpoint_invalid": "Select the verified Krea 2 depth adapter checkpoint.",
+    "depth_image_invalid": "Select a supported grayscale depth image.",
     "generation_failed": (
         "Generation failed during sampling. Review the detailed worker diagnostic "
         "and verify the selected generation settings."

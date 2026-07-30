@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from k2core.depth import DepthControlSettings
 from k2_region_lab.image_edit import ImageEditState
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
@@ -48,7 +49,7 @@ from k2_region_lab.volumetric_control import K2_VOLUMETRIC_CONTROL_FORMAT
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 23
+PROJECT_VERSION = 24
 LEGACY_POSE_MIGRATION_NOTICE = (
     "Legacy Qwen pose-ControlNet settings were removed. Volumetric pose gating "
     "is available but remains disabled until enabled."
@@ -80,6 +81,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     20,
     21,
     22,
+    23,
     PROJECT_VERSION,
 }
 
@@ -182,6 +184,7 @@ class ProjectState:
     pose_control_lora_model: Path | None = None
     pose_control_lora_strength: float = 1.0
     pose_control_format: str = K2_VOLUMETRIC_CONTROL_FORMAT
+    depth_control: DepthControlSettings = field(default_factory=DepthControlSettings)
     prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
@@ -226,6 +229,10 @@ class ProjectState:
             raise ValueError("project pose control format is incompatible with this K2Lab build")
         if self.pose_control_lora_enabled and self.pose_control_lora_model is None:
             raise ValueError("an enabled pose Control-LoRA requires a selected checkpoint")
+        if self.pose_control_lora_enabled and self.depth_control.enabled:
+            raise ValueError(
+                "depth control and volumetric pose control cannot be enabled together"
+            )
         validate_sampler(self.sampler)
         validate_scheduler(self.scheduler)
         if self.seed < 0:
@@ -354,6 +361,12 @@ class ProjectState:
                     "Krea pose Control-LoRA requires at least one enabled posed subject"
                 )
         known_ids = set(region_ids)
+        if not {
+            region.region_id for region in self.depth_control.regions
+        }.issubset(known_ids):
+            raise ValueError(
+                "depth settings reference a region missing from the project"
+            )
         for emphasis in self.prompt_emphases:
             if emphasis.scope_id != GLOBAL_EMPHASIS_SCOPE and emphasis.scope_id not in known_ids:
                 raise ValueError("a prompt emphasis references a region missing from the project")
@@ -427,6 +440,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             ),
             "pose_control_lora_strength": state.pose_control_lora_strength,
             "pose_control_format": state.pose_control_format,
+            "depth_control": state.depth_control.to_payload(),
             "prompt_emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -775,18 +789,18 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         pose_sigma_knots=sigma_knots,
         pose_control_lora_enabled=(
             bool(generation.get("pose_control_lora_enabled", False))
-            if source_version >= PROJECT_VERSION
+            if source_version >= 23
             else False
         ),
         pose_control_lora_model=(
             Path(generation["pose_control_lora_model"]).expanduser()
-            if source_version >= PROJECT_VERSION
+            if source_version >= 23
             and generation.get("pose_control_lora_model")
             else None
         ),
         pose_control_lora_strength=(
             float(generation.get("pose_control_lora_strength", 1.0))
-            if source_version >= PROJECT_VERSION
+            if source_version >= 23
             else 1.0
         ),
         pose_control_format=str(
@@ -794,8 +808,13 @@ def project_state(document: dict[str, Any]) -> ProjectState:
                 "pose_control_format",
                 K2_VOLUMETRIC_CONTROL_FORMAT,
             )
-            if source_version >= PROJECT_VERSION
+            if source_version >= 23
             else K2_VOLUMETRIC_CONTROL_FORMAT
+        ),
+        depth_control=(
+            DepthControlSettings.from_payload(generation.get("depth_control"))
+            if source_version >= 24
+            else DepthControlSettings()
         ),
         prompt_emphases=prompt_emphases_from_payload(generation.get("prompt_emphases", [])),
         projector_enabled=bool(generation.get("projector_enabled", False)),

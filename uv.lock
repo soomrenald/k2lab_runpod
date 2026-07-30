@@ -451,10 +451,20 @@ wheels = [
 ]
 
 [[package]]
+name = "k2core"
+version = "0.1.0"
+source = { git = "https://github.com/soomrenald/k2core.git?rev=50f60d3c70371966829ec4d3cc6818a94e590b00#50f60d3c70371966829ec4d3cc6818a94e590b00" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pillow" },
+]
+
+[[package]]
 name = "k2lab-runpod"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "k2core" },
     { name = "numpy" },
     { name = "pillow" },
     { name = "pydantic" },
@@ -492,6 +502,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.28,<1" },
     { name = "huggingface-hub", marker = "extra == 'web'", specifier = ">=0.36,<1" },
+    { name = "k2core", git = "https://github.com/soomrenald/k2core.git?rev=50f60d3c70371966829ec4d3cc6818a94e590b00" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "onnxruntime", marker = "extra == 'dev'", specifier = ">=1.20" },
     { name = "pillow", specifier = ">=12.3.0" },
