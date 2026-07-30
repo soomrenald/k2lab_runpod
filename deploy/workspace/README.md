@@ -65,9 +65,10 @@ immutable base image, confirms `/opt/ComfyUI` is absent, runs import and depende
 smokes, boots the authenticated agent from an empty temporary workspace, scans it with
 pinned Trivy, and emits an SPDX SBOM with pinned Syft. Pull requests and manual dispatches
 never publish. An explicitly approved `native-v*` tag publishes the native candidate to
-`ghcr.io/OWNER/k2lab-runpod-native-workspace`, validates the pushed digest, and signs that
-digest with GitHub OIDC. Creating that release-candidate tag remains a separate release
-action.
+the existing public `ghcr.io/OWNER/k2lab-runpod-workspace` package under its distinct
+native tag, validates the pushed digest, and signs that digest with GitHub OIDC. Existing
+ComfyUI tags and digests remain unchanged. Creating that release-candidate tag remains a
+separate release action.
 
 The web-runtime dependency closure is exported from `uv.lock` into
 `native-web-requirements.lock` with package hashes. Regenerate it after an intentional
