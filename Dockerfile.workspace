@@ -3,6 +3,8 @@ FROM ${RUNPOD_BASE_IMAGE}
 
 ARG COMFYUI_REPOSITORY=https://github.com/comfyanonymous/ComfyUI.git
 ARG COMFYUI_REF=285a98944c397a4a81f15ac63d69fa3dbc0a27b9
+ARG K2CORE_REPOSITORY=https://github.com/soomrenald/k2core.git
+ARG K2CORE_REF=237fd23dc4a578e9d1a095fac0587d4d6bdf88e4
 ARG TORCH_VERSION=2.9.1
 ARG TORCHVISION_VERSION=0.24.1
 ARG TORCHAUDIO_VERSION=2.9.1
@@ -16,6 +18,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     K2LAB_CUDA_VERSION=12.8 \
     K2LAB_PYTORCH_VERSION=${TORCH_VERSION} \
     K2LAB_WORKER_PYTHON=/opt/comfyui-venv/bin/python \
+    K2LAB_INFERENCE_BACKEND=comfyui \
+    K2LAB_NATIVE_TOKENIZER_PATH=/opt/ComfyUI/comfy/text_encoders/qwen25_tokenizer \
+    K2LAB_NATIVE_TOKENIZER_SHA256=9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d \
     K2LAB_WORKSPACE_ROOT=/workspace/k2lab
 
 USER root
@@ -44,7 +49,10 @@ RUN git clone "${COMFYUI_REPOSITORY}" /opt/ComfyUI \
         "onnxruntime-gpu>=1.20" \
         "pillow>=12.3.0" \
         "pydantic>=2.10" \
-        "transformers>=5.5.0,<6"
+        "diffusers==0.39.0" \
+        "safetensors==0.8.0" \
+        "transformers==5.14.1" \
+        "git+${K2CORE_REPOSITORY}@${K2CORE_REF}"
 
 WORKDIR /opt/k2lab-runpod
 COPY . /opt/k2lab-runpod

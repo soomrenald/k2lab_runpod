@@ -8,6 +8,26 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from k2core.backends import NativeK2Backend
+from k2core.inference import (
+    ConfigurationError,
+    DTypePolicy,
+    DevicePolicy,
+    GenerationRequest,
+    ImageEditRequest,
+    K2InferenceError,
+    OutOfMemoryError,
+    PipelineConfig,
+    ProgressEvent,
+    convert_error,
+)
+from k2core.model import (
+    ComponentReference,
+    RegisteredModel,
+    TokenizerReference,
+    discover_model_artifacts as discover_native_model_artifacts,
+)
+
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
@@ -75,6 +95,119 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
     )
 
 
+def selected_inference_backend(payload: dict[str, Any]) -> str:
+    selected = str(payload.get("inference_backend", "comfyui")).strip().casefold()
+    if selected not in {"comfyui", "native"}:
+        raise ConfigurationError(
+            f"Unsupported inference backend {selected!r}.",
+            backend_name=selected,
+            phase="worker_startup",
+            remediation="Set K2LAB_INFERENCE_BACKEND to 'comfyui' or 'native'.",
+        )
+    return selected
+
+
+def registered_native_model(payload: dict[str, Any]) -> RegisteredModel:
+    components: dict[str, ComponentReference] = {}
+    for name, path_key, hash_key in (
+        ("transformer", "diffusion_model_file", "diffusion_model_sha256"),
+        ("text_encoder", "text_encoder_file", "text_encoder_sha256"),
+        ("vae", "vae_file", "vae_sha256"),
+    ):
+        supplied_path = str(payload.get(path_key) or "").strip()
+        supplied_hash = str(payload.get(hash_key) or "").strip()
+        if not supplied_path or not supplied_hash:
+            raise ConfigurationError(
+                f"Native loading requires an explicit {name} path and SHA-256.",
+                backend_name="native",
+                phase="model_loading",
+                remediation="Select all three content-addressed model components.",
+            )
+        components[name] = ComponentReference(Path(supplied_path), supplied_hash)
+    tokenizer_path = str(payload.get("tokenizer_path") or "").strip()
+    tokenizer_hash = str(payload.get("tokenizer_sha256") or "").strip()
+    if not tokenizer_path or not tokenizer_hash:
+        raise ConfigurationError(
+            "Native loading requires an explicit tokenizer path and SHA-256.",
+            backend_name="native",
+            phase="model_loading",
+            remediation="Configure K2LAB_NATIVE_TOKENIZER_PATH and its SHA-256.",
+        )
+    return RegisteredModel(
+        name=str(payload.get("registered_model_name", "krea2-runpod")),
+        architecture="krea2",
+        transformer=components["transformer"],
+        text_encoder=components["text_encoder"],
+        vae=components["vae"],
+        tokenizer=TokenizerReference(Path(tokenizer_path), tokenizer_hash),
+        default_dtype=str(payload.get("model_default_dtype", "bfloat16")),
+    )
+
+
+def native_backend_loaded(backend: NativeK2Backend | None) -> bool:
+    return (
+        backend is not None
+        and backend.pipeline is not None
+        and backend.pipeline.loaded
+    )
+
+
+def emit_native_progress(command_id: str | None, event: ProgressEvent) -> None:
+    detail = dict(event.detail)
+    nested_memory = detail.pop("memory", {})
+    memory = (
+        {**dict(nested_memory), **detail}
+        if isinstance(nested_memory, dict)
+        else detail
+    )
+    if event.phase == "diffusion":
+        message = (
+            f"Denoising step {int(event.step or 0)}/{int(event.total_steps or 0)}"
+        )
+    else:
+        message = event.phase.replace("_", " ").title()
+        if event.fraction == 0.0:
+            message += " started"
+        elif event.fraction == 1.0:
+            message += " complete"
+    emit(
+        WorkerState.RUNNING,
+        message,
+        command_id=command_id,
+        payload={
+            "backend": "native",
+            "phase": event.phase,
+            "step": int(event.step or 0),
+            "total_steps": int(event.total_steps or 0),
+            "fraction": event.fraction,
+            "memory": memory,
+        },
+    )
+
+
+def finish_native_job(
+    backend: NativeK2Backend,
+    payload: dict[str, Any],
+    *,
+    command_id: str | None,
+    completed_label: str,
+) -> bool:
+    resident = bool(payload.get("keep_model_loaded", False))
+    if not resident:
+        backend.unload()
+    emit(
+        WorkerState.COMPLETE,
+        (
+            f"{completed_label}; native model retained in VRAM"
+            if resident
+            else f"{completed_label}; worker releasing GPU and system RAM"
+        ),
+        command_id=command_id,
+        payload={"backend": "native", "resident": resident},
+    )
+    return resident
+
+
 def finish_job(
     runtime: ComfyBaselineRuntime,
     *,
@@ -101,6 +234,8 @@ def main() -> int:
     logger = logging.getLogger("k2_region_lab.worker.entrypoint")
     logger.debug("worker starting with executable=%s argv=%r", sys.executable, sys.argv)
     runtime: ComfyBaselineRuntime | None = None
+    native_backend: NativeK2Backend | None = None
+    active_backend: str | None = None
     artifacts = None
     emit(WorkerState.UNLOADED, "GPU worker started")
     for encoded in sys.stdin:
@@ -111,6 +246,15 @@ def main() -> int:
             command_id = command.get("command_id")
             kind = CommandKind(command["kind"])
             payload = command.get("payload", {})
+            command_backend = selected_inference_backend(payload)
+            if active_backend is None:
+                active_backend = command_backend
+            elif active_backend != command_backend:
+                raise ConfigurationError(
+                    "A resident worker cannot switch inference backends.",
+                    backend_name=active_backend,
+                    phase="worker_command",
+                )
             logger.debug("received worker command id=%s kind=%s", command_id, kind.value)
             comfyui_root = Path(payload.get("comfyui_root", "~/ComfyUI")).expanduser()
             if kind == CommandKind.PROBE:
@@ -120,7 +264,7 @@ def main() -> int:
                     WorkerState.UNLOADED,
                     "Worker runtime probe complete",
                     command_id=command_id,
-                    payload=result,
+                    payload={"backend": active_backend, **result},
                 )
             elif kind == CommandKind.DIAGNOSE_ACCELERATOR:
                 emit(WorkerState.PROBING, "Running accelerator diagnostics", command_id=command_id)
@@ -146,12 +290,74 @@ def main() -> int:
                     payload={"complete": artifacts.complete, "manifests": manifests},
                 )
             elif kind == CommandKind.LOAD_MODEL:
-                if runtime is not None and runtime.loaded:
+                already_loaded = (
+                    runtime is not None and runtime.loaded
+                    if active_backend == "comfyui"
+                    else native_backend_loaded(native_backend)
+                )
+                if already_loaded:
                     emit(
                         WorkerState.READY,
                         "Krea 2 baseline already loaded",
                         command_id=command_id,
-                        payload={"reused": True},
+                        payload={"backend": active_backend, "reused": True},
+                    )
+                    continue
+                if active_backend == "native":
+                    directories = model_directories(payload)
+                    native_artifacts = discover_native_model_artifacts(directories)
+                    emit(
+                        WorkerState.LOADING,
+                        "Loading native Krea 2 baseline components",
+                        command_id=command_id,
+                        payload={"backend": "native"},
+                    )
+                    native_backend = native_backend or NativeK2Backend()
+                    loaded_pipeline = native_backend.load(
+                        PipelineConfig(
+                            artifacts=native_artifacts,
+                            registered_model=registered_native_model(payload),
+                            memory_policy=str(
+                                payload.get("memory_policy", "safe_16gb")
+                            ),
+                            reserve_vram_gb=float(
+                                payload.get("reserve_vram_gb", 4.0)
+                            ),
+                            minimum_system_ram_gb=float(
+                                payload.get("minimum_system_ram_gb", 14.0)
+                            ),
+                            cpu_vae=bool(payload.get("cpu_vae", False)),
+                            oom_recovery=bool(payload.get("oom_recovery", True)),
+                            strict_loading=bool(payload.get("strict_loading", True)),
+                            device_policy=DevicePolicy(
+                                transformer_device=str(
+                                    payload.get("transformer_device", "auto")
+                                ),
+                                text_encoder_device=str(
+                                    payload.get("text_encoder_device", "auto")
+                                ),
+                                vae_device=str(payload.get("vae_device", "auto")),
+                                compute_dtype=DTypePolicy(
+                                    str(payload.get("compute_dtype", "auto"))
+                                ),
+                                weight_dtype=DTypePolicy(
+                                    str(payload.get("weight_dtype", "auto"))
+                                ),
+                                cpu_offload=bool(
+                                    payload.get("cpu_offload", False)
+                                ),
+                                vae_tiling=bool(payload.get("vae_tiling", False)),
+                            ),
+                        )
+                    )
+                    emit(
+                        WorkerState.READY,
+                        "Native Krea 2 baseline components loaded",
+                        command_id=command_id,
+                        payload={
+                            "backend": "native",
+                            **dict(loaded_pipeline.metadata),
+                        },
                     )
                     continue
                 if artifacts is None:
@@ -207,6 +413,63 @@ def main() -> int:
                     payload={"compatible": compatible, "loras": reports},
                 )
             elif kind == CommandKind.GENERATE_BASELINE:
+                if active_backend == "native":
+                    if not native_backend_loaded(native_backend):
+                        raise RuntimeError(
+                            "load the native Krea 2 baseline before generating"
+                        )
+                    assert native_backend is not None
+                    generation_started_at = time.monotonic()
+                    emit(
+                        WorkerState.RUNNING,
+                        "Native generation started",
+                        command_id=command_id,
+                        payload={"backend": "native"},
+                    )
+
+                    def native_event(
+                        message: str, event_payload: dict[str, Any]
+                    ) -> None:
+                        emit(
+                            WorkerState.RUNNING,
+                            message,
+                            command_id=command_id,
+                            payload={"backend": "native", **event_payload},
+                        )
+
+                    native_request = GenerationRequest.from_payload(
+                        payload, correlation_id=str(command_id or "")
+                    )
+                    generated = native_backend.generate(
+                        native_request,
+                        progress=lambda event: emit_native_progress(
+                            command_id, event
+                        ),
+                        diagnostic=native_event,
+                    ).to_payload()
+                    emit(
+                        WorkerState.RUNNING,
+                        (
+                            "Native generation run finished in "
+                            f"{time.monotonic() - generation_started_at:.2f} seconds"
+                        ),
+                        command_id=command_id,
+                        payload={"backend": "native"},
+                    )
+                    emit(
+                        WorkerState.READY,
+                        "Native generation complete",
+                        command_id=command_id,
+                        payload={"backend": "native", **generated},
+                    )
+                    if finish_native_job(
+                        native_backend,
+                        payload,
+                        command_id=command_id,
+                        completed_label="Native generation complete",
+                    ):
+                        continue
+                    return 0
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before generating")
                 generation_started_at = time.monotonic()
@@ -395,6 +658,53 @@ def main() -> int:
                     continue
                 return 0
             elif kind == CommandKind.EDIT_IMAGE:
+                if active_backend == "native":
+                    if not native_backend_loaded(native_backend):
+                        raise RuntimeError(
+                            "load the native Krea 2 baseline before image editing"
+                        )
+                    assert native_backend is not None
+                    emit(
+                        WorkerState.RUNNING,
+                        "Native image editing started",
+                        command_id=command_id,
+                        payload={"backend": "native"},
+                    )
+
+                    def native_edit_event(
+                        message: str, event_payload: dict[str, Any]
+                    ) -> None:
+                        emit(
+                            WorkerState.RUNNING,
+                            message,
+                            command_id=command_id,
+                            payload={"backend": "native", **event_payload},
+                        )
+
+                    native_edit_request = ImageEditRequest.from_payload(
+                        payload, correlation_id=str(command_id or "")
+                    )
+                    edited = native_backend.generate(
+                        native_edit_request,
+                        progress=lambda event: emit_native_progress(
+                            command_id, event
+                        ),
+                        diagnostic=native_edit_event,
+                    ).to_payload()
+                    emit(
+                        WorkerState.READY,
+                        "Native image editing complete",
+                        command_id=command_id,
+                        payload={"backend": "native", **edited},
+                    )
+                    if finish_native_job(
+                        native_backend,
+                        payload,
+                        command_id=command_id,
+                        completed_label="Native image edit complete",
+                    ):
+                        continue
+                    return 0
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before image editing")
                 emit(
@@ -513,6 +823,14 @@ def main() -> int:
                     continue
                 return 0
             elif kind == CommandKind.REFINE_FACES:
+                if active_backend == "native":
+                    raise ConfigurationError(
+                        "Face refinement is not implemented by the native K2 backend.",
+                        backend_name="native",
+                        phase="face_refinement",
+                        correlation_id=str(command_id or ""),
+                        remediation="Set K2LAB_INFERENCE_BACKEND=comfyui.",
+                    )
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before refining faces")
                 emit(
@@ -589,7 +907,26 @@ def main() -> int:
         except Exception as error:
             logger.exception("worker command failed")
             traceback.print_exc(file=sys.stderr)
+            structured = (
+                error
+                if isinstance(error, K2InferenceError)
+                else convert_error(
+                    error,
+                    backend_name=active_backend or "comfyui",
+                    phase=kind.value if kind is not None else "worker_command",
+                    correlation_id=str(command_id or ""),
+                    gpu_work_started=kind
+                    in {
+                        CommandKind.LOAD_MODEL,
+                        CommandKind.GENERATE_BASELINE,
+                        CommandKind.EDIT_IMAGE,
+                        CommandKind.REFINE_FACES,
+                    },
+                )
+            )
             error_code, error_detail = classify_worker_error(error, kind)
+            if isinstance(structured, OutOfMemoryError):
+                error_code = "worker_oom"
             emit(
                 WorkerState.ERROR,
                 error_detail,
@@ -598,6 +935,8 @@ def main() -> int:
                     "exception_type": type(error).__name__,
                     "error_code": error_code,
                     "command_kind": kind.value if kind is not None else None,
+                    "backend": active_backend or "comfyui",
+                    "error": structured.to_payload(),
                 },
             )
             if kind in {

@@ -26,4 +26,16 @@ if [[ ! -w "${workspace_root}" ]]; then
     exit 73
 fi
 
+if [[ "${K2LAB_INFERENCE_BACKEND:-comfyui}" == "native" ]]; then
+    if [[ ! -d "${K2LAB_NATIVE_TOKENIZER_PATH:-}" ]]; then
+        printf '%s\n' "The configured native tokenizer directory is unavailable."
+        exit 78
+    fi
+    if ! "${K2LAB_WORKER_PYTHON}" -c \
+        "import diffusers, k2core, safetensors, torch, transformers"; then
+        printf '%s\n' "The native K2 worker dependencies are unavailable."
+        exit 78
+    fi
+fi
+
 exec /opt/k2lab-venv/bin/k2lab-agent --host 0.0.0.0 --port 8080
