@@ -92,7 +92,10 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("file: Dockerfile.native-workspace", workflow)
-        self.assertIn("push: false", workflow)
+        self.assertIn('tags:\n      - "native-v*"', workflow)
+        self.assertIn("push: ${{ startsWith(github.ref, 'refs/tags/native-v') }}", workflow)
+        self.assertIn("Log in to GHCR for release-candidate builds", workflow)
+        self.assertIn("steps.target.outputs.image", workflow)
         self.assertIn("test ! -e /opt/ComfyUI", workflow)
         self.assertIn("Smoke native imports", workflow)
         self.assertIn("Check locked Python environment", workflow)
@@ -104,6 +107,7 @@ class NativeWorkspaceImageTests(unittest.TestCase):
         self.assertIn("version: v0.70.0", workflow)
         self.assertIn("native-workspace-image.spdx.json", workflow)
         self.assertIn("syft-version: v1.42.3", workflow)
+        self.assertIn("Sign release-candidate digest with GitHub OIDC", workflow)
 
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertIn("**/node_modules", dockerignore)
