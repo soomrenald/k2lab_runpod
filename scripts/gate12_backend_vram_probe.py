@@ -134,7 +134,7 @@ def release_comparison(
 
 def validate_inputs(args: argparse.Namespace) -> None:
     for executable in (args.native_python, args.comfy_python):
-        if not executable.expanduser().resolve().is_file():
+        if not executable.expanduser().absolute().is_file():
             raise FileNotFoundError(executable)
     if not (args.k2core_package / "__init__.py").resolve().is_file():
         raise FileNotFoundError(args.k2core_package)
@@ -237,8 +237,10 @@ def main() -> int:
     args.text_encoder = args.text_encoder.expanduser().resolve()
     args.vae = args.vae.expanduser().resolve()
     args.tokenizer = args.tokenizer.expanduser().resolve()
-    args.native_python = args.native_python.expanduser().resolve()
-    args.comfy_python = args.comfy_python.expanduser().resolve()
+    # Venv launchers are normally symlinks to the system interpreter. Preserve the
+    # symlink path so Python retains the virtual environment's prefix and site-packages.
+    args.native_python = args.native_python.expanduser().absolute()
+    args.comfy_python = args.comfy_python.expanduser().absolute()
     args.k2core_package = args.k2core_package.expanduser().resolve()
     args.output_directory = args.output_directory.expanduser().resolve()
     args.state = args.state.expanduser().resolve()
