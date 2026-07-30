@@ -155,6 +155,17 @@ export function App() {
           "k2-volumetric-pose-control-v1",
         )
       }
+      depthControlAvailable={
+        state.capabilities.project_schema_version >= 24
+        && state.capabilities.worker_protocol_version >= 5
+        && state.capabilities.krea_depth_control?.version === 1
+        && state.capabilities.krea_depth_control.feature_flags.control
+      }
+      depthRegionsAvailable={
+        state.capabilities.krea_depth_control?.version === 1
+        && state.capabilities.krea_depth_control.feature_flags.control
+        && state.capabilities.krea_depth_control.feature_flags.regions
+      }
       datacenters={state.datacenters}
       networkVolumes={state.networkVolumes}
       onWorkspace={rememberWorkspace}
