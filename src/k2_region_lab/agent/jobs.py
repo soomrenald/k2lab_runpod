@@ -460,11 +460,28 @@ class JobManager:
             if error_code not in WORKER_ERROR_MESSAGES:
                 error_code = "worker_failed"
             message = WORKER_ERROR_MESSAGES[error_code]
+            raw_error = (
+                raw_payload.get("error")
+                if isinstance(raw_payload.get("error"), dict)
+                else {}
+            )
             payload = {
                 "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128],
                 "error_code": error_code,
                 "command_kind": str(raw_payload.get("command_kind", "unknown"))[:64],
                 "backend": self._inference_backend,
+                "error": {
+                    "category": str(raw_error.get("category", "WorkerError"))[:128],
+                    "backend_name": str(
+                        raw_error.get("backend_name", self._inference_backend)
+                    )[:64],
+                    "phase": str(raw_error.get("phase", "worker_command"))[:64],
+                    "retry_safe": bool(raw_error.get("retry_safe", False)),
+                    "gpu_work_started": bool(
+                        raw_error.get("gpu_work_started", False)
+                    ),
+                    "correlation_id": str(raw_error.get("correlation_id", ""))[:128],
+                },
             }
         else:
             payload = self._sanitize_payload(

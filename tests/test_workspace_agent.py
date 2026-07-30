@@ -1800,6 +1800,16 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                             "error_code": "model_load_failed",
                             "command_kind": "load_model",
                             "prompt": "private prompt",
+                            "error": {
+                                "category": "ModelCompatibilityError",
+                                "summary": "private prompt",
+                                "technical_detail": "/workspace/private/model.safetensors",
+                                "backend_name": "native",
+                                "phase": "model_loading",
+                                "retry_safe": True,
+                                "gpu_work_started": False,
+                                "correlation_id": "browser-command-failure",
+                            },
                         },
                     }
                 )
@@ -1830,6 +1840,19 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 headers=self.headers,
             )
             self.assertIn("Krea 2 model loading failed", events.text)
+            error_event = next(
+                item
+                for item in events.json()["items"]
+                if item["state"] == "error"
+            )
+            self.assertEqual(
+                error_event["payload"]["error"]["category"],
+                "ModelCompatibilityError",
+            )
+            self.assertEqual(
+                error_event["payload"]["error"]["backend_name"], "native"
+            )
+            self.assertTrue(error_event["payload"]["error"]["retry_safe"])
             self.assertNotIn("private prompt", events.text)
             self.assertNotIn("/workspace/private", events.text)
 

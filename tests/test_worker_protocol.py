@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import struct
@@ -8,9 +9,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from k2core.inference import GenerationRequest
 
 from k2_region_lab.semantic_conditioning import SemanticAttentionError
-from k2_region_lab.worker.entrypoint import model_directories
+from k2_region_lab.worker import entrypoint as worker_entrypoint
+from k2_region_lab.worker.entrypoint import (
+    model_directories,
+    registered_native_model,
+    selected_inference_backend,
+)
 from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
 
 
@@ -103,6 +113,117 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(directories.loras, Path("/workspace/models/loras"))
 
+    def test_native_backend_selection_and_registered_model_use_supplied_hashes(
+        self,
+    ) -> None:
+        payload = {
+            "inference_backend": "native",
+            "diffusion_model_file": "/workspace/transformer.safetensors",
+            "diffusion_model_sha256": "1" * 64,
+            "text_encoder_file": "/workspace/text.safetensors",
+            "text_encoder_sha256": "2" * 64,
+            "vae_file": "/workspace/vae.safetensors",
+            "vae_sha256": "3" * 64,
+            "tokenizer_path": "/workspace/tokenizer",
+            "tokenizer_sha256": "4" * 64,
+        }
+
+        model = registered_native_model(payload)
+
+        self.assertEqual(selected_inference_backend(payload), "native")
+        self.assertEqual(model.architecture, "krea2")
+        self.assertEqual(model.transformer.sha256, "1" * 64)
+        self.assertEqual(model.text_encoder.sha256, "2" * 64)
+        self.assertEqual(model.vae.sha256, "3" * 64)
+        self.assertIsNotNone(model.tokenizer)
+        assert model.tokenizer is not None
+        self.assertEqual(model.tokenizer.sha256, "4" * 64)
+
+    def test_worker_rejects_unknown_backend_before_gpu_work(self) -> None:
+        with self.assertRaisesRegex(Exception, "Unsupported inference backend"):
+            selected_inference_backend({"inference_backend": "mystery"})
+
+    def test_native_worker_loads_generates_emits_output_and_unloads(self) -> None:
+        payload = {
+            "inference_backend": "native",
+            "comfyui_root": "/opt/ComfyUI",
+            "diffusion_models": "/workspace/models/diffusion_models",
+            "text_encoders": "/workspace/models/text_encoders",
+            "vae": "/workspace/models/vae",
+            "diffusion_model_file": "/workspace/transformer.safetensors",
+            "diffusion_model_sha256": "1" * 64,
+            "text_encoder_file": "/workspace/text.safetensors",
+            "text_encoder_sha256": "2" * 64,
+            "vae_file": "/workspace/vae.safetensors",
+            "vae_sha256": "3" * 64,
+            "tokenizer_path": "/workspace/tokenizer",
+            "tokenizer_sha256": "4" * 64,
+            "output_directory": "/workspace/outputs",
+            "filename_prefix": "native-contract",
+            "prompt": "a red teapot",
+            "width": 256,
+            "height": 256,
+            "steps": 2,
+            "seed": 7,
+        }
+        commands = (
+            {"command_id": "load", "kind": "load_model", "payload": payload},
+            {
+                "command_id": "generate",
+                "kind": "generate_baseline",
+                "payload": payload,
+            },
+        )
+        backend = Mock()
+        backend.pipeline = None
+
+        def load(_config):
+            backend.pipeline = SimpleNamespace(loaded=True)
+            return SimpleNamespace(metadata={"model_name": "krea2-runpod"})
+
+        backend.load.side_effect = load
+        backend.generate.return_value = SimpleNamespace(
+            to_payload=lambda: {
+                "image_path": "/workspace/outputs/native-contract.png"
+            }
+        )
+        stdin = io.StringIO(
+            "".join(json.dumps(command) + "\n" for command in commands)
+        )
+        stdout = io.StringIO()
+        with (
+            patch.object(worker_entrypoint, "configure_debug_logging"),
+            patch.object(worker_entrypoint, "NativeK2Backend", return_value=backend),
+            patch.object(
+                worker_entrypoint,
+                "discover_native_model_artifacts",
+                return_value=SimpleNamespace(complete=True),
+            ),
+            patch.object(worker_entrypoint.sys, "stdin", stdin),
+            patch.object(worker_entrypoint.sys, "stdout", stdout),
+        ):
+            exit_code = worker_entrypoint.main()
+
+        self.assertEqual(exit_code, 0)
+        backend.load.assert_called_once()
+        backend.generate.assert_called_once()
+        request = backend.generate.call_args.args[0]
+        self.assertIsInstance(request, GenerationRequest)
+        self.assertEqual(request.correlation_id, "generate")
+        backend.unload.assert_called_once()
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        output = next(
+            event
+            for event in events
+            if event["command_id"] == "generate"
+            and event["state"] == "ready"
+        )
+        self.assertEqual(output["payload"]["backend"], "native")
+        self.assertEqual(
+            output["payload"]["image_path"],
+            "/workspace/outputs/native-contract.png",
+        )
+
     def test_external_worker_probes_validates_and_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -128,6 +249,7 @@ class WorkerProtocolTests(unittest.TestCase):
             environment = os.environ.copy()
             project_root = Path(__file__).resolve().parents[1]
             environment["PYTHONPATH"] = str(project_root / "src")
+            environment["K2LAB_DATA_DIR"] = str(root / "worker-data")
             process = subprocess.run(
                 [sys.executable, "-m", "k2_region_lab.worker.entrypoint"],
                 input="".join(json.dumps(command) + "\n" for command in commands),
