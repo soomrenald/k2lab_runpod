@@ -55,3 +55,19 @@ readiness becomes true only after a worker event proves that execution has start
 
 Publishing, vulnerability scanning, signing, and live RunPod acceptance are intentionally
 separate release operations; local tests never push an image or provision a Pod.
+
+## Native-only release-candidate image
+
+`Dockerfile.native-workspace` is the clean-install candidate. It uses one K2Lab virtual
+environment, selects the native backend, and does not clone or install ComfyUI. The
+separate `Native workspace image` pull-request workflow builds it from the same required
+immutable base image, confirms `/opt/ComfyUI` is absent, runs an import smoke, scans it,
+and emits an SPDX SBOM. It never publishes an image; promotion remains an explicit
+release action.
+
+Native tokenizer files live in the durable
+`/workspace/k2lab/models/tokenizers` model kind. Upload or remotely transfer every file
+from the approved Qwen tokenizer directory without renaming it. The agent reports model
+readiness only when transformer, text encoder, VAE, and tokenizer assets are all present;
+the worker then verifies the configured directory hash before loading. No user model is
+copied, moved, renamed, or deleted automatically.

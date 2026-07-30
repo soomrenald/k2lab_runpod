@@ -301,6 +301,7 @@ unsupported destinations.
   models/
     diffusion_models/
     text_encoders/
+    tokenizers/
     vae/
     loras/
     upscale_models/

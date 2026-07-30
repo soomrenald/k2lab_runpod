@@ -5,6 +5,7 @@ import { controlPlane } from "../api";
 const destinations: { value: FileKind; label: string }[] = [
   { value: "diffusion_models", label: "Diffusion models" },
   { value: "text_encoders", label: "Text encoders" },
+  { value: "tokenizers", label: "Tokenizers" },
   { value: "vae", label: "VAE" },
   { value: "loras", label: "LoRAs" },
   { value: "krea_control_loras", label: "Krea pose adapters" },
