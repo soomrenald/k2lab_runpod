@@ -41,9 +41,11 @@ RUN git clone "${COMFYUI_REPOSITORY}" /opt/ComfyUI \
     && /opt/comfyui-venv/bin/python -m pip install -r /opt/ComfyUI/requirements.txt \
     && /opt/comfyui-venv/bin/python -m pip install \
         "cryptography>=48.0.1,<49" \
+        "msgpack>=1.2.1" \
         "onnxruntime-gpu>=1.20" \
         "pillow>=12.3.0" \
         "pydantic>=2.10" \
+        "setuptools>=78.1.1" \
         "transformers>=5.5.0,<6"
 
 WORKDIR /opt/k2lab-runpod
@@ -52,6 +54,9 @@ COPY . /opt/k2lab-runpod
 RUN python3.12 -m venv /opt/k2lab-venv \
     && /opt/k2lab-venv/bin/python -m pip install --upgrade pip setuptools wheel \
     && /opt/k2lab-venv/bin/python -m pip install '/opt/k2lab-runpod[web]' \
+    && /opt/k2lab-venv/bin/python -m pip install --upgrade \
+        "msgpack>=1.2.1" \
+        "setuptools>=78.1.1" \
     && /opt/comfyui-venv/bin/python -m pip install --no-deps /opt/k2lab-runpod \
     && chmod 0755 /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 
