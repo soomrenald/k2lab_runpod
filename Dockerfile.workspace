@@ -41,23 +41,24 @@ RUN git clone "${COMFYUI_REPOSITORY}" /opt/ComfyUI \
     && /opt/comfyui-venv/bin/python -m pip install -r /opt/ComfyUI/requirements.txt \
     && /opt/comfyui-venv/bin/python -m pip install \
         "cryptography>=48.0.1,<49" \
-        "msgpack>=1.2.1" \
         "onnxruntime-gpu>=1.20" \
         "pillow>=12.3.0" \
         "pydantic>=2.10" \
-        "setuptools>=78.1.1" \
         "transformers>=5.5.0,<6"
 
 WORKDIR /opt/k2lab-runpod
 COPY . /opt/k2lab-runpod
 
+# pip's bundled CycloneDX file inventories pip's build environment, not packages
+# installed in these runtime venvs. Remove it so image scanners do not report
+# those non-runtime build dependencies as executable packages.
 RUN python3.12 -m venv /opt/k2lab-venv \
     && /opt/k2lab-venv/bin/python -m pip install --upgrade pip setuptools wheel \
     && /opt/k2lab-venv/bin/python -m pip install '/opt/k2lab-runpod[web]' \
-    && /opt/k2lab-venv/bin/python -m pip install --upgrade \
-        "msgpack>=1.2.1" \
-        "setuptools>=78.1.1" \
     && /opt/comfyui-venv/bin/python -m pip install --no-deps /opt/k2lab-runpod \
+    && rm -f \
+        /opt/comfyui-venv/lib/python3.12/site-packages/pip/_vendor/bom.cdx.json \
+        /opt/k2lab-venv/lib/python3.12/site-packages/pip/_vendor/bom.cdx.json \
     && chmod 0755 /opt/k2lab-runpod/deploy/workspace/entrypoint.sh
 
 EXPOSE 8080
