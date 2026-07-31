@@ -12,6 +12,7 @@ import time
 import urllib.request
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
+from importlib.resources import files
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ _CONFIG_FILENAME = "config.json"
 _KEY_FILENAME = "credential.key"
 _DATABASE_FILENAME = "state.sqlite3"
 _LOG_FILENAME = "control-plane.log"
+_IMAGE_REGISTRY_RESOURCE = "workspace_images.json"
 
 
 def default_state_directory(environment: Mapping[str, str] | None = None) -> Path:
@@ -41,6 +43,40 @@ def validate_image_digest(value: str) -> str:
             "Workspace image must use an immutable registry/name@sha256:<64-hex> digest."
         )
     return digest
+
+
+def load_image_registry() -> tuple[str, dict[str, dict[str, str]]]:
+    resource = files("k2_region_lab.web").joinpath(_IMAGE_REGISTRY_RESOURCE)
+    try:
+        value = json.loads(resource.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read the workspace image registry: {error}") from error
+    if not isinstance(value, dict) or value.get("schema") != "k2lab-workspace-images/1":
+        raise RuntimeError("The workspace image registry has an unsupported schema.")
+    default_version = value.get("default_version")
+    raw_images = value.get("images")
+    if not isinstance(default_version, str) or not default_version.strip():
+        raise RuntimeError("The workspace image registry has no default version.")
+    if not isinstance(raw_images, dict) or not raw_images:
+        raise RuntimeError("The workspace image registry contains no images.")
+    images: dict[str, dict[str, str]] = {}
+    for raw_version, raw_release in raw_images.items():
+        if (
+            not isinstance(raw_version, str)
+            or not raw_version.strip()
+            or not isinstance(raw_release, dict)
+            or not isinstance(raw_release.get("image"), str)
+            or not isinstance(raw_release.get("status"), str)
+        ):
+            raise RuntimeError("The workspace image registry contains an invalid release.")
+        version = raw_version.strip()
+        images[version] = {
+            "image": validate_image_digest(raw_release["image"]),
+            "status": raw_release["status"].strip(),
+        }
+    if default_version not in images:
+        raise RuntimeError("The workspace image registry default is not registered.")
+    return default_version, images
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -86,11 +122,23 @@ def _credential_key(state_directory: Path) -> str:
 def _choose_image_digest(
     *,
     explicit: str | None,
+    version: str | None,
     environment: Mapping[str, str],
     stored: Mapping[str, Any],
+    registry: Mapping[str, Mapping[str, str]],
     input_function: Callable[[str], str] = input,
     interactive: bool | None = None,
 ) -> str:
+    registered = registry.get(version) if version else None
+    if version and explicit is None:
+        if registered is not None:
+            return validate_image_digest(registered["image"])
+        available = ", ".join(sorted(registry))
+        raise ValueError(
+            f"Unknown workspace image version {version!r}. Available versions: {available}. "
+            "Pass both --image-version and --image to use an unpublished image."
+        )
+
     candidate = explicit or environment.get("K2LAB_RUNPOD_IMAGE_DIGEST")
     candidate = candidate or stored.get("workspace_image_digest")
     if not candidate:
@@ -106,7 +154,12 @@ def _choose_image_digest(
         candidate = input_function("Workspace image digest: ")
     if not isinstance(candidate, str):
         raise ValueError("The stored workspace image digest is invalid.")
-    return validate_image_digest(candidate)
+    digest = validate_image_digest(candidate)
+    if registered is not None and digest != validate_image_digest(registered["image"]):
+        raise ValueError(
+            f"Workspace image version {version!r} does not match the supplied image digest."
+        )
+    return digest
 
 
 def prepare_local_environment(
@@ -118,6 +171,7 @@ def prepare_local_environment(
     environment: Mapping[str, str] | None = None,
     input_function: Callable[[str], str] = input,
     interactive: bool | None = None,
+    image_registry: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[dict[str, str], bool]:
     if not 1024 <= port <= 65535:
         raise ValueError("Port must be between 1024 and 65535.")
@@ -127,17 +181,30 @@ def prepare_local_environment(
     config_path = state_directory / _CONFIG_FILENAME
     stored = _read_json(config_path)
     values = os.environ if environment is None else environment
+    default_version, packaged_registry = load_image_registry()
+    registry = packaged_registry if image_registry is None else image_registry
+    version_override = image_version
+    digest_override = image_digest
+    if version_override is None:
+        version_override = values.get("K2LAB_RUNPOD_IMAGE_VERSION")
+        if version_override is not None and digest_override is None:
+            digest_override = values.get("K2LAB_RUNPOD_IMAGE_DIGEST")
+    requested_version = (
+        version_override
+        or str(stored.get("workspace_image_version") or default_version)
+    ).strip()
     digest = _choose_image_digest(
-        explicit=image_digest,
+        explicit=digest_override,
+        version=requested_version if version_override is not None else None,
         environment=values,
         stored=stored,
+        registry=registry,
         input_function=input_function,
         interactive=interactive,
     )
-    version = image_version or str(stored.get("workspace_image_version") or "0.3.0")
     next_config = {
         "workspace_image_digest": digest,
-        "workspace_image_version": version,
+        "workspace_image_version": requested_version,
     }
     changed = next_config != stored
     if changed:
@@ -149,7 +216,7 @@ def prepare_local_environment(
         "K2LAB_CREDENTIAL_FERNET_KEY": key,
         "K2LAB_DATABASE_URL": f"sqlite+aiosqlite:///{database_path.as_posix()}",
         "K2LAB_RUNPOD_IMAGE_DIGEST": digest,
-        "K2LAB_RUNPOD_IMAGE_VERSION": version,
+        "K2LAB_RUNPOD_IMAGE_VERSION": requested_version,
         "K2LAB_LOCAL_SINGLE_USER": "true",
         "K2LAB_LOCAL_PORT": str(port),
         "K2LAB_SERVE_WEB_UI": "true",
@@ -266,9 +333,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--image",
-        help="Public immutable workspace image (registry/name@sha256:<digest>); saved after use.",
+        help="Override with an immutable image digest, normally for unpublished images.",
     )
-    parser.add_argument("--image-version", help="Human-readable workspace image version.")
+    parser.add_argument(
+        "--image-version",
+        help="Registered workspace image version; its immutable digest is selected automatically.",
+    )
+    parser.add_argument(
+        "--list-image-versions",
+        action="store_true",
+        help="List registered workspace image versions and exit.",
+    )
     parser.add_argument("--state-dir", type=Path, default=default_state_directory())
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser.")
@@ -282,6 +357,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.list_image_versions:
+        try:
+            default_version, registry = load_image_registry()
+        except (RuntimeError, ValueError) as error:
+            print(f"k2lab-runpod: {error}", file=sys.stderr)
+            return 2
+        for version, release in registry.items():
+            default_label = " (default)" if version == default_version else ""
+            print(f"{version}{default_label}\t{release['status']}\t{release['image']}")
+        return 0
     if not 1024 <= args.port <= 65535:
         print("k2lab-runpod: Port must be between 1024 and 65535.", file=sys.stderr)
         return 2

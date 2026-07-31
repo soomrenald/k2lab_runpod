@@ -84,14 +84,16 @@ git clone https://github.com/soomrenald/k2lab_runpod.git
 cd k2lab_runpod
 ```
 
-On the first launch, provide the signed `0.1.17` workspace image and matching version:
+On the first launch, select a registered workspace version. The launcher resolves its
+immutable image digest from the registry included with K2:
 
 ```bash
-./scripts/k2lab-runpod --image 'ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:f1dbf619c615bb55be781eada7b11d28a70818d1dba4139814e1ea41645f8717' --image-version '0.1.17'
+./scripts/k2lab-runpod --image-version '0.3.0'
 ```
 
 Keep that command on one line. The launcher:
 
+- resolves the version to its registered immutable image digest;
 - creates a private state directory;
 - generates a local encryption key;
 - creates the local database;
@@ -103,6 +105,21 @@ Future launches need only:
 
 ```bash
 ./scripts/k2lab-runpod
+```
+
+List the versions known to the installed launcher with:
+
+```bash
+./scripts/k2lab-runpod --list-image-versions
+```
+
+For an unpublished development image, provide both its human-readable version and
+immutable digest. Registered versions reject a mismatched digest:
+
+```bash
+./scripts/k2lab-runpod \
+  --image-version '0.4.0-development' \
+  --image 'ghcr.io/OWNER/k2lab-runpod-workspace@sha256:64_HEX_DIGEST'
 ```
 
 If K2 is already running, launching it again follows the existing log instead of trying to
