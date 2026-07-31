@@ -294,6 +294,25 @@ export function createStudioLora(
   };
 }
 
+export function addStudioLoraFiles(
+  loras: StudioLora[],
+  files: StudioLoraFile[],
+  activeBinding: LoraBindingKey,
+): StudioLora[] {
+  return files.reduce<StudioLora[]>((current, file) => {
+    const missingIndex = current.findIndex((lora) => (
+      !lora.fileId
+      && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase()
+    ));
+    if (missingIndex < 0) {
+      return [...current, createStudioLora(file.id, file.display_name, activeBinding)];
+    }
+    return current.map((lora, index) => index === missingIndex
+      ? { ...lora, fileId: file.id, name: file.display_name }
+      : lora);
+  }, loras);
+}
+
 export function loraBindingKey(mode: StudioMode, activeLayer: RegionLayer): LoraBindingKey {
   return mode === "face" ? "face" : activeLayer;
 }

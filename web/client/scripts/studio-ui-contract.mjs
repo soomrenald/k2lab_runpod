@@ -160,6 +160,19 @@ assert.ok(
 );
 const assetPanel = await readFile(new URL("../src/components/AssetPanel.tsx", import.meta.url), "utf8");
 assert.ok(
+  assetPanel.includes("onSelectMany?: (files: FileRecord[]) => void")
+    && assetPanel.includes('kind === "loras" && onSelectMany')
+    && assetPanel.includes("onSelectMany(selectedFiles)")
+    && assetPanel.includes("Add selected LoRAs to project"),
+  "The Cloud LoRA tab must add all checked files to the project in one action",
+);
+assert.ok(
+  workspaceStudio.includes("addStudioLoraFiles(current, selectedLoras, bindingKey)")
+    && workspaceStudio.includes("addStudioLoraFiles(current, [file]")
+    && workspaceStudio.includes("Added ${selectedLoras.length} cloud LoRA"),
+  "Single and bulk Cloud LoRA selection must share the state-safe project binding path",
+);
+assert.ok(
   assetPanel.includes('useState<OutputSort>("newest")')
     && assetPanel.includes("Newest first")
     && assetPanel.includes("Oldest first")

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  addStudioLoraFiles,
   buildProjectDocument,
   bindStudioLoraFiles,
   createStudioLora,
@@ -57,6 +58,29 @@ assert.equal(newLora.reference.triggerPhrase, "character");
 assert.equal(newLora.targets.triggerPhrase, "character");
 assert.equal(newLora.face.triggerPhrase, "character");
 assert.equal(newLora.reference.enabled, false);
+const unresolvedLora = {
+  ...createStudioLora("", "first.safetensors", "reference"),
+  fileId: "",
+};
+const bulkAddedLoras = addStudioLoraFiles([unresolvedLora], [{
+  id: "cloud-first",
+  display_name: "first.safetensors",
+}, {
+  id: "cloud-second",
+  display_name: "second.safetensors",
+}], "targets");
+assert.equal(bulkAddedLoras.length, 2);
+assert.equal(bulkAddedLoras[0].id, unresolvedLora.id, "bulk add must resolve an existing unbound assignment");
+assert.equal(bulkAddedLoras[0].fileId, "cloud-first");
+assert.equal(bulkAddedLoras[0].reference.enabled, true, "resolving a file must preserve existing binding settings");
+assert.equal(bulkAddedLoras[1].targets.enabled, true, "new bulk assignments must use the active layer");
+assert.equal(bulkAddedLoras[1].generation.enabled, false);
+const repeatedBulkLoras = addStudioLoraFiles(bulkAddedLoras, [{
+  id: "cloud-first",
+  display_name: "first.safetensors",
+}], "targets");
+assert.equal(repeatedBulkLoras.length, 3, "the same cloud LoRA must remain addable more than once");
+assert.equal(repeatedBulkLoras.filter((lora) => lora.fileId === "cloud-first").length, 2);
 settings.generation.seed = 8123;
 settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;

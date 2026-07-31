@@ -17,9 +17,9 @@ import {
   parseLoraCompatibility,
 } from "../eventLog";
 import {
+  addStudioLoraFiles,
   buildProjectDocument,
   bindStudioLoraFiles,
-  createStudioLora,
   createStudioSettings,
   loraBindingKey,
   isolatedLorasForMode,
@@ -1465,13 +1465,17 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelectMany={assetPurpose === "lora" ? (files) => {
+        const selectedLoras = files.filter((file) => file.kind === "loras");
+        if (!selectedLoras.length) return;
+        const bindingKey = loraBindingKey(mode, activeLayer);
+        setLoras((current) => addStudioLoraFiles(current, selectedLoras, bindingKey));
+        setLoraCompatibility({});
+        report(`Added ${selectedLoras.length} cloud LoRA${selectedLoras.length === 1 ? "" : "s"} to the ${bindingKey} project settings.`, "info");
+      } : undefined} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras") {
-            const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
-            setLoras(missingIndex >= 0
-              ? loras.map((lora, index) => index === missingIndex ? { ...lora, fileId: file.id, name: file.display_name } : lora)
-              : [...loras, createStudioLora(file.id, file.display_name, loraBindingKey(mode, activeLayer))]);
+            setLoras((current) => addStudioLoraFiles(current, [file], loraBindingKey(mode, activeLayer)));
             setLoraCompatibility({});
           }
           return;

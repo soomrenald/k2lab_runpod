@@ -21,6 +21,7 @@ interface Props {
   workspaceId: string;
   onClose: () => void;
   onSelect?: (file: FileRecord) => void;
+  onSelectMany?: (files: FileRecord[]) => void;
   onEvent?: (message: string, kind: "info" | "error" | "worker") => void;
   initialKind?: FileKind;
   uploadQueue: UploadQueueController;
@@ -30,6 +31,7 @@ export function AssetPanel({
   workspaceId,
   onClose,
   onSelect,
+  onSelectMany,
   onEvent,
   uploadQueue,
   initialKind = "inputs",
@@ -192,6 +194,15 @@ export function AssetPanel({
             )}
             <button className="quiet-button" disabled={!displayedFiles.length || selectedFileIds.size === displayedFiles.length} onClick={() => setSelectedFileIds(new Set(displayedFiles.map((file) => file.id)))}>Select all</button>
             <button className="quiet-button" disabled={!selectedFileIds.size} onClick={() => setSelectedFileIds(new Set())}>Clear selection</button>
+            {kind === "loras" && onSelectMany && (
+              <button
+                className="primary-button asset-use-selected"
+                disabled={!selectedFiles.length || deleting}
+                onClick={() => { onSelectMany(selectedFiles); onClose(); }}
+              >
+                Add selected LoRAs to project{selectedFiles.length ? ` (${selectedFiles.length})` : ""}
+              </button>
+            )}
             <button className="quiet-button asset-delete" disabled={!selectedFiles.length || deleting} onClick={() => void deleteFiles(selectedFiles)}>
               {deleting ? "Deleting…" : `Delete selected${selectedFiles.length ? ` (${selectedFiles.length})` : ""}`}
             </button>
