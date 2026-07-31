@@ -81,6 +81,7 @@ h1, h2, h3 { font-family: "Manrope", sans-serif; letter-spacing: -0.035em; }
 .dev-notice, .error-banner { margin: 14px 0; padding: 11px 12px; border-radius: 8px; font-size: 10px; line-height: 1.5; }
 .dev-notice { color: #d6d0ff; background: rgba(159,145,255,.08); border: 1px solid rgba(159,145,255,.18); }
 .error-banner { color: #ffc1c0; background: rgba(255,112,111,.08); border: 1px solid rgba(255,112,111,.2); }
+.fatal-error-detail { width: min(760px, 100%); max-height: 240px; overflow: auto; padding: 12px; color: #ffc1c0; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(255,112,111,.08); border: 1px solid rgba(255,112,111,.2); border-radius: 8px; font-size: 10px; line-height: 1.5; }
 .primary-button, .quiet-button, .danger-button { min-height: 38px; padding: 0 15px; border-radius: 9px; border: 1px solid transparent; cursor: pointer; font-size: 11px; font-weight: 700; transition: transform .15s, background .15s, opacity .15s; }
 .primary-button { color: #10140d; background: var(--accent); }
 .primary-button:hover:not(:disabled) { background: #bcff91; transform: translateY(-1px); }
@@ -290,11 +291,11 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .lora-title-row > div { min-width: 0; display: grid; }
 .lora-title-row strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .lora-title-row small { margin-top: 3px; color: var(--muted); font-size: 8px; }
-.toggle input { position: absolute; opacity: 0; }
+.toggle { padding: 0; background: transparent; border: 0; cursor: pointer; }
 .toggle span { position: relative; display: block; width: 26px; height: 15px; background: #313743; border-radius: 99px; cursor: pointer; }
 .toggle span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 9px; height: 9px; background: #858d9a; border-radius: 50%; transition: .15s; }
-.toggle input:checked + span { background: #456431; }
-.toggle input:checked + span::after { left: 14px; background: var(--accent); }
+.toggle[aria-checked="true"] span { background: #456431; }
+.toggle[aria-checked="true"] span::after { left: 14px; background: var(--accent); }
 .icon-button.danger:hover { color: var(--danger); }
 .linked-value { margin-top: 13px; }
 .linked-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; color: var(--muted-bright); font-size: 9px; }
@@ -302,7 +303,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .range-input { width: 100%; height: 4px; accent-color: var(--accent-strong); cursor: ew-resize; }
 .lora-card .select-input { height: 30px; margin-top: 8px; font-size: 8px; }
 .lora-binding-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
-.lora-binding-controls:disabled { opacity: .55; }
+.lora-disabled-note { margin: 10px 0 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
 .lora-compatibility { margin: 9px 0 0; padding: 7px 8px; color: var(--muted-bright); background: #151922; border: 1px solid #2a303b; border-radius: 6px; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
 .lora-compatibility.checking { color: #d6d0ff; border-color: rgba(159,145,255,.3); }
 .lora-compatibility.compatible { color: #bfe8a6; border-color: rgba(169,255,111,.28); }

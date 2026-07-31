@@ -354,6 +354,23 @@ export function duplicateStudioLora(
   };
 }
 
+export function setLoraBindingEnabled(
+  lora: StudioLora,
+  bindingKey: LoraBindingKey,
+  enabled: boolean,
+): StudioLora {
+  const binding = lora[bindingKey];
+  return {
+    ...lora,
+    [bindingKey]: {
+      ...binding,
+      enabled,
+      global: enabled && binding.regionIds.length === 0 ? true : binding.global,
+      regionIds: [...binding.regionIds],
+    },
+  };
+}
+
 export function defaultLoraTrigger(name: string): string {
   return basename(name).replace(/\.safetensors$/i, "");
 }
