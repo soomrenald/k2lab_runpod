@@ -64,8 +64,8 @@ jobs:
           tags: ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', env.IMAGE, github.ref_name) || env.LOCAL_IMAGE }}
           load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          provenance: mode=max
-          sbom: true
+          provenance: ${{ startsWith(github.ref, 'refs/tags/v') && 'mode=max' || 'false' }}
+          sbom: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Select scan target
         id: target
