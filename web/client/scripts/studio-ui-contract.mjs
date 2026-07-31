@@ -71,10 +71,12 @@ assert.ok(
   inspector.includes("toggleRegion(lora, region.id")
     && inspector.includes("loraBindingKey(mode, activeLayer)")
     && inspector.includes("defaultLoraTrigger(lora.name)")
-    && inspector.includes("binding.regionIds.length === 0")
+    && inspector.includes("setLoraBindingEnabled(item, bindingKey")
+    && inspector.includes('role="switch"')
+    && inspector.includes('binding.enabled ? <div className="lora-binding-controls">')
     && inspector.includes("duplicateStudioLora(lora, bindingKey)")
     && inspector.includes("onCheckLoras"),
-  "LoRA controls must preserve per-mode routing, duplicate assignments, and compatibility checks",
+  "LoRA controls must safely collapse disabled assignments while preserving per-mode routing, duplicates, and compatibility checks",
 );
 assert.ok(
   promptSection.includes('className="prompt-region-pane"')
@@ -103,6 +105,7 @@ for (const relativePath of [
 const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
 const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const main = await readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
 assert.ok(
   workspaceStudio.includes("isolatedLorasForMode(loras, mode)")
     && workspaceStudio.includes('kind: "validate_loras"')
@@ -119,8 +122,14 @@ assert.ok(
   styles.includes("height: 100dvh")
     && styles.includes("max-height: 100dvh")
     && styles.includes(".studio-main { grid-row: 3; overflow-y: auto; }")
-    && styles.includes(".lora-binding-controls"),
+    && styles.includes(".lora-binding-controls")
+    && styles.includes(".lora-disabled-note"),
   "Studio layout and stable LoRA controls must prevent body growth and toggle-induced blank space",
+);
+assert.ok(
+  main.includes("<AppErrorBoundary>")
+    && main.includes("</AppErrorBoundary>"),
+  "The application must render a recoverable diagnostic instead of a blank screen after render failures",
 );
 const setupPanel = await readFile(new URL("../src/components/SetupPanel.tsx", import.meta.url), "utf8");
 assert.ok(

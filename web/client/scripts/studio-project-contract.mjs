@@ -9,6 +9,7 @@ import {
   isolatedLorasForMode,
   loadStudioProjectDocument,
   projectDocumentFromPng,
+  setLoraBindingEnabled,
 } from "../src/studioProject.ts";
 import {
   appendBoundedEvents,
@@ -98,6 +99,19 @@ const duplicated = duplicateStudioLora(loras[0], "generation");
 assert.notEqual(duplicated.id, loras[0].id);
 assert.equal(duplicated.fileId, loras[0].fileId);
 assert.equal(duplicated.generation.strength, 0.85);
+for (const bindingKey of ["generation", "reference", "targets", "face"]) {
+  const disabled = setLoraBindingEnabled(loras[0], bindingKey, false);
+  assert.equal(disabled[bindingKey].enabled, false);
+  assert.equal(disabled[bindingKey].strength, loras[0][bindingKey].strength);
+  assert.deepEqual(disabled[bindingKey].regionIds, loras[0][bindingKey].regionIds);
+  assert.notEqual(disabled[bindingKey].regionIds, loras[0][bindingKey].regionIds);
+}
+const reenabledEmptyRegional = setLoraBindingEnabled({
+  ...loras[0],
+  generation: { ...loras[0].generation, enabled: false, global: false, regionIds: [] },
+}, "generation", true);
+assert.equal(reenabledEmptyRegional.generation.enabled, true);
+assert.equal(reenabledEmptyRegional.generation.global, true);
 assert.equal(isolatedLorasForMode(loras, "edit")[0].generation.enabled, false);
 assert.equal(isolatedLorasForMode(loras, "edit")[0].reference.enabled, true);
 const prompts = { generation: "studio portrait", reference: "portrait reference", targets: "change clothing" };

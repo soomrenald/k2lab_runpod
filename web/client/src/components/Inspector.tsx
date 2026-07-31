@@ -10,6 +10,7 @@ import {
   duplicateStudioLora,
   loraBindingKey,
   PROJECTOR_PRESETS,
+  setLoraBindingEnabled,
   type GenerationSettings,
   type LoraLayerBinding,
   type LoraCompatibilityState,
@@ -423,19 +424,30 @@ function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunn
       const compatibilityState = compatibility[lora.id];
       return <div className={`lora-card ${!binding.enabled ? "inactive" : ""}`} key={lora.id}>
         <div className="lora-title-row">
-          <label className="toggle"><input type="checkbox" aria-label={`Use ${lora.name} in this mode`} checked={binding.enabled} onChange={(event) => updateBinding(lora, { enabled: event.target.checked, global: event.target.checked && binding.regionIds.length === 0 ? true : binding.global })} /><span /></label>
+          <button
+            type="button"
+            className="toggle"
+            role="switch"
+            aria-checked={binding.enabled}
+            aria-label={`Use ${lora.name} in this mode`}
+            onClick={() => onLoras(loras.map((item) => (
+              item.id === lora.id
+                ? setLoraBindingEnabled(item, bindingKey, !binding.enabled)
+                : item
+            )))}
+          ><span /></button>
           <div><strong>{lora.name}</strong><small>{sameFile.length > 1 ? `Assignment ${assignmentNumber} of ${sameFile.length} · ` : ""}{binding.enabled ? binding.global ? "Global" : `${binding.regionIds.length} region(s)` : "Off in this mode"}</small></div>
           <button className="icon-button" title="Duplicate this LoRA assignment" aria-label={`Duplicate ${lora.name}`} onClick={() => onLoras([...loras, duplicateStudioLora(lora, bindingKey)])}><Icon name="plus" /></button>
           <button className="icon-button danger" title="Remove this LoRA assignment" aria-label={`Remove ${lora.name}`} onClick={() => onLoras(loras.filter((item) => item.id !== lora.id))}><Icon name="trash" /></button>
         </div>
         {compatibilityState && <p className={`lora-compatibility ${compatibilityState.status}`}>{compatibilityState.summary}</p>}
-        <fieldset className="lora-binding-controls" disabled={!binding.enabled}>
+        {binding.enabled ? <div className="lora-binding-controls">
           <LinkedValue label="Strength" value={binding.strength} min={-4} max={4} step={0.05} onChange={(strength) => updateBinding(lora, { strength })} />
           <label className="check-row compact-check"><input type="checkbox" checked={binding.global} onChange={(event) => updateBinding(lora, { global: event.target.checked, regionIds: event.target.checked ? [] : binding.regionIds, routingMode: event.target.checked ? "standard" : binding.routingMode })} /><span><strong>Global</strong></span></label>
           {!binding.global && <div className="region-assignment-list">{regions.map((region) => <label className="check-row compact-check" key={region.id}><input type="checkbox" checked={binding.regionIds.includes(region.id)} onChange={(event) => toggleRegion(lora, region.id, event.target.checked)} /><span>{region.name}</span></label>)}</div>}
           <label className="field-label">Routing</label><select className="select-input compact-select" value={binding.routingMode} disabled={binding.global || binding.regionIds.length === 0} onChange={(event) => updateBinding(lora, { routingMode: event.target.value as LoraLayerBinding["routingMode"] })}><option value="standard">Standard regional</option><option value="character_identity">Character identity (face)</option></select>
           {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} onBlur={() => { if (!binding.triggerPhrase.trim()) updateBinding(lora, { triggerPhrase: defaultLoraTrigger(lora.name) }); }} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}
-        </fieldset>
+        </div> : <p className="lora-disabled-note">This assignment is off. Its strength and region settings are preserved.</p>}
       </div>;
     })}
     {loras.length === 0 && <div className="drop-zone"><Icon name="upload" /><span>Add an uploaded `.safetensors` file from Cloud files.</span></div>}
