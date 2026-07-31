@@ -235,7 +235,7 @@ export interface RemoteTransfer {
   updated_at: string;
 }
 
-export type JobKind = "generate" | "edit_image" | "refine_faces";
+export type JobKind = "generate" | "edit_image" | "refine_faces" | "validate_loras";
 export type JobState = "queued" | "starting" | "running" | "completed" | "cancelled" | "failed";
 
 export interface GenerationJob {

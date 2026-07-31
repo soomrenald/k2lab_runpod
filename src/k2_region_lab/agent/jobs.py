@@ -7,6 +7,7 @@ import copy
 import json
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -331,6 +332,7 @@ class JobManager:
                 async with self._lock:
                     self._executors[job_id] = executor
                 worker_errors: list[str] = []
+                worker_error_messages: list[tuple[str, str]] = []
                 output_ids: list[str] = []
 
                 async def on_event(raw: dict[str, Any]) -> None:
@@ -341,13 +343,11 @@ class JobManager:
                         raw_payload = (
                             raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
                         )
-                        worker_errors.append(
-                            str(
-                                raw_payload.get("error_code")
-                                or raw_payload.get("exception_type")
-                                or "worker_failed"
-                            )
+                        error_code, error_message, _error_payload = (
+                            self._worker_event_error(raw_payload)
                         )
+                        worker_errors.append(error_code)
+                        worker_error_messages.append((error_code, error_message))
 
                 exit_code = await executor.run(self._commands(job_id, request, payload), on_event)
                 if keep_requested and bool(getattr(executor, "resident", False)):
@@ -362,12 +362,20 @@ class JobManager:
                     return
                 if exit_code != 0 or worker_errors:
                     error_code = self._worker_error_code(worker_errors)
+                    error_message = next(
+                        (
+                            message
+                            for code, message in reversed(worker_error_messages)
+                            if code == error_code
+                        ),
+                        WORKER_ERROR_MESSAGES[error_code],
+                    )
                     raise JobError(
                         error_code,
-                        WORKER_ERROR_MESSAGES[error_code],
+                        error_message,
                         500,
                     )
-                if not output_ids:
+                if not output_ids and request.kind != JobKind.VALIDATE_LORAS:
                     raise JobError(
                         "worker_output_missing",
                         "The GPU worker completed without a valid output file.",
@@ -443,15 +451,7 @@ class JobManager:
             raw_payload = {**raw_payload, "output_file_id": output_id}
             raw_payload.pop("image_path", None)
         if raw_state == "error":
-            error_code = str(raw_payload.get("error_code", "worker_failed"))
-            if error_code not in WORKER_ERROR_MESSAGES:
-                error_code = "worker_failed"
-            message = WORKER_ERROR_MESSAGES[error_code]
-            payload = {
-                "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128],
-                "error_code": error_code,
-                "command_kind": str(raw_payload.get("command_kind", "unknown"))[:64],
-            }
+            _error_code, message, payload = self._worker_event_error(raw_payload)
         else:
             payload = self._sanitize_payload(raw_payload)
         step = int(payload.get("step", 0) or 0)
@@ -466,6 +466,37 @@ class JobManager:
             self._readiness_callback(True)
         await self._append_event(job_id, state=raw_state, message=message, payload=payload)
         return output_id
+
+    @staticmethod
+    def _worker_event_error(raw_payload: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        error_code = str(raw_payload.get("error_code", "worker_failed"))
+        if error_code not in WORKER_ERROR_MESSAGES:
+            error_code = "worker_failed"
+        message = WORKER_ERROR_MESSAGES[error_code]
+        resource_kind = str(raw_payload.get("resource_kind") or "").strip()[:32]
+        raw_resource_name = str(raw_payload.get("resource_name") or "").replace("\\", "/")
+        resource_name = Path(raw_resource_name).name[:191] if raw_resource_name else ""
+        detail = str(raw_payload.get("error_detail") or "").replace("\r", " ").replace("\n", " ")
+        detail = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/:]+/)+[^\s,:;]+", "<internal path>", detail)
+        if "://" in detail or any(
+            marker in detail.casefold()
+            for marker in ("authorization=", "bearer ", "token=", "api_key=", "apikey=")
+        ):
+            detail = ""
+        detail = detail.strip()[:256]
+        if resource_kind and resource_name:
+            message = f"{message} {resource_kind}: {resource_name}."
+        if detail:
+            message = f"{message} Detail: {detail}"
+        payload = {
+            "exception_type": str(raw_payload.get("exception_type", "worker_error"))[:128],
+            "error_code": error_code,
+            "command_kind": str(raw_payload.get("command_kind", "unknown"))[:64],
+            **({"resource_kind": resource_kind} if resource_kind else {}),
+            **({"resource_name": resource_name} if resource_name else {}),
+            **({"error_detail": detail} if detail else {}),
+        }
+        return error_code, message[:512], payload
 
     async def _job_payload(
         self,
@@ -497,6 +528,14 @@ class JobManager:
                 "filename_prefix": filename_prefix,
             }
         )
+        if request.kind == JobKind.VALIDATE_LORAS:
+            base.update(
+                {
+                    "keep_model_loaded": False,
+                    "loras": self._all_enabled_loras(loras, state),
+                }
+            )
+            return base
         if request.kind == JobKind.GENERATE:
             base.update(
                 {
@@ -531,7 +570,7 @@ class JobManager:
                     "upscale_model_path": await self._optional_file_path(
                         request.upscale_model_file_id, FileKind.UPSCALE_MODELS
                     ),
-                    "loras": loras,
+                    "loras": self._generation_loras(loras, state),
                 }
             )
             return base
@@ -595,7 +634,7 @@ class JobManager:
                     self._region_payload(region, scale_x=scale_x, scale_y=scale_y)
                     for region in state.regions
                 ],
-                "loras": loras,
+                "loras": self._face_loras(loras, state),
                 "seed": state.face_detail_seed,
                 "steps": state.face_detail_steps,
                 "denoise": state.face_detail_denoise,
@@ -667,7 +706,7 @@ class JobManager:
             record, path = await self._transfers.resolve_file(file_id, required_kind=FileKind.LORAS)
             payload.append(
                 {
-                    "id": record.id,
+                    "id": lora.instance_id or f"{record.id}:{index}",
                     "name": record.display_name,
                     "path": str(path),
                     "strength": lora.strength,
@@ -681,25 +720,37 @@ class JobManager:
         return payload
 
     @staticmethod
+    def _generation_loras(
+        resolved: list[dict[str, Any]], state: ProjectState
+    ) -> list[dict[str, Any]]:
+        return [
+            {**item, "strength": lora.strength}
+            for item, lora in zip(resolved, state.loras)
+            if lora.generation_enabled and lora.strength != 0.0
+        ]
+
+    @staticmethod
     def _edit_loras(resolved: list[dict[str, Any]], state: ProjectState) -> list[dict[str, Any]]:
         payload = []
         for item, lora in zip(resolved, state.loras):
-            if lora.reference_enabled:
+            if lora.reference_enabled and lora.reference_strength != 0.0:
                 payload.append(
                     {
                         **item,
                         "id": f"reference:{item['id']}",
+                        "strength": lora.reference_strength,
                         "global": lora.reference_global_scope,
                         "region_ids": list(lora.reference_region_ids),
                         "routing_mode": lora.reference_routing_mode,
                         "trigger_phrase": lora.reference_trigger_phrase,
                     }
                 )
-            if lora.edit_enabled:
+            if lora.edit_enabled and lora.edit_strength != 0.0:
                 payload.append(
                     {
                         **item,
                         "id": f"edit:{item['id']}",
+                        "strength": lora.edit_strength,
                         "global": lora.edit_global_scope,
                         "region_ids": list(lora.edit_region_ids),
                         "routing_mode": lora.edit_routing_mode,
@@ -707,6 +758,33 @@ class JobManager:
                     }
                 )
         return payload
+
+    @staticmethod
+    def _face_loras(
+        resolved: list[dict[str, Any]], state: ProjectState
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                **item,
+                "id": f"face:{item['id']}",
+                "strength": lora.face_strength,
+                "global": lora.face_global_scope,
+                "region_ids": list(lora.face_region_ids),
+                "routing_mode": lora.face_routing_mode,
+                "trigger_phrase": lora.face_trigger_phrase,
+            }
+            for item, lora in zip(resolved, state.loras)
+            if lora.face_enabled and lora.face_strength != 0.0
+        ]
+
+    def _all_enabled_loras(
+        self, resolved: list[dict[str, Any]], state: ProjectState
+    ) -> list[dict[str, Any]]:
+        return [
+            *self._generation_loras(resolved, state),
+            *self._edit_loras(resolved, state),
+            *self._face_loras(resolved, state),
+        ]
 
     async def _input_path(self, file_id: str | None) -> Path:
         if not file_id:
@@ -731,6 +809,7 @@ class JobManager:
             JobKind.GENERATE: CommandKind.GENERATE_BASELINE,
             JobKind.EDIT_IMAGE: CommandKind.EDIT_IMAGE,
             JobKind.REFINE_FACES: CommandKind.REFINE_FACES,
+            JobKind.VALIDATE_LORAS: CommandKind.VALIDATE_LORAS,
         }[request.kind]
         return [
             {"command_id": f"{job_id}:probe", "kind": CommandKind.PROBE.value, "payload": payload},

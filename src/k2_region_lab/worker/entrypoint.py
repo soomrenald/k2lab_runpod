@@ -195,7 +195,7 @@ def main() -> int:
                 reports = runtime.diagnose_loras(list(payload.get("loras", [])))
                 compatible = bool(reports) and all(report["compatible"] for report in reports)
                 emit(
-                    WorkerState.READY if compatible else WorkerState.ERROR,
+                    WorkerState.READY,
                     "LoRA diagnostics complete",
                     command_id=command_id,
                     payload={"compatible": compatible, "loras": reports},
@@ -519,6 +519,9 @@ def main() -> int:
                     "exception_type": type(error).__name__,
                     "error_code": error_code,
                     "command_kind": kind.value if kind is not None else None,
+                    "resource_kind": getattr(error, "resource_kind", None),
+                    "resource_name": getattr(error, "resource_name", None),
+                    "error_detail": getattr(error, "technical_detail", None),
                 },
             )
             if kind in {

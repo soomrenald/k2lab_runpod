@@ -33,7 +33,7 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 19
+PROJECT_VERSION = 20
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -51,6 +51,8 @@ SUPPORTED_PROJECT_VERSIONS = {
     15,
     16,
     17,
+    18,
+    19,
     PROJECT_VERSION,
 }
 
@@ -58,30 +60,56 @@ SUPPORTED_PROJECT_VERSIONS = {
 @dataclass(frozen=True, slots=True)
 class SavedLora:
     path: Path
+    instance_id: str = ""
+    generation_enabled: bool = True
     global_scope: bool = True
     region_ids: tuple[str, ...] = ()
     strength: float = 1.0
     routing_mode: str = STANDARD_LORA_ROUTING
     trigger_phrase: str = ""
     edit_enabled: bool = False
+    edit_strength: float = 1.0
     edit_global_scope: bool = False
     edit_region_ids: tuple[str, ...] = ()
     edit_routing_mode: str = STANDARD_LORA_ROUTING
     edit_trigger_phrase: str = ""
     reference_enabled: bool = False
+    reference_strength: float = 1.0
     reference_global_scope: bool = False
     reference_region_ids: tuple[str, ...] = ()
     reference_routing_mode: str = STANDARD_LORA_ROUTING
     reference_trigger_phrase: str = ""
+    face_enabled: bool = False
+    face_strength: float = 1.0
+    face_global_scope: bool = True
+    face_region_ids: tuple[str, ...] = ()
+    face_routing_mode: str = STANDARD_LORA_ROUTING
+    face_trigger_phrase: str = ""
 
     def __post_init__(self) -> None:
-        if not -4.0 <= self.strength <= 4.0:
-            raise ValueError("saved LoRA strength must be between -4 and 4")
+        for label, strength in (
+            ("generation", self.strength),
+            ("edit", self.edit_strength),
+            ("reference", self.reference_strength),
+            ("face refinement", self.face_strength),
+        ):
+            if not -4.0 <= strength <= 4.0:
+                raise ValueError(f"saved {label} LoRA strength must be between -4 and 4")
+        if self.instance_id and len(self.instance_id) > 128:
+            raise ValueError("saved LoRA instance ID is too long")
         if self.routing_mode not in LORA_ROUTING_MODES:
             raise ValueError(f"unsupported saved LoRA routing mode: {self.routing_mode!r}")
-        if self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and not self.trigger_phrase.strip():
+        if (
+            self.generation_enabled
+            and self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and not self.trigger_phrase.strip()
+        ):
             raise ValueError("character identity routing requires a trigger phrase")
-        if self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and self.global_scope:
+        if (
+            self.generation_enabled
+            and self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and self.global_scope
+        ):
             raise ValueError("character identity routing requires regional scope")
         if self.edit_routing_mode not in LORA_ROUTING_MODES:
             raise ValueError(
@@ -122,6 +150,26 @@ class SavedLora:
             and not self.reference_region_ids
         ):
             raise ValueError("an enabled reference LoRA must have a scope")
+        if self.face_routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(
+                f"unsupported saved face LoRA routing mode: {self.face_routing_mode!r}"
+            )
+        if self.face_enabled and self.face_global_scope and self.face_region_ids:
+            raise ValueError("a face LoRA cannot be global and region-scoped at the same time")
+        if self.face_enabled and not self.face_global_scope and not self.face_region_ids:
+            raise ValueError("an enabled face LoRA must have a global or regional scope")
+        if (
+            self.face_enabled
+            and self.face_routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and not self.face_trigger_phrase.strip()
+        ):
+            raise ValueError("character identity face routing requires a trigger phrase")
+        if (
+            self.face_enabled
+            and self.face_routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and self.face_global_scope
+        ):
+            raise ValueError("character identity face routing requires regional scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,10 +310,13 @@ class ProjectState:
                 or box.y1 > self.canvas_height
             ):
                 raise ValueError("project region boxes must stay inside the canvas")
+        instance_ids = [lora.instance_id for lora in self.loras if lora.instance_id]
+        if len(instance_ids) != len(set(instance_ids)):
+            raise ValueError("project LoRA instance IDs must be unique")
         for lora in self.loras:
-            if not lora.global_scope and not lora.region_ids:
+            if lora.generation_enabled and not lora.global_scope and not lora.region_ids:
                 raise ValueError("a regional LoRA must target at least one region")
-            if lora.global_scope and lora.region_ids:
+            if lora.generation_enabled and lora.global_scope and lora.region_ids:
                 raise ValueError("a global LoRA cannot also target regions")
             if not set(lora.region_ids).issubset(known_ids):
                 raise ValueError("a LoRA references a region missing from the project")
@@ -279,6 +330,8 @@ class ProjectState:
                 raise ValueError(
                     "a reference LoRA references a region missing from the reference setup"
                 )
+            if not set(lora.face_region_ids).issubset(known_ids):
+                raise ValueError("a face LoRA references a region missing from the project")
 
 
 def project_document(state: ProjectState) -> dict[str, Any]:
@@ -358,7 +411,9 @@ def project_document(state: ProjectState) -> dict[str, Any]:
         ],
         "loras": [
             {
+                "instance_id": lora.instance_id,
                 "path": str(lora.path),
+                "enabled": lora.generation_enabled,
                 "global": lora.global_scope,
                 "region_ids": list(lora.region_ids),
                 "strength": lora.strength,
@@ -366,6 +421,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "trigger_phrase": lora.trigger_phrase,
                 "image_edit": {
                     "enabled": lora.edit_enabled,
+                    "strength": lora.edit_strength,
                     "global": lora.edit_global_scope,
                     "region_ids": list(lora.edit_region_ids),
                     "routing_mode": lora.edit_routing_mode,
@@ -373,10 +429,19 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 },
                 "image_edit_reference": {
                     "enabled": lora.reference_enabled,
+                    "strength": lora.reference_strength,
                     "global": lora.reference_global_scope,
                     "region_ids": list(lora.reference_region_ids),
                     "routing_mode": lora.reference_routing_mode,
                     "trigger_phrase": lora.reference_trigger_phrase,
+                },
+                "face_refinement": {
+                    "enabled": lora.face_enabled,
+                    "strength": lora.face_strength,
+                    "global": lora.face_global_scope,
+                    "region_ids": list(lora.face_region_ids),
+                    "routing_mode": lora.face_routing_mode,
+                    "trigger_phrase": lora.face_trigger_phrase,
                 },
             }
             for lora in state.loras
@@ -492,6 +557,71 @@ def project_document(state: ProjectState) -> dict[str, Any]:
     }
 
 
+def _saved_lora_from_document(item: dict[str, Any]) -> SavedLora:
+    edit = item.get("image_edit", {})
+    reference = item.get("image_edit_reference", {})
+    face = item.get("face_refinement")
+    strength = float(item.get("strength", 1.0))
+    generation_enabled = bool(item.get("enabled", strength != 0.0))
+    if not isinstance(edit, dict):
+        edit = {}
+    if not isinstance(reference, dict):
+        reference = {}
+    legacy_face = not isinstance(face, dict)
+    if legacy_face:
+        face = {}
+    return SavedLora(
+        path=Path(item["path"]).expanduser(),
+        instance_id=str(item.get("instance_id", "")),
+        generation_enabled=generation_enabled,
+        global_scope=bool(item.get("global", True)),
+        region_ids=tuple(str(region_id) for region_id in item.get("region_ids", [])),
+        strength=strength,
+        routing_mode=str(item.get("routing_mode", STANDARD_LORA_ROUTING)),
+        trigger_phrase=str(item.get("trigger_phrase", "")),
+        edit_enabled=bool(edit.get("enabled", False)),
+        edit_strength=float(edit.get("strength", strength)),
+        edit_global_scope=bool(edit.get("global", False)),
+        edit_region_ids=tuple(str(region_id) for region_id in edit.get("region_ids", [])),
+        edit_routing_mode=str(edit.get("routing_mode", STANDARD_LORA_ROUTING)),
+        edit_trigger_phrase=str(edit.get("trigger_phrase", "")),
+        reference_enabled=bool(reference.get("enabled", False)),
+        reference_strength=float(reference.get("strength", strength)),
+        reference_global_scope=bool(reference.get("global", False)),
+        reference_region_ids=tuple(
+            str(region_id) for region_id in reference.get("region_ids", [])
+        ),
+        reference_routing_mode=str(
+            reference.get("routing_mode", STANDARD_LORA_ROUTING)
+        ),
+        reference_trigger_phrase=str(reference.get("trigger_phrase", "")),
+        face_enabled=(
+            generation_enabled if legacy_face else bool(face.get("enabled", False))
+        ),
+        face_strength=float(face.get("strength", strength)),
+        face_global_scope=(
+            bool(item.get("global", True))
+            if legacy_face
+            else bool(face.get("global", True))
+        ),
+        face_region_ids=(
+            tuple(str(region_id) for region_id in item.get("region_ids", []))
+            if legacy_face
+            else tuple(str(region_id) for region_id in face.get("region_ids", []))
+        ),
+        face_routing_mode=(
+            str(item.get("routing_mode", STANDARD_LORA_ROUTING))
+            if legacy_face
+            else str(face.get("routing_mode", STANDARD_LORA_ROUTING))
+        ),
+        face_trigger_phrase=(
+            str(item.get("trigger_phrase", ""))
+            if legacy_face
+            else str(face.get("trigger_phrase", ""))
+        ),
+    )
+
+
 def project_state(document: dict[str, Any]) -> ProjectState:
     if document.get("schema") != PROJECT_SCHEMA:
         raise ValueError("not a K2 Region Lab project file")
@@ -554,49 +684,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         )
         for item in edit_document.get("reference_regions", [])
     )
-    loras = tuple(
-        SavedLora(
-            path=Path(item["path"]).expanduser(),
-            global_scope=bool(item.get("global", True)),
-            region_ids=tuple(str(region_id) for region_id in item.get("region_ids", [])),
-            strength=float(item.get("strength", 1.0)),
-            routing_mode=str(item.get("routing_mode", STANDARD_LORA_ROUTING)),
-            trigger_phrase=str(item.get("trigger_phrase", "")),
-            edit_enabled=bool(item.get("image_edit", {}).get("enabled", False)),
-            edit_global_scope=bool(item.get("image_edit", {}).get("global", False)),
-            edit_region_ids=tuple(
-                str(region_id)
-                for region_id in item.get("image_edit", {}).get("region_ids", [])
-            ),
-            edit_routing_mode=str(
-                item.get("image_edit", {}).get("routing_mode", STANDARD_LORA_ROUTING)
-            ),
-            edit_trigger_phrase=str(
-                item.get("image_edit", {}).get("trigger_phrase", "")
-            ),
-            reference_enabled=bool(
-                item.get("image_edit_reference", {}).get("enabled", False)
-            ),
-            reference_global_scope=bool(
-                item.get("image_edit_reference", {}).get("global", False)
-            ),
-            reference_region_ids=tuple(
-                str(region_id)
-                for region_id in item.get("image_edit_reference", {}).get(
-                    "region_ids", []
-                )
-            ),
-            reference_routing_mode=str(
-                item.get("image_edit_reference", {}).get(
-                    "routing_mode", STANDARD_LORA_ROUTING
-                )
-            ),
-            reference_trigger_phrase=str(
-                item.get("image_edit_reference", {}).get("trigger_phrase", "")
-            ),
-        )
-        for item in document.get("loras", [])
-    )
+    loras = tuple(_saved_lora_from_document(item) for item in document.get("loras", []))
     background = document.get("background_image")
     return ProjectState(
         canvas_width=int(canvas["width"]),

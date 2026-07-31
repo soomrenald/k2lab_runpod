@@ -7,9 +7,12 @@ import {
   COMFYUI_SAMPLERS,
   COMFYUI_SCHEDULERS,
   defaultLoraTrigger,
+  duplicateStudioLora,
+  loraBindingKey,
   PROJECTOR_PRESETS,
   type GenerationSettings,
   type LoraLayerBinding,
+  type LoraCompatibilityState,
   type ProjectorSettings,
   type PromptEmphasisState,
   type StudioLora,
@@ -36,6 +39,9 @@ interface Props {
   onSettings: (settings: StudioSettings) => void;
   onLoras: (loras: StudioLora[]) => void;
   onChooseLora: () => void;
+  onCheckLoras: () => void;
+  loraCompatibility: Record<string, LoraCompatibilityState>;
+  loraCheckRunning: boolean;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
   faces: DetectedFaceRecord[];
@@ -61,7 +67,8 @@ interface Props {
 export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
-    onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
+    onGlobalPrompt, onSettings, onLoras, onChooseLora, onCheckLoras,
+    loraCompatibility, loraCheckRunning, onChooseUpscaleModel,
     onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
     onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
     onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
@@ -218,7 +225,30 @@ export function Inspector(props: Props) {
       </nav>
 
       <div className="inspector-content">
-        {tab === "prompt" && <>
+        {tab === "prompt" && <div className={`prompt-tab-layout ${mode === "face" ? "without-region-pane" : ""}`}>
+          {mode !== "face" && <nav className="prompt-region-pane" aria-label="Prompt region selection">
+            <button
+              type="button"
+              className={selectedId === null ? "selected" : ""}
+              aria-pressed={selectedId === null}
+              onClick={() => onSelect(null)}
+            >
+              <span className="region-swatch global">G</span>
+              <span>Global</span>
+            </button>
+            {visibleRegions.map((region, index) => <button
+              type="button"
+              key={region.id}
+              className={selectedId === region.id ? "selected" : ""}
+              aria-pressed={selectedId === region.id}
+              onClick={() => onSelect(region.id)}
+            >
+              <span className="region-swatch" style={{ opacity: region.enabled ? 1 : 0.35 }}>{index + 1}</span>
+              <span title={region.name}>{region.name}</span>
+            </button>)}
+            {visibleRegions.length === 0 && <small>No regions</small>}
+          </nav>}
+          <div className="prompt-editor-column">
           <div className="inspector-section">
             <label className="field-label" htmlFor="global-prompt">
               {mode === "edit" && activeLayer === "targets" ? "Edit instruction" : mode === "edit" ? "Original global prompt · reference" : mode === "face" ? "Generation prompt · reference" : "Global prompt"}
@@ -261,7 +291,8 @@ export function Inspector(props: Props) {
               <button className="icon-button danger" onClick={() => setEmphases(emphases.filter((entry) => entry.id !== item.id))}><Icon name="trash" /></button>
             </div>)}
           </div>}
-        </>}
+          </div>
+        </div>}
 
         {tab === "regions" && mode === "face" && <FaceSelectionPanel
           faces={faces}
@@ -294,7 +325,17 @@ export function Inspector(props: Props) {
           </>}
         </div>}
 
-        {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}
+        {tab === "loras" && <LoraPanel
+          mode={mode}
+          activeLayer={activeLayer}
+          regions={visibleRegions}
+          loras={loras}
+          compatibility={loraCompatibility}
+          checkRunning={loraCheckRunning}
+          onLoras={onLoras}
+          onChoose={onChooseLora}
+          onCheck={onCheckLoras}
+        />}
 
         {tab === "advanced" && <AdvancedPanel mode={mode} activeLayer={activeLayer} settings={settings} updateGeneration={updateGeneration} updateEdit={updateEdit} updateFace={updateFace} updateRuntime={updateRuntime} onChooseUpscaleModel={onChooseUpscaleModel} onPreviewUnifiedPrompt={onPreviewUnifiedPrompt} workerMemory={workerMemory} memoryRefreshing={memoryRefreshing} memoryActionsDisabled={memoryActionsDisabled} onRefreshMemory={onRefreshMemory} onReleaseMemory={onReleaseMemory} />}
       </div>
@@ -340,8 +381,18 @@ function FaceSelectionPanel({ faces, selectedFaceIndices, manualFacePaths, lasso
   </div>;
 }
 
-function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeLayer: RegionLayer; regions: RegionBox[]; loras: StudioLora[]; onLoras: (items: StudioLora[]) => void; onChoose: () => void }) {
-  const bindingKey = activeLayer;
+function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunning, onLoras, onChoose, onCheck }: {
+  mode: StudioMode;
+  activeLayer: RegionLayer;
+  regions: RegionBox[];
+  loras: StudioLora[];
+  compatibility: Record<string, LoraCompatibilityState>;
+  checkRunning: boolean;
+  onLoras: (items: StudioLora[]) => void;
+  onChoose: () => void;
+  onCheck: () => void;
+}) {
+  const bindingKey = loraBindingKey(mode, activeLayer);
   function update(id: string, patch: Partial<StudioLora>) { onLoras(loras.map((lora) => lora.id === id ? { ...lora, ...patch } : lora)); }
   function updateBinding(lora: StudioLora, patch: Partial<LoraLayerBinding>) {
     update(lora.id, { [bindingKey]: { ...lora[bindingKey], ...patch } });
@@ -353,26 +404,38 @@ function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeL
       : binding.regionIds.filter((id) => id !== regionId);
     if (regionIds.length > 0) {
       updateBinding(lora, { enabled: true, global: false, regionIds });
-    } else if (activeLayer === "generation") {
-      updateBinding(lora, { enabled: true, global: true, regionIds: [], routingMode: "standard" });
     } else {
-      updateBinding(lora, { enabled: false, global: false, regionIds: [] });
+      updateBinding(lora, { enabled: true, global: true, regionIds: [], routingMode: "standard" });
     }
   }
   return <div className="inspector-section lora-panel">
-    <div className="section-inline-title"><span>LoRA library</span><button className="tiny-button" onClick={onChoose}><Icon name="plus" /> Add cloud LoRA</button></div>
+    <div className="section-inline-title"><span>{mode === "generation" ? "Generation LoRAs" : mode === "edit" ? activeLayer === "reference" ? "Image-edit reference LoRAs" : "Image-edit target LoRAs" : "Face-refinement LoRAs"}</span></div>
+    <div className="inline-actions lora-actions">
+      <button className="tiny-button" onClick={onChoose}><Icon name="plus" /> Add cloud LoRA</button>
+      <button className="tiny-button" disabled={checkRunning || !loras.some((lora) => lora[bindingKey].enabled)} onClick={onCheck}>
+        {checkRunning ? "Checking…" : "Check compatibility"}
+      </button>
+    </div>
     {loras.map((lora) => {
       const binding = lora[bindingKey];
-      return <div className={`lora-card ${!lora.active ? "inactive" : ""}`} key={lora.id}>
-        <div className="lora-title-row"><label className="toggle"><input type="checkbox" checked={lora.active} onChange={(event) => update(lora.id, { active: event.target.checked })} /><span /></label><div><strong>{lora.name}</strong><small>{binding.enabled ? binding.global ? "Global" : `${binding.regionIds.length} region(s)` : "Not used on this layer"}</small></div><button className="icon-button danger" onClick={() => onLoras(loras.filter((item) => item.id !== lora.id))}><Icon name="trash" /></button></div>
-        <LinkedValue label="Strength" value={lora.strength} min={-4} max={4} step={0.05} onChange={(strength) => update(lora.id, { strength })} />
-        {activeLayer !== "generation" && <label className="check-row compact-check"><input type="checkbox" checked={binding.enabled} onChange={(event) => updateBinding(lora, { enabled: event.target.checked, global: event.target.checked ? (binding.global || binding.regionIds.length === 0) : false, routingMode: event.target.checked && binding.regionIds.length === 0 ? "standard" : binding.routingMode })} /><span><strong>Use on this layer</strong></span></label>}
-        {binding.enabled && <>
+      const sameFile = loras.filter((item) => item.fileId === lora.fileId && item.name === lora.name);
+      const assignmentNumber = sameFile.findIndex((item) => item.id === lora.id) + 1;
+      const compatibilityState = compatibility[lora.id];
+      return <div className={`lora-card ${!binding.enabled ? "inactive" : ""}`} key={lora.id}>
+        <div className="lora-title-row">
+          <label className="toggle"><input type="checkbox" aria-label={`Use ${lora.name} in this mode`} checked={binding.enabled} onChange={(event) => updateBinding(lora, { enabled: event.target.checked, global: event.target.checked && binding.regionIds.length === 0 ? true : binding.global })} /><span /></label>
+          <div><strong>{lora.name}</strong><small>{sameFile.length > 1 ? `Assignment ${assignmentNumber} of ${sameFile.length} · ` : ""}{binding.enabled ? binding.global ? "Global" : `${binding.regionIds.length} region(s)` : "Off in this mode"}</small></div>
+          <button className="icon-button" title="Duplicate this LoRA assignment" aria-label={`Duplicate ${lora.name}`} onClick={() => onLoras([...loras, duplicateStudioLora(lora, bindingKey)])}><Icon name="plus" /></button>
+          <button className="icon-button danger" title="Remove this LoRA assignment" aria-label={`Remove ${lora.name}`} onClick={() => onLoras(loras.filter((item) => item.id !== lora.id))}><Icon name="trash" /></button>
+        </div>
+        {compatibilityState && <p className={`lora-compatibility ${compatibilityState.status}`}>{compatibilityState.summary}</p>}
+        <fieldset className="lora-binding-controls" disabled={!binding.enabled}>
+          <LinkedValue label="Strength" value={binding.strength} min={-4} max={4} step={0.05} onChange={(strength) => updateBinding(lora, { strength })} />
           <label className="check-row compact-check"><input type="checkbox" checked={binding.global} onChange={(event) => updateBinding(lora, { global: event.target.checked, regionIds: event.target.checked ? [] : binding.regionIds, routingMode: event.target.checked ? "standard" : binding.routingMode })} /><span><strong>Global</strong></span></label>
           {!binding.global && <div className="region-assignment-list">{regions.map((region) => <label className="check-row compact-check" key={region.id}><input type="checkbox" checked={binding.regionIds.includes(region.id)} onChange={(event) => toggleRegion(lora, region.id, event.target.checked)} /><span>{region.name}</span></label>)}</div>}
           <label className="field-label">Routing</label><select className="select-input compact-select" value={binding.routingMode} disabled={binding.global || binding.regionIds.length === 0} onChange={(event) => updateBinding(lora, { routingMode: event.target.value as LoraLayerBinding["routingMode"] })}><option value="standard">Standard regional</option><option value="character_identity">Character identity (face)</option></select>
           {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} onBlur={() => { if (!binding.triggerPhrase.trim()) updateBinding(lora, { triggerPhrase: defaultLoraTrigger(lora.name) }); }} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}
-        </>}
+        </fieldset>
       </div>;
     })}
     {loras.length === 0 && <div className="drop-zone"><Icon name="upload" /><span>Add an uploaded `.safetensors` file from Cloud files.</span></div>}

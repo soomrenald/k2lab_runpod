@@ -85,6 +85,24 @@ class CriticalGpuMemoryPressure(RuntimeError):
     """Raised only between denoising steps so recovery starts before a hard OOM."""
 
 
+class LoraLoadError(RuntimeError):
+    """Actionable LoRA failure that keeps the selected asset name across process boundaries."""
+
+    resource_kind = "LoRA"
+
+    def __init__(self, specification: dict[str, Any], error: BaseException | str) -> None:
+        path = Path(str(specification.get("path", "LoRA.safetensors"))).expanduser()
+        self.resource_name = str(specification.get("name") or path.name or "unknown LoRA")
+        detail = str(error).strip() or type(error).__name__
+        for candidate in {str(path), str(path.resolve())}:
+            if candidate:
+                detail = detail.replace(candidate, self.resource_name)
+        self.technical_detail = detail[:512]
+        super().__init__(
+            f"LoRA {self.resource_name!r} could not be loaded: {self.technical_detail}"
+        )
+
+
 class LoraDeltaStatistics:
     """Accumulate routed per-token delta magnitudes without synchronizing each layer."""
 
@@ -633,7 +651,12 @@ class ComfyBaselineRuntime:
     def diagnose_loras(self, specifications: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reports = []
         for specification in specifications:
-            patches, _metadata, report = self._load_lora_patches(specification)
+            try:
+                patches, _metadata, report = self._load_lora_patches(specification)
+            except LoraLoadError:
+                raise
+            except Exception as error:
+                raise LoraLoadError(specification, error) from error
             report["status"] = "compatible" if report["compatible"] else "incompatible"
             reports.append(report)
             del patches
@@ -691,12 +714,19 @@ class ComfyBaselineRuntime:
                 )
                 continue
             route = routes_by_id[lora_id]
-            patches, metadata, report = self._load_lora_patches(specification)
+            try:
+                patches, metadata, report = self._load_lora_patches(specification)
+            except LoraLoadError:
+                raise
+            except Exception as error:
+                raise LoraLoadError(specification, error) from error
             if not report["compatible"]:
-                raise ValueError(
-                    f"LoRA {report['display_name']} matched "
-                    f"{report['matched_model_targets']}/{report['adapter_count']} "
-                    "Krea 2 model targets"
+                raise LoraLoadError(
+                    specification,
+                    (
+                        f"matched {report['matched_model_targets']}/"
+                        f"{report['adapter_count']} Krea 2 model targets"
+                    ),
                 )
             for key, adapter in patches.items():
                 if route_allows_adapter_target(route, str(key)):

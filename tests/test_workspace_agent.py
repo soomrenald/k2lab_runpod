@@ -197,6 +197,71 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["keep_model_loaded"])
         self.assertFalse(payload["system_ram_guard_enabled"])
 
+    async def test_lora_payloads_are_isolated_by_runtime_mode(self) -> None:
+        document = self._project_document("portrait")
+        document["loras"] = [
+            {
+                "instance_id": "shared-assignment",
+                "path": "character.safetensors",
+                "enabled": True,
+                "strength": 0.9,
+                "global": True,
+                "region_ids": [],
+                "image_edit": {
+                    "enabled": True,
+                    "strength": 0.4,
+                    "global": True,
+                    "region_ids": [],
+                },
+                "image_edit_reference": {
+                    "enabled": True,
+                    "strength": 0.6,
+                    "global": True,
+                    "region_ids": [],
+                },
+                "face_refinement": {
+                    "enabled": True,
+                    "strength": 0.8,
+                    "global": True,
+                    "region_ids": [],
+                },
+            }
+        ]
+        state = project_state(document)
+        resolved = [
+            {
+                "id": "shared-assignment",
+                "name": "character.safetensors",
+                "path": "/workspace/models/loras/character.safetensors",
+                "strength": 0.9,
+                "global": True,
+                "region_ids": [],
+                "routing_mode": "standard",
+                "trigger_phrase": "",
+            }
+        ]
+        manager = self.app.state.job_manager
+
+        generation = manager._generation_loras(resolved, state)
+        edit = manager._edit_loras(resolved, state)
+        face = manager._face_loras(resolved, state)
+
+        self.assertEqual(
+            [(item["id"], item["strength"]) for item in generation],
+            [("shared-assignment", 0.9)],
+        )
+        self.assertEqual(
+            [(item["id"], item["strength"]) for item in edit],
+            [
+                ("reference:shared-assignment", 0.6),
+                ("edit:shared-assignment", 0.4),
+            ],
+        )
+        self.assertEqual(
+            [(item["id"], item["strength"]) for item in face],
+            [("face:shared-assignment", 0.8)],
+        )
+
     async def test_sanitized_project_preserves_lora_display_name_for_png_metadata(
         self,
     ) -> None:
@@ -1529,8 +1594,13 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                         "message": "private prompt and /workspace/private/model.safetensors",
                         "payload": {
                             "exception_type": "TypeError",
-                            "error_code": "model_load_failed",
+                            "error_code": "lora_load_failed",
                             "command_kind": "load_model",
+                            "resource_kind": "LoRA",
+                            "resource_name": "/workspace/models/loras/character.safetensors",
+                            "error_detail": (
+                                "character.safetensors matched 0/128 Krea 2 model targets"
+                            ),
                             "prompt": "private prompt",
                         },
                     }
@@ -1555,15 +1625,93 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(submitted.status_code, 202, submitted.text)
             job = await self._wait_for_job(client, submitted.json()["id"])
             self.assertEqual(job["state"], "failed")
-            self.assertEqual(job["error_code"], "model_load_failed")
-            self.assertIn("Verify the selected transformer", job["error_message"])
+            self.assertEqual(job["error_code"], "lora_load_failed")
+            self.assertIn("character.safetensors", job["error_message"])
+            self.assertIn("matched 0/128 Krea 2 model targets", job["error_message"])
             events = await client.get(
                 f"/v1/jobs/{job['id']}/events",
                 headers=self.headers,
             )
-            self.assertIn("Krea 2 model loading failed", events.text)
+            self.assertIn("character.safetensors", events.text)
             self.assertNotIn("private prompt", events.text)
             self.assertNotIn("/workspace/private", events.text)
+            self.assertNotIn("/workspace/models", events.text)
+
+    async def test_lora_compatibility_job_completes_without_an_image_output(self) -> None:
+        observed_commands = []
+
+        class DiagnosticExecutor:
+            async def run(self, commands, on_event):
+                observed_commands.extend(commands)
+                await on_event(
+                    {
+                        "command_id": commands[-1]["command_id"],
+                        "state": "ready",
+                        "message": "LoRA diagnostics complete",
+                        "payload": {
+                            "compatible": True,
+                            "loras": [
+                                {
+                                    "id": "diagnostic-assignment",
+                                    "display_name": "character.safetensors",
+                                    "compatible": True,
+                                    "matched_model_targets": 128,
+                                    "adapter_count": 128,
+                                }
+                            ],
+                        },
+                    }
+                )
+                return 0
+
+            async def cancel(self):
+                return None
+
+        app = create_agent_app(self.settings, job_executor_factory=lambda: DiagnosticExecutor())
+        app.state.layout.initialize()
+        lora_path = app.state.layout.destination(FileKind.LORAS.value) / "character.safetensors"
+        lora_path.write_bytes(self._safetensors_payload())
+        lora_record = await app.state.transfer_manager.index_existing_file(
+            FileKind.LORAS, lora_path
+        )
+        document = self._project_document("portrait")
+        document["loras"] = [
+            {
+                "instance_id": "diagnostic-assignment",
+                "path": "character.safetensors",
+                "enabled": True,
+                "strength": 0.75,
+                "global": True,
+                "region_ids": [],
+            }
+        ]
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            submitted = await client.post(
+                "/v1/jobs",
+                headers=self.headers,
+                json={
+                    "command_id": "lora-diagnostic",
+                    "kind": "validate_loras",
+                    "project_id": "lora-diagnostic-project",
+                    "project": document,
+                    "lora_file_ids": [lora_record.id],
+                },
+            )
+            self.assertEqual(submitted.status_code, 202, submitted.text)
+            job = await self._wait_for_job(client, submitted.json()["id"])
+            self.assertEqual(job["state"], "completed", job)
+            self.assertEqual(job["output_file_ids"], [])
+            events = await client.get(
+                f"/v1/jobs/{job['id']}/events",
+                headers=self.headers,
+            )
+            self.assertIn("character.safetensors", events.text)
+        self.assertEqual(
+            [command["kind"] for command in observed_commands],
+            ["probe", "load_model", "validate_loras"],
+        )
 
     async def test_resident_high_vram_worker_is_reused_and_explicitly_released(self) -> None:
         executors = []

@@ -69,10 +69,17 @@ assert.ok(
 );
 assert.ok(
   inspector.includes("toggleRegion(lora, region.id")
-    && inspector.includes('activeLayer === "generation"')
+    && inspector.includes("loraBindingKey(mode, activeLayer)")
     && inspector.includes("defaultLoraTrigger(lora.name)")
-    && inspector.includes("binding.regionIds.length === 0"),
-  "LoRA routing controls must preserve desktop scope and identity-trigger semantics",
+    && inspector.includes("binding.regionIds.length === 0")
+    && inspector.includes("duplicateStudioLora(lora, bindingKey)")
+    && inspector.includes("onCheckLoras"),
+  "LoRA controls must preserve per-mode routing, duplicate assignments, and compatibility checks",
+);
+assert.ok(
+  promptSection.includes('className="prompt-region-pane"')
+    && promptSection.includes("onSelect(region.id)"),
+  "Prompt editing must expose direct global and region selection without changing tabs",
 );
 assert.ok(
   inspector.includes("promptEmphasisFromSelection")
@@ -94,6 +101,27 @@ for (const relativePath of [
 }
 
 const workspaceStudio = await readFile(new URL("../src/components/WorkspaceStudio.tsx", import.meta.url), "utf8");
+const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+assert.ok(
+  workspaceStudio.includes("isolatedLorasForMode(loras, mode)")
+    && workspaceStudio.includes('kind: "validate_loras"')
+    && workspaceStudio.includes("const cloudSource = cloudSources[mode]"),
+  "Remote jobs, inputs, and compatibility checks must use only the active mode's bindings",
+);
+assert.ok(
+  regionCanvas.includes("Hide regions")
+    && regionCanvas.includes("data-region-overlay-hidden")
+    && regionCanvas.includes("!regionOverlayHidden && orderedRegions.map"),
+  "The canvas must expose a non-destructive region visibility toggle",
+);
+assert.ok(
+  styles.includes("height: 100dvh")
+    && styles.includes("max-height: 100dvh")
+    && styles.includes(".studio-main { grid-row: 3; overflow-y: auto; }")
+    && styles.includes(".lora-binding-controls"),
+  "Studio layout and stable LoRA controls must prevent body growth and toggle-induced blank space",
+);
 const setupPanel = await readFile(new URL("../src/components/SetupPanel.tsx", import.meta.url), "utf8");
 assert.ok(
   workspaceStudio.includes("const activeJobId")
@@ -241,8 +269,6 @@ assert.ok(
     && assetPanel.includes("queuedFileBlob"),
   "Output assets must render thumbnails with an in-pane enlarged preview",
 );
-const regionCanvas = await readFile(new URL("../src/components/RegionCanvas.tsx", import.meta.url), "utf8");
-const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 assert.ok(
   regionCanvas.includes("(sourceUrl || resultUrl)")
     && regionCanvas.includes("Clear canvas"),

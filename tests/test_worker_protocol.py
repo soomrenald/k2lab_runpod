@@ -11,6 +11,7 @@ from pathlib import Path
 
 from k2_region_lab.worker.entrypoint import model_directories
 from k2_region_lab.worker.protocol import CommandKind, classify_worker_error
+from k2_region_lab.worker.runtime import LoraLoadError
 
 
 def descriptor(shape: list[int], dtype: str = "BF16") -> dict:
@@ -79,6 +80,22 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(code, "worker_ram_low")
         self.assertIn("system RAM", message)
+
+    def test_lora_load_failure_retains_the_selected_asset_name(self) -> None:
+        error = LoraLoadError(
+            {
+                "name": "people/character.safetensors",
+                "path": "/workspace/models/loras/character.safetensors",
+            },
+            "matched 0/128 Krea 2 model targets",
+        )
+
+        code, message = classify_worker_error(error, CommandKind.GENERATE_BASELINE)
+
+        self.assertEqual(code, "lora_load_failed")
+        self.assertIn("selected LoRA", message)
+        self.assertEqual(error.resource_name, "people/character.safetensors")
+        self.assertIn("matched 0/128", error.technical_detail)
 
     def test_lora_directory_is_distinct_from_lora_job_specifications(self) -> None:
         payload = {
