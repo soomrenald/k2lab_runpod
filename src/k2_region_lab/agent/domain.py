@@ -238,6 +238,7 @@ class JobKind(StrEnum):
     GENERATE = "generate"
     EDIT_IMAGE = "edit_image"
     REFINE_FACES = "refine_faces"
+    VALIDATE_LORAS = "validate_loras"
 
 
 class JobState(StrEnum):

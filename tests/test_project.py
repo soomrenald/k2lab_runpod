@@ -163,6 +163,57 @@ class ProjectStateTests(unittest.TestCase):
             "lface, a specific woman with an oval face",
         )
 
+    def test_lora_instances_and_mode_specific_strengths_round_trip(self) -> None:
+        state = ProjectState(
+            canvas_width=1024,
+            canvas_height=1024,
+            regions=(
+                RegionDefinition(
+                    "person",
+                    "Person",
+                    PixelBox(0, 0, 512, 1024),
+                    "a person",
+                ),
+            ),
+            loras=(
+                SavedLora(
+                    Path("character.safetensors"),
+                    instance_id="character-left",
+                    generation_enabled=False,
+                    edit_enabled=True,
+                    edit_strength=0.45,
+                    edit_global_scope=True,
+                    reference_enabled=True,
+                    reference_strength=0.7,
+                    reference_global_scope=True,
+                    face_enabled=True,
+                    face_strength=1.25,
+                    face_global_scope=False,
+                    face_region_ids=("person",),
+                ),
+                SavedLora(
+                    Path("character.safetensors"),
+                    instance_id="character-right",
+                    strength=0.9,
+                    global_scope=False,
+                    region_ids=("person",),
+                ),
+            ),
+        )
+
+        document = project_document(state)
+        restored = project_state(document)
+
+        self.assertEqual(
+            [item.instance_id for item in restored.loras],
+            ["character-left", "character-right"],
+        )
+        self.assertFalse(restored.loras[0].generation_enabled)
+        self.assertEqual(restored.loras[0].edit_strength, 0.45)
+        self.assertEqual(restored.loras[0].reference_strength, 0.7)
+        self.assertEqual(restored.loras[0].face_strength, 1.25)
+        self.assertEqual(restored.loras[0].face_region_ids, ("person",))
+
     def test_version_twelve_lora_uses_standard_routing_defaults(self) -> None:
         document = project_document(ProjectState(canvas_width=1024, canvas_height=1024))
         document["version"] = 12

@@ -91,6 +91,7 @@ export function RegionCanvas({
   const [drag, setDrag] = useState<DragState | null>(null);
   const [draftLasso, setDraftLasso] = useState<number[][]>([]);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
+  const [regionsHidden, setRegionsHidden] = useState(false);
   const lassoPoints = useRef<number[][]>([]);
   const downloadUrl = resultUrl || sourceUrl;
   const downloadName = resultUrl
@@ -104,6 +105,7 @@ export function RegionCanvas({
     ...visibleRegions.filter((region) => region.id !== selectedId),
     ...visibleRegions.filter((region) => region.id === selectedId),
   ];
+  const regionOverlayHidden = regionsHidden && mode !== "face";
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -244,6 +246,21 @@ export function RegionCanvas({
     setDrag(null);
   }
 
+  function toggleRegionsHidden() {
+    if (drag) return;
+    if (!regionsHidden && drawMode) onDrawMode(false);
+    setRegionsHidden((current) => !current);
+  }
+
+  function toggleDrawMode() {
+    if (regionsHidden) {
+      setRegionsHidden(false);
+      onDrawMode(true);
+      return;
+    }
+    onDrawMode(!drawMode);
+  }
+
   return (
     <div className="canvas-column">
       <div className="canvas-toolbar">
@@ -261,6 +278,22 @@ export function RegionCanvas({
               event.target.value = "";
             }} />
           </label>
+          {mode !== "face" && (
+            <button
+              type="button"
+              className={`quiet-button ${regionsHidden ? "active" : ""}`}
+              aria-pressed={regionsHidden}
+              aria-label={regionsHidden ? "Show regions" : "Hide regions"}
+              title={regionsHidden
+                ? "Show region overlays"
+                : "Hide region overlays to inspect the image"}
+              disabled={drag !== null}
+              onClick={toggleRegionsHidden}
+            >
+              <Icon name={regionsHidden ? "eye" : "eyeOff"} />
+              {regionsHidden ? "Show regions" : "Hide regions"}
+            </button>
+          )}
           {downloadUrl && (
             <a className="quiet-button canvas-download" href={downloadUrl} download={downloadName}>
               <Icon name="download" /> Download image
@@ -268,7 +301,7 @@ export function RegionCanvas({
           )}
           {(sourceUrl || resultUrl) && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear canvas</button>}
           {mode !== "face" && (
-            <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={() => onDrawMode(!drawMode)}>
+            <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={toggleDrawMode}>
               <Icon name="plus" /> {drawMode ? "Drawing…" : "Draw region"}
             </button>
           )}
@@ -301,16 +334,19 @@ export function RegionCanvas({
           )}
           <svg
             ref={svgRef}
-            className="region-overlay"
+            className={`region-overlay ${regionOverlayHidden ? "regions-hidden" : ""}`}
+            data-region-overlay-hidden={regionOverlayHidden}
             viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
             preserveAspectRatio="none"
-            onPointerDown={beginDraw}
-            onPointerMove={movePointer}
-            onPointerUp={endPointer}
-            onPointerCancel={endPointer}
-            onClick={(event) => { if (!drawMode && event.target === event.currentTarget) onSelect(null); }}
+            onPointerDown={regionOverlayHidden ? undefined : beginDraw}
+            onPointerMove={regionOverlayHidden ? undefined : movePointer}
+            onPointerUp={regionOverlayHidden ? undefined : endPointer}
+            onPointerCancel={regionOverlayHidden ? undefined : endPointer}
+            onClick={regionOverlayHidden
+              ? undefined
+              : (event) => { if (!drawMode && event.target === event.currentTarget) onSelect(null); }}
           >
-            {orderedRegions.map((region) => (
+            {!regionOverlayHidden && orderedRegions.map((region) => (
               <g className={`region-group ${region.id === selectedId ? "selected" : ""} ${!region.enabled ? "disabled" : ""}`} key={region.id}>
                 <rect className="region-fill" x={region.x} y={region.y} width={region.width} height={region.height}
                   onPointerDown={region.id === selectedId ? (event) => beginMove(event, region) : undefined} />

@@ -56,6 +56,10 @@ WORKER_ERROR_MESSAGES = {
     "lora_validation_failed": (
         "LoRA validation failed. Verify that every selected LoRA targets Krea 2."
     ),
+    "lora_load_failed": (
+        "A selected LoRA could not be loaded. Verify the named file is a complete "
+        "Krea 2-compatible safetensors adapter."
+    ),
     "generation_failed": (
         "Generation failed while applying the selected LoRA or sampling settings. "
         "Verify that the LoRA targets Krea 2 and try again."
@@ -79,6 +83,8 @@ def classify_worker_error(
         code = "worker_oom"
     elif isinstance(error, MemoryError):
         code = "worker_ram_low"
+    elif getattr(error, "resource_kind", None) == "LoRA":
+        code = "lora_load_failed"
     elif command_kind == CommandKind.PROBE:
         code = "worker_probe_failed"
     elif command_kind == CommandKind.LOAD_MODEL:

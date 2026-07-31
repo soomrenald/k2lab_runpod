@@ -10,14 +10,22 @@ import { SetupPanel } from "./SetupPanel";
 import { DraftNumberInput } from "./DraftNumberInput";
 import { uploadWorkspaceFile } from "../uploads";
 import { useUploadQueue } from "../useUploadQueue";
-import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
+import {
+  appendBoundedEvents,
+  EVENT_LOG_LIMIT,
+  formatWorkerEvent,
+  parseLoraCompatibility,
+} from "../eventLog";
 import {
   buildProjectDocument,
   bindStudioLoraFiles,
   createStudioLora,
   createStudioSettings,
+  loraBindingKey,
+  isolatedLorasForMode,
   loadStudioProjectDocument,
   projectDocumentFromPng,
+  type LoraCompatibilityState,
   type StudioLora,
 } from "../studioProject";
 import {
@@ -55,7 +63,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [drawMode, setDrawMode] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
-  const [cloudSource, setCloudSource] = useState<FileRecord | null>(null);
+  const [cloudSources, setCloudSources] = useState<Record<StudioMode, FileRecord | null>>({
+    generation: null,
+    edit: null,
+    face: null,
+  });
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [resultName, setResultName] = useState("");
   const [comparePosition, setComparePosition] = useState(0.5);
@@ -66,6 +78,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   });
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
+  const [loraCompatibility, setLoraCompatibility] = useState<Record<string, LoraCompatibilityState>>({});
   const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
@@ -220,16 +233,29 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (cancelled) return;
         eventCursor.current = events.next_cursor;
         if (events.items.length) {
-          setMessage(events.items[events.items.length - 1].message);
+          const latestMessage = formatWorkerEvent(events.items[events.items.length - 1]);
+          setMessage(latestMessage);
+          const compatibilityUpdates = events.items.flatMap(parseLoraCompatibility);
+          if (compatibilityUpdates.length) {
+            setLoraCompatibility((current) => ({
+              ...current,
+              ...Object.fromEntries(compatibilityUpdates.map((result) => [
+                result.instanceId,
+                { status: result.status, summary: result.summary },
+              ])),
+            }));
+          }
           setEventLog((current) => appendBoundedEvents(current, events.items.map((event) => ({
             id: `${jobId}-${event.sequence}`,
             createdAt: event.created_at,
-            kind: "worker" as const,
-            message: event.message,
+            kind: ["error", "failed"].includes(event.state) ? "error" as const : "worker" as const,
+            message: formatWorkerEvent(event),
           }))));
         }
         setJob(next);
-        if (next.state === "completed" && next.output_file_ids[0]) {
+        if (next.state === "completed" && next.kind === "validate_loras") {
+          report("LoRA compatibility check completed. Review each assignment card and the event history for target counts.", "worker");
+        } else if (next.state === "completed" && next.output_file_ids[0]) {
           const outputFileId = next.output_file_ids[0];
           setLatestOutputFileId(outputFileId);
           setResultUrl(controlPlane.outputUrl(workspace.id, outputFileId));
@@ -241,6 +267,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           setComparePosition(next.kind === "generate" ? 1 : 0.5);
           report(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.", "worker");
         } else if (next.error_message) {
+          if (next.kind === "validate_loras") {
+            setLoraCompatibility((current) => Object.fromEntries(
+              Object.entries(current).map(([id, result]) => [
+                id,
+                result.status === "checking"
+                  ? { status: "error", summary: `Compatibility check failed · ${next.error_message}` }
+                  : result,
+              ]),
+            ));
+          }
           report(next.error_message, "error");
         }
         if (["completed", "failed", "cancelled"].includes(next.state) && queuedJobs.length) {
@@ -274,6 +310,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   }, [showCloud, showMigration, workspace.id]);
 
   const running = workspace.state === "ready";
+  const cloudSource = cloudSources[mode];
   const activeCompute = ["provisioning", "starting", "ready", "stopping"].includes(workspace.state);
   const canExtend = !workspace.lease_unlimited && (workspace.state === "starting" || workspace.state === "ready");
   const canStart = workspace.state === "stopped" || workspace.state === "error";
@@ -291,10 +328,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   }
 
   async function loadImage(file: File) {
+    const targetMode = mode;
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(URL.createObjectURL(file));
     setSourceName(file.name);
-    setCloudSource(null);
+    setCloudSources((current) => ({ ...current, [targetMode]: null }));
     setFaceDetections([]);
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
@@ -317,7 +355,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report(`Uploading ${file.name} to persistent Inputs…`);
       try {
         const uploaded = await uploadWorkspaceFile(workspace.id, file, "inputs");
-        setCloudSource(uploaded);
+        setCloudSources((current) => ({ ...current, [targetMode]: uploaded }));
         report(`Loaded ${file.name}; remote input is ready.`);
       } catch (caught) {
         report(caught instanceof Error ? `Image loaded locally, but cloud upload failed: ${caught.message}` : "Image loaded locally, but cloud upload failed.", "error");
@@ -331,7 +369,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (sourceUrl?.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(null);
     setSourceName("");
-    setCloudSource(null);
+    setCloudSources((current) => ({ ...current, [mode]: null }));
     setResultUrl(null);
     setResultName("");
     setFaceDetections([]);
@@ -350,12 +388,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setDrawMode(false);
     setSourceUrl(null);
     setSourceName("");
-    setCloudSource(null);
+    setCloudSources({ generation: null, edit: null, face: null });
     setResultUrl(null);
     setResultName("");
     setGlobalPrompts({ generation: "", reference: "", targets: "" });
     setStudioSettings(createStudioSettings());
     setLoras([]);
+    setLoraCompatibility({});
     setProjectName("untitled.k2lab.json");
     setFaceDetections([]);
     setSelectedFaceIndices([]);
@@ -421,10 +460,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setGlobalPrompts(loaded.prompts);
     setStudioSettings(loaded.settings);
     setLoras(loaded.loras);
+    setLoraCompatibility({});
     setResultUrl(null);
     setResultName("");
     const restoredSource = byName([...inputFiles, ...outputFiles], loaded.sourceName);
-    setCloudSource(restoredSource ?? null);
+    setCloudSources({
+      generation: null,
+      edit: restoredSource ?? null,
+      face: restoredSource ?? null,
+    });
     setFaceDetections([]);
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
@@ -464,7 +508,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setProjectName("untitled.k2lab.json");
       if (!developmentBackend && workspace.state === "ready") {
         const uploaded = await uploadWorkspaceFile(workspace.id, file, "inputs");
-        setCloudSource(uploaded);
+        setCloudSources((current) => ({
+          ...current,
+          edit: uploaded,
+          face: uploaded,
+        }));
         report(`Imported project metadata and uploaded ${file.name} for remote use.`);
       } else {
         report(`Imported project metadata from ${file.name}. Start the workspace to upload it for remote use.`);
@@ -632,6 +680,76 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }
   }
 
+  async function checkLoraCompatibility() {
+    const modeLoras = isolatedLorasForMode(loras, mode);
+    if (!modeLoras.length) {
+      report("Enable at least one LoRA in this mode before checking compatibility.", "error");
+      return;
+    }
+    const missing = modeLoras.filter((lora) => !lora.fileId).map((lora) => lora.name);
+    if (missing.length) {
+      report(`Bind these LoRA assignments to cloud files before checking: ${missing.join(", ")}.`, "error");
+      setAssetPurpose("lora");
+      setUtilityPanel("assets");
+      return;
+    }
+    const unresolvedModels = [
+      [studioSettings.runtime.diffusionModelName, studioSettings.runtime.diffusionModelFileId],
+      [studioSettings.runtime.textEncoderName, studioSettings.runtime.textEncoderFileId],
+      [studioSettings.runtime.vaeName, studioSettings.runtime.vaeFileId],
+    ].filter(([name, id]) => name && !id).map(([name]) => name);
+    if (unresolvedModels.length) {
+      report(`Resolve missing model selection(s) in Setup: ${unresolvedModels.join(", ")}.`, "error");
+      setUtilityPanel("setup");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    eventCursor.current = undefined;
+    setLoraCompatibility((current) => ({
+      ...current,
+      ...Object.fromEntries(modeLoras.map((lora) => [
+        lora.id,
+        { status: "checking", summary: `${lora.name}: checking against the selected Krea 2 model…` },
+      ])),
+    }));
+    try {
+      const diagnostic = await controlPlane.submitJob(workspace.id, {
+        command_id: crypto.randomUUID(),
+        kind: "validate_loras",
+        project_id: `studio-${workspace.id}-lora-check`,
+        project: buildProjectDocument(
+          regions,
+          globalPrompts,
+          studioSettings,
+          modeLoras,
+          cloudSource?.display_name ?? null,
+        ),
+        diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
+        text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
+        vae_file_id: studioSettings.runtime.vaeFileId || undefined,
+        lora_file_ids: modeLoras.map((lora) => lora.fileId),
+        filename_prefix: studioSettings.runtime.filenamePrefix,
+      });
+      setJob(diagnostic);
+      setQueuedJobs([]);
+      setEventDockOpen(true);
+      report(`Queued compatibility checks for ${modeLoras.length} LoRA assignment(s).`, "worker");
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : "Could not start LoRA compatibility checks";
+      setLoraCompatibility((current) => ({
+        ...current,
+        ...Object.fromEntries(modeLoras.map((lora) => [
+          lora.id,
+          { status: "error", summary: `${lora.name}: check failed · ${detail}` },
+        ])),
+      }));
+      report(detail, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runRemoteJob() {
     const prefix = studioSettings.runtime.filenamePrefix.trim();
     if (!prefix || prefix.includes("/") || prefix.includes("\\") || prefix === "." || prefix === "..") {
@@ -639,7 +757,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setUtilityPanel("setup");
       return;
     }
-    const missingLoras = loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
+    const modeLoras = isolatedLorasForMode(loras, mode);
+    const missingLoras = modeLoras.filter((lora) => !lora.fileId).map((lora) => lora.name);
     if (missingLoras.length) {
       report(`Bind missing cloud LoRA asset(s) before running: ${missingLoras.join(", ")}.`, "error");
       setAssetPurpose("lora");
@@ -672,7 +791,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       report("Detect faces or draw lassos, then select at least one face to refine.", "error");
       return;
     }
-    if (mode === "face" && !loras.some((lora) => lora.active && lora.strength !== 0 && !lora.generation.global && lora.generation.regionIds.length > 0)) {
+    if (mode === "face" && !modeLoras.some((lora) => !lora.face.global && lora.face.regionIds.length > 0)) {
       report("Assign at least one enabled LoRA to a subject region before face refinement.", "error");
       return;
     }
@@ -681,7 +800,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     eventCursor.current = undefined;
     try {
       await controlPlane.previewUnifiedPrompt(
-        buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null),
+        buildProjectDocument(regions, globalPrompts, studioSettings, modeLoras, cloudSource?.display_name ?? null),
       );
       const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
       const runCount = mode === "generation" && studioSettings.generation.batchMode
@@ -703,7 +822,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           command_id: crypto.randomUUID(),
           kind,
           project_id: `studio-${workspace.id}`,
-          project: buildProjectDocument(regions, globalPrompts, jobSettings, loras, cloudSource?.display_name ?? null),
+          project: buildProjectDocument(regions, globalPrompts, jobSettings, modeLoras, cloudSource?.display_name ?? null),
           input_file_id: cloudSource?.id,
           diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
           text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
@@ -711,7 +830,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           face_detector_file_id: mode === "face"
             ? studioSettings.runtime.faceDetectorFileId || undefined
             : undefined,
-          lora_file_ids: loras.map((lora) => lora.fileId),
+          lora_file_ids: modeLoras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
           filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
@@ -789,7 +908,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMessage("");
     try {
       setPromptPreview(await controlPlane.previewUnifiedPrompt(
-        buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null),
+        buildProjectDocument(
+          regions,
+          globalPrompts,
+          studioSettings,
+          isolatedLorasForMode(loras, "generation"),
+          cloudSource?.display_name ?? null,
+        ),
       ));
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Could not compile the unified prompt", "error");
@@ -938,7 +1063,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       sha256: "",
       modified_at: new Date().toISOString(),
     };
-    setCloudSource(source);
+    setCloudSources((current) => ({ ...current, face: source }));
     setSourceName(source.display_name);
     setSourceUrl(controlPlane.outputUrl(workspace.id, source.id));
     setFaceDimensions({ width: studioSettings.generation.width, height: studioSettings.generation.height });
@@ -1125,8 +1250,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             loras={loras}
             onGlobalPrompt={(value) => setGlobalPrompts({ ...globalPrompts, [activeLayer]: value })}
             onSettings={setStudioSettings}
-            onLoras={setLoras}
+            onLoras={(items) => { setLoras(items); setLoraCompatibility({}); }}
             onChooseLora={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
+            onCheckLoras={() => void checkLoraCompatibility()}
+            loraCompatibility={loraCompatibility}
+            loraCheckRunning={job?.kind === "validate_loras" && !["completed", "failed", "cancelled"].includes(job.state)}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             faces={faceDetections}
@@ -1339,11 +1467,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       )}
       {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelect={(file) => {
         if (assetPurpose === "lora") {
-          if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
+          if (file.kind === "loras") {
             const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
             setLoras(missingIndex >= 0
               ? loras.map((lora, index) => index === missingIndex ? { ...lora, fileId: file.id, name: file.display_name } : lora)
-              : [...loras, createStudioLora(file.id, file.display_name)]);
+              : [...loras, createStudioLora(file.id, file.display_name, loraBindingKey(mode, activeLayer))]);
+            setLoraCompatibility({});
           }
           return;
         }
@@ -1353,7 +1482,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         }
         if (file.kind === "projects") { void openCloudProject(file); return; }
         if (file.kind !== "inputs" && file.kind !== "outputs") return;
-        setCloudSource(file);
+        setCloudSources((current) => ({ ...current, [mode]: file }));
         setSourceName(file.display_name);
         setFaceDetections([]);
         setSelectedFaceIndices([]);

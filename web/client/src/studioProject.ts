@@ -1,4 +1,4 @@
-import type { RegionBox, RegionLayer } from "./components/RegionCanvas";
+import type { RegionBox, RegionLayer, StudioMode } from "./components/RegionCanvas";
 import { reconcilePromptEmphases } from "./promptEmphasis.ts";
 
 export type SeedMode = "fixed" | "random" | "increment";
@@ -131,21 +131,28 @@ export interface RuntimeSettings {
 
 export interface LoraLayerBinding {
   enabled: boolean;
+  strength: number;
   global: boolean;
   regionIds: string[];
   routingMode: LoraRoutingMode;
   triggerPhrase: string;
 }
 
+export type LoraBindingKey = RegionLayer | "face";
+
 export interface StudioLora {
   id: string;
   fileId: string;
   name: string;
-  active: boolean;
-  strength: number;
   generation: LoraLayerBinding;
   reference: LoraLayerBinding;
   targets: LoraLayerBinding;
+  face: LoraLayerBinding;
+}
+
+export interface LoraCompatibilityState {
+  status: "checking" | "compatible" | "incompatible" | "error";
+  summary: string;
 }
 
 export interface StudioLoraFile {
@@ -256,24 +263,94 @@ export function createStudioSettings(): StudioSettings {
   };
 }
 
-export function createStudioLora(fileId: string, name: string): StudioLora {
+export function createStudioLora(
+  fileId: string,
+  name: string,
+  activeBinding: LoraBindingKey = "generation",
+): StudioLora {
   const triggerPhrase = defaultLoraTrigger(name);
   const inactive = (): LoraLayerBinding => ({
     enabled: false,
-    global: false,
+    strength: 1,
+    global: true,
     regionIds: [],
     routingMode: "standard",
     triggerPhrase,
   });
+  const generation = inactive();
+  const reference = inactive();
+  const targets = inactive();
+  const face = inactive();
+  const binding = { generation, reference, targets, face }[activeBinding];
+  binding.enabled = true;
   return {
     id: crypto.randomUUID(),
     fileId,
     name,
-    active: true,
-    strength: 1,
-    generation: { ...inactive(), enabled: true, global: true },
-    reference: inactive(),
-    targets: inactive(),
+    generation,
+    reference,
+    targets,
+    face,
+  };
+}
+
+export function loraBindingKey(mode: StudioMode, activeLayer: RegionLayer): LoraBindingKey {
+  return mode === "face" ? "face" : activeLayer;
+}
+
+export function lorasForMode(loras: StudioLora[], mode: StudioMode): StudioLora[] {
+  return loras.filter((lora) => {
+    if (mode === "generation") {
+      return lora.generation.enabled && lora.generation.strength !== 0;
+    }
+    if (mode === "face") {
+      return lora.face.enabled && lora.face.strength !== 0;
+    }
+    return (
+      (lora.reference.enabled && lora.reference.strength !== 0)
+      || (lora.targets.enabled && lora.targets.strength !== 0)
+    );
+  });
+}
+
+export function isolatedLorasForMode(loras: StudioLora[], mode: StudioMode): StudioLora[] {
+  const selected = lorasForMode(loras, mode);
+  return selected.map((lora) => ({
+    ...lora,
+    generation: {
+      ...lora.generation,
+      enabled: mode === "generation" && lora.generation.enabled,
+      regionIds: [...lora.generation.regionIds],
+    },
+    reference: {
+      ...lora.reference,
+      enabled: mode === "edit" && lora.reference.enabled,
+      regionIds: [...lora.reference.regionIds],
+    },
+    targets: {
+      ...lora.targets,
+      enabled: mode === "edit" && lora.targets.enabled,
+      regionIds: [...lora.targets.regionIds],
+    },
+    face: {
+      ...lora.face,
+      enabled: mode === "face" && lora.face.enabled,
+      regionIds: [...lora.face.regionIds],
+    },
+  }));
+}
+
+export function duplicateStudioLora(
+  lora: StudioLora,
+  bindingKey: LoraBindingKey,
+): StudioLora {
+  const duplicate = createStudioLora(lora.fileId, lora.name, bindingKey);
+  return {
+    ...duplicate,
+    [bindingKey]: {
+      ...lora[bindingKey],
+      regionIds: [...lora[bindingKey].regionIds],
+    },
   };
 }
 
@@ -316,7 +393,7 @@ export function buildProjectDocument(
   const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
-    version: 19,
+    version: 20,
     canvas: { width: generation.width, height: generation.height },
     generation: {
       global_prompt: prompts.generation,
@@ -459,14 +536,17 @@ function layerRegions(regions: RegionBox[], layer: RegionLayer) {
 
 function loraDocument(lora: StudioLora) {
   return {
+    instance_id: lora.id,
     path: lora.name,
+    enabled: lora.generation.enabled,
     global: lora.generation.global,
     region_ids: lora.generation.regionIds,
-    strength: lora.active ? lora.strength : 0,
+    strength: lora.generation.strength,
     routing_mode: lora.generation.routingMode,
     trigger_phrase: lora.generation.triggerPhrase,
     image_edit: {
       enabled: lora.targets.enabled,
+      strength: lora.targets.strength,
       global: lora.targets.global,
       region_ids: lora.targets.regionIds,
       routing_mode: lora.targets.routingMode,
@@ -474,10 +554,19 @@ function loraDocument(lora: StudioLora) {
     },
     image_edit_reference: {
       enabled: lora.reference.enabled,
+      strength: lora.reference.strength,
       global: lora.reference.global,
       region_ids: lora.reference.regionIds,
       routing_mode: lora.reference.routingMode,
       trigger_phrase: lora.reference.triggerPhrase,
+    },
+    face_refinement: {
+      enabled: lora.face.enabled,
+      strength: lora.face.strength,
+      global: lora.face.global,
+      region_ids: lora.face.regionIds,
+      routing_mode: lora.face.routingMode,
+      trigger_phrase: lora.face.triggerPhrase,
     },
   };
 }
@@ -495,7 +584,7 @@ type JsonObject = Record<string, unknown>;
 export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const document = objectValue(value);
   if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
-  if (document.version !== 18 && document.version !== 19) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  if (![18, 19, 20].includes(Number(document.version))) throw new Error(`Unsupported project version: ${String(document.version)}`);
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
@@ -728,26 +817,36 @@ function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
 function loraState(item: JsonObject): StudioLora {
   const edit = objectValue(item.image_edit);
   const reference = objectValue(item.image_edit_reference);
+  const face = objectValue(item.face_refinement);
   const path = stringValue(item.path, "LoRA.safetensors");
   const opaqueId = path.startsWith("opaque:") ? path.slice("opaque:".length) : "";
   const displayName = stringValue(item.display_name, "");
-  const binding = (value: JsonObject, enabled: boolean): LoraLayerBinding => ({
+  const legacyStrength = numberValue(item.strength, 1);
+  const binding = (
+    value: JsonObject,
+    enabled: boolean,
+    fallbackStrength = legacyStrength === 0 ? 1 : legacyStrength,
+  ): LoraLayerBinding => ({
     enabled,
+    strength: numberValue(value.strength, fallbackStrength),
     global: booleanValue(value.global, false),
     regionIds: stringList(value.region_ids),
     routingMode: routingModeValue(value.routing_mode),
     triggerPhrase: stringValue(value.trigger_phrase, ""),
   });
-  const strength = numberValue(item.strength, 1);
+  const generationEnabled = booleanValue(item.enabled, legacyStrength !== 0);
+  const generation = binding(item, generationEnabled);
+  const legacyFace = Object.keys(face).length === 0;
   return {
-    id: crypto.randomUUID(),
+    id: stringValue(item.instance_id, crypto.randomUUID()),
     fileId: opaqueId && opaqueId !== "unbound" ? opaqueId : "",
     name: displayName ? basename(displayName) : opaqueId ? "Unresolved LoRA" : basename(path),
-    active: strength !== 0,
-    strength: strength === 0 ? 1 : strength,
-    generation: binding(item, true),
+    generation,
     targets: binding(edit, booleanValue(edit.enabled, false)),
     reference: binding(reference, booleanValue(reference.enabled, false)),
+    face: legacyFace
+      ? { ...generation }
+      : binding(face, booleanValue(face.enabled, false)),
   };
 }
 

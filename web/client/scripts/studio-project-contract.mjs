@@ -5,10 +5,17 @@ import {
   createStudioLora,
   createStudioSettings,
   defaultLoraTrigger,
+  duplicateStudioLora,
+  isolatedLorasForMode,
   loadStudioProjectDocument,
   projectDocumentFromPng,
 } from "../src/studioProject.ts";
-import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../src/eventLog.ts";
+import {
+  appendBoundedEvents,
+  EVENT_LOG_LIMIT,
+  formatWorkerEvent,
+  parseLoraCompatibility,
+} from "../src/eventLog.ts";
 import {
   promptEmphasisFromSelection,
   promptEmphasisMatches,
@@ -47,6 +54,8 @@ assert.equal(defaultLoraTrigger("folder/character.safetensors"), "character");
 assert.equal(newLora.generation.triggerPhrase, "character");
 assert.equal(newLora.reference.triggerPhrase, "character");
 assert.equal(newLora.targets.triggerPhrase, "character");
+assert.equal(newLora.face.triggerPhrase, "character");
+assert.equal(newLora.reference.enabled, false);
 settings.generation.seed = 8123;
 settings.generation.seedMode = "increment";
 settings.generation.batchMode = true;
@@ -77,15 +86,20 @@ const regions = [
   { id: "target", name: "Target", layer: "targets", x: 350, y: 300, width: 200, height: 250, prompt: "blue jacket", faceIdentityPrompt: "", spatialRole: "subject", enabled: true },
 ];
 const loras = [{
-  id: "not-persisted",
+  id: "persistent-instance",
   fileId: "opaque-cloud-id",
   name: "character.safetensors",
-  active: true,
-  strength: 0.85,
-  generation: { enabled: true, global: false, regionIds: ["person"], routingMode: "character_identity", triggerPhrase: "lface" },
-  reference: { enabled: true, global: false, regionIds: ["reference"], routingMode: "standard", triggerPhrase: "" },
-  targets: { enabled: false, global: false, regionIds: [], routingMode: "standard", triggerPhrase: "" },
+  generation: { enabled: true, strength: 0.85, global: false, regionIds: ["person"], routingMode: "character_identity", triggerPhrase: "lface" },
+  reference: { enabled: true, strength: 0.7, global: false, regionIds: ["reference"], routingMode: "standard", triggerPhrase: "" },
+  targets: { enabled: false, strength: 1, global: false, regionIds: [], routingMode: "standard", triggerPhrase: "" },
+  face: { enabled: false, strength: 1, global: false, regionIds: [], routingMode: "standard", triggerPhrase: "" },
 }];
+const duplicated = duplicateStudioLora(loras[0], "generation");
+assert.notEqual(duplicated.id, loras[0].id);
+assert.equal(duplicated.fileId, loras[0].fileId);
+assert.equal(duplicated.generation.strength, 0.85);
+assert.equal(isolatedLorasForMode(loras, "edit")[0].generation.enabled, false);
+assert.equal(isolatedLorasForMode(loras, "edit")[0].reference.enabled, true);
 const prompts = { generation: "studio portrait", reference: "portrait reference", targets: "change clothing" };
 const first = buildProjectDocument(regions, prompts, settings, loras, "source.png");
 assert.deepEqual(first.generation.prompt_emphases, [{
@@ -101,6 +115,8 @@ assert.equal(second.image_edit.width, 768);
 assert.equal(second.runtime.vram_mode, "high_vram");
 assert.equal(second.runtime.reserve_vram_gb, 1.5);
 assert.equal(second.runtime.system_ram_guard_enabled, false);
+assert.equal(second.loras[0].instance_id, "persistent-instance");
+assert.equal(second.loras[0].image_edit_reference.strength, 0.7);
 assert.deepEqual(second.regions.map((region) => [region.id, region.priority, region.spatial_role]), [
   ["person", 2, "subject"], ["wall", 1, "background"],
 ]);
@@ -160,5 +176,23 @@ const events = appendBoundedEvents([], Array.from({ length: EVENT_LOG_LIMIT + 25
 assert.equal(events.length, EVENT_LOG_LIMIT);
 assert.equal(events[0], 25);
 assert.equal(events.at(-1), EVENT_LOG_LIMIT + 24);
+const diagnosticEvent = {
+  message: "LoRA diagnostics complete",
+  payload: {
+    loras: [{
+      id: "edit:persistent-instance",
+      display_name: "character.safetensors",
+      compatible: false,
+      matched_model_targets: 0,
+      adapter_count: 128,
+    }],
+  },
+};
+assert.deepEqual(parseLoraCompatibility(diagnosticEvent), [{
+  instanceId: "persistent-instance",
+  status: "incompatible",
+  summary: "character.safetensors: incompatible · 0/128 Krea 2 targets",
+}]);
+assert.match(formatWorkerEvent(diagnosticEvent), /character\.safetensors: incompatible/);
 
 console.log("studio project JSON and PNG round-trip contracts passed");
