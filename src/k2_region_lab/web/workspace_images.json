@@ -1,0 +1,22 @@
+{
+  "schema": "k2lab-workspace-images/1",
+  "default_version": "0.3.0",
+  "images": {
+    "0.1.17": {
+      "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:f1dbf619c615bb55be781eada7b11d28a70818d1dba4139814e1ea41645f8717",
+      "status": "superseded"
+    },
+    "0.3.0": {
+      "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435",
+      "status": "stable"
+    },
+    "0.4.0-rc.2": {
+      "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f",
+      "status": "superseded"
+    },
+    "0.4.0-rc.3": {
+      "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede",
+      "status": "release-candidate"
+    }
+  }
+}

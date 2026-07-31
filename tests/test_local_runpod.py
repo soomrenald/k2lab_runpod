@@ -13,6 +13,7 @@ try:
     from k2_region_lab.web.app import create_app
     from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
     from k2_region_lab.web.local_runpod import (
+        load_image_registry,
         main,
         prepare_local_environment,
         validate_image_digest,
@@ -25,6 +26,11 @@ except ImportError:
 
 
 IMAGE = f"ghcr.io/example/k2lab-runpod-workspace@sha256:{'a' * 64}"
+OTHER_IMAGE = f"ghcr.io/example/k2lab-runpod-workspace@sha256:{'b' * 64}"
+REGISTRY = {
+    "1.2.3": {"image": IMAGE, "status": "stable"},
+    "2.0.0-rc.1": {"image": OTHER_IMAGE, "status": "release-candidate"},
+}
 
 
 @unittest.skipUnless(WEB_AVAILABLE, "web dependencies are not installed")
@@ -39,6 +45,7 @@ class LocalRunPodConfigurationTests(unittest.TestCase):
                 port=8123,
                 environment={},
                 interactive=False,
+                image_registry=REGISTRY,
             )
 
             self.assertTrue(changed)
@@ -69,6 +76,7 @@ class LocalRunPodConfigurationTests(unittest.TestCase):
                 port=8000,
                 environment={},
                 interactive=False,
+                image_registry=REGISTRY,
             )
             second, changed = prepare_local_environment(
                 state_directory=state_directory,
@@ -77,6 +85,7 @@ class LocalRunPodConfigurationTests(unittest.TestCase):
                 port=8000,
                 environment={},
                 interactive=False,
+                image_registry=REGISTRY,
             )
 
             self.assertFalse(changed)
@@ -100,7 +109,129 @@ class LocalRunPodConfigurationTests(unittest.TestCase):
                     port=8000,
                     environment={},
                     interactive=False,
+                    image_registry=REGISTRY,
                 )
+
+    def test_image_version_resolves_registered_immutable_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, changed = prepare_local_environment(
+                state_directory=Path(temporary) / "state",
+                image_digest=None,
+                image_version="2.0.0-rc.1",
+                port=8000,
+                environment={},
+                interactive=False,
+                image_registry=REGISTRY,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(environment["K2LAB_RUNPOD_IMAGE_DIGEST"], OTHER_IMAGE)
+        self.assertEqual(
+            environment["K2LAB_RUNPOD_IMAGE_VERSION"], "2.0.0-rc.1"
+        )
+
+    def test_registered_version_rejects_mismatched_explicit_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                prepare_local_environment(
+                    state_directory=Path(temporary) / "state",
+                    image_digest=OTHER_IMAGE,
+                    image_version="1.2.3",
+                    port=8000,
+                    environment={},
+                    interactive=False,
+                    image_registry=REGISTRY,
+                )
+
+    def test_registered_version_replaces_a_stored_older_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state"
+            prepare_local_environment(
+                state_directory=state_directory,
+                image_digest=IMAGE,
+                image_version="1.2.3",
+                port=8000,
+                environment={},
+                interactive=False,
+                image_registry=REGISTRY,
+            )
+            environment, changed = prepare_local_environment(
+                state_directory=state_directory,
+                image_digest=None,
+                image_version="2.0.0-rc.1",
+                port=8000,
+                environment={},
+                interactive=False,
+                image_registry=REGISTRY,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(environment["K2LAB_RUNPOD_IMAGE_DIGEST"], OTHER_IMAGE)
+
+    def test_unknown_version_requires_explicit_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "Unknown workspace image version"):
+                prepare_local_environment(
+                    state_directory=Path(temporary) / "state",
+                    image_digest=None,
+                    image_version="9.9.9",
+                    port=8000,
+                    environment={},
+                    interactive=False,
+                    image_registry=REGISTRY,
+                )
+
+    def test_unknown_version_accepts_an_explicit_immutable_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, changed = prepare_local_environment(
+                state_directory=Path(temporary) / "state",
+                image_digest=OTHER_IMAGE,
+                image_version="9.9.9-development",
+                port=8000,
+                environment={},
+                interactive=False,
+                image_registry=REGISTRY,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(environment["K2LAB_RUNPOD_IMAGE_DIGEST"], OTHER_IMAGE)
+        self.assertEqual(
+            environment["K2LAB_RUNPOD_IMAGE_VERSION"], "9.9.9-development"
+        )
+
+    def test_environment_version_resolves_registered_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, _changed = prepare_local_environment(
+                state_directory=Path(temporary) / "state",
+                image_digest=None,
+                image_version=None,
+                port=8000,
+                environment={"K2LAB_RUNPOD_IMAGE_VERSION": "2.0.0-rc.1"},
+                interactive=False,
+                image_registry=REGISTRY,
+            )
+
+        self.assertEqual(environment["K2LAB_RUNPOD_IMAGE_DIGEST"], OTHER_IMAGE)
+
+    def test_packaged_image_registry_contains_current_releases(self) -> None:
+        default_version, images = load_image_registry()
+
+        self.assertEqual(default_version, "0.3.0")
+        self.assertIn("0.4.0-rc.3", images)
+        self.assertEqual(
+            images["0.4.0-rc.3"]["image"],
+            "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:"
+            "491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede",
+        )
+
+    def test_launcher_lists_registered_versions_without_starting(self) -> None:
+        with patch(
+            "k2_region_lab.web.local_runpod._local_control_plane_running"
+        ) as running:
+            result = main(["--list-image-versions"])
+
+        self.assertEqual(result, 0)
+        running.assert_not_called()
 
     def test_second_launcher_follows_existing_control_plane_log(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
