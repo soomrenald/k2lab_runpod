@@ -18,6 +18,7 @@ interface BootstrapState {
   gpus: GpuOption[];
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
+  workspaces: WorkspaceRecord[];
   workspace: WorkspaceRecord | null;
 }
 
@@ -37,13 +38,17 @@ export function App() {
         const datacenters = credential.configured ? await controlPlane.datacenters() : [];
         const networkVolumes = credential.configured ? await controlPlane.networkVolumes() : [];
         if (!cancelled) {
+          const activeWorkspaces = workspaces.filter(
+            (item) => item.state !== "deleted",
+          );
           setState({
             capabilities,
             credential,
             gpus,
             datacenters,
             networkVolumes,
-            workspace: workspaces.filter((item) => item.state !== "deleted").at(-1) ?? null,
+            workspaces: activeWorkspaces,
+            workspace: activeWorkspaces.at(-1) ?? null,
           });
         }
       } catch (caught) {
@@ -77,6 +82,34 @@ export function App() {
     );
   }
 
+  const rememberWorkspace = (workspace: WorkspaceRecord) => {
+    setState((current) => {
+      if (!current) return current;
+      const workspaces = [
+        ...current.workspaces.filter((item) => item.id !== workspace.id),
+        workspace,
+      ].filter((item) => item.state !== "deleted");
+      return { ...current, workspaces, workspace };
+    });
+  };
+
+  const openWorkspaceMenu = () => {
+    setState((current) => current ? { ...current, workspace: null } : current);
+  };
+
+  const forgetCurrentWorkspace = () => {
+    setState((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        workspaces: current.workspaces.filter(
+          (item) => item.id !== current.workspace?.id,
+        ),
+        workspace: null,
+      };
+    });
+  };
+
   if (!state.workspace) {
     return (
       <div className="entry-shell">
@@ -90,9 +123,10 @@ export function App() {
           gpus={state.gpus}
           datacenters={state.datacenters}
           networkVolumes={state.networkVolumes}
+          existingWorkspaces={state.workspaces}
           onCredential={(credential, gpus, datacenters, networkVolumes) =>
             setState({ ...state, credential, gpus, datacenters, networkVolumes })}
-          onWorkspace={(workspace) => setState({ ...state, workspace })}
+          onWorkspace={rememberWorkspace}
         />
       </div>
     );
@@ -107,8 +141,9 @@ export function App() {
     return (
       <MissingWorkspace
         workspace={state.workspace}
-        onWorkspace={(workspace) => setState({ ...state, workspace })}
-        onForget={() => setState({ ...state, workspace: null })}
+        onWorkspace={rememberWorkspace}
+        onWorkspaceMenu={openWorkspaceMenu}
+        onForget={forgetCurrentWorkspace}
       />
     );
   }
@@ -119,8 +154,9 @@ export function App() {
       developmentBackend={state.capabilities.development_backend}
       datacenters={state.datacenters}
       networkVolumes={state.networkVolumes}
-      onWorkspace={(workspace) => setState({ ...state, workspace })}
-      onDelete={() => setState({ ...state, workspace: null })}
+      onWorkspace={rememberWorkspace}
+      onWorkspaceMenu={openWorkspaceMenu}
+      onDelete={forgetCurrentWorkspace}
     />
   );
 }
@@ -128,10 +164,11 @@ export function App() {
 interface MissingWorkspaceProps {
   workspace: WorkspaceRecord;
   onWorkspace: (workspace: WorkspaceRecord) => void;
+  onWorkspaceMenu: () => void;
   onForget: () => void;
 }
 
-function MissingWorkspace({ workspace, onWorkspace, onForget }: MissingWorkspaceProps) {
+function MissingWorkspace({ workspace, onWorkspace, onWorkspaceMenu, onForget }: MissingWorkspaceProps) {
   const [showConnect, setShowConnect] = useState(false);
   const [podId, setPodId] = useState("");
   const [leaseUnlimited, setLeaseUnlimited] = useState(false);
@@ -209,6 +246,9 @@ function MissingWorkspace({ workspace, onWorkspace, onForget }: MissingWorkspace
       )}
       {error && <div className="error-banner">{error}</div>}
       <div className="missing-workspace-actions">
+        <button className="quiet-button" disabled={busy} onClick={onWorkspaceMenu}>
+          <Icon name="layers" /> All workspaces / New workspace
+        </button>
         <button className="quiet-button" disabled={busy} onClick={() => setShowConnect(!showConnect)}>
           {showConnect ? "Cancel migration connection" : "Connect migrated Pod"}
         </button>

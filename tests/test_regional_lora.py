@@ -685,6 +685,98 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         )
         self.assertTrue(generation_model.cleaned)
 
+    def test_lora_generation_cleanup_evicts_clone_and_preserves_baseline_state(self) -> None:
+        comfy = ModuleType("comfy")
+        comfy.__path__ = []
+        management = ModuleType("comfy.model_management")
+        calls = []
+        management.unload_all_models = lambda: calls.append("unload-all")
+        management.unload_model_and_clones = lambda model, all_devices=False: calls.append(
+            ("unload-clone", model, all_devices)
+        )
+        management.soft_empty_cache = lambda force=False: calls.append(("empty", force))
+        comfy.model_management = management
+
+        class FakeTensor:
+            dtype = "float32"
+            shape = (2,)
+
+            def __init__(self, value):
+                self.value = value
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def contiguous(self):
+                return self
+
+            def numpy(self):
+                return self
+
+            def tobytes(self):
+                return self.value
+
+        class FakeUnderlyingModel:
+            def __init__(self):
+                self.weight = FakeTensor(b"pristine")
+
+            def state_dict(self):
+                return {"diffusion_model.blocks.0.weight": self.weight}
+
+            def modules(self):
+                return ()
+
+        class FakePatcher:
+            def __init__(self, underlying):
+                self.model = underlying
+                self.patches = {}
+                self.injections = {}
+                self.attachments = {}
+                self.cleaned = False
+
+            def clone(self):
+                return FakePatcher(self.model)
+
+            def remove_injections(self, key):
+                self.injections.pop(key, None)
+
+            def remove_attachments(self, key):
+                self.attachments.pop(key, None)
+
+            def cleanup(self):
+                self.cleaned = True
+
+        baseline = FakePatcher(FakeUnderlyingModel())
+        generation = baseline.clone()
+        generation.patches["diffusion_model.blocks.0.weight"] = ["old-lora"]
+        before = ComfyBaselineRuntime._tensor_fingerprints(baseline.model)
+
+        with patch.dict(
+            sys.modules,
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            ComfyBaselineRuntime._release_generation_model(generation)
+
+        after = ComfyBaselineRuntime._tensor_fingerprints(baseline.model)
+        self.assertEqual(before, after)
+        self.assertEqual(generation.patches, {})
+        self.assertTrue(generation.cleaned)
+        self.assertEqual(calls[0], "unload-all")
+        self.assertEqual(calls[1], ("unload-clone", generation, True))
+
+        fresh_no_lora_generation = baseline.clone()
+        self.assertEqual(
+            ComfyBaselineRuntime.runtime_state_snapshot(
+                object.__new__(ComfyBaselineRuntime), fresh_no_lora_generation
+            ),
+            ComfyBaselineRuntime.runtime_state_snapshot(
+                object.__new__(ComfyBaselineRuntime), baseline
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

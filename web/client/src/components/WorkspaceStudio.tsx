@@ -41,6 +41,7 @@ interface Props {
   datacenters: DatacenterOption[];
   networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
+  onWorkspaceMenu: () => void;
   onDelete: () => void;
 }
 
@@ -55,7 +56,7 @@ interface StudioEvent {
   message: string;
 }
 
-export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onWorkspaceMenu, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -443,16 +444,19 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     );
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
-    if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
+    loaded.settings.generation.upscaleModelFileId = upscaler?.id ?? "";
     const runtime = loaded.settings.runtime;
     const diffusion = byName(diffusionFiles, runtime.diffusionModelName);
     const textEncoder = byName(textEncoderFiles, runtime.textEncoderName);
     const vae = byName(vaeFiles, runtime.vaeName);
     const faceDetector = byName(faceDetectorFiles, runtime.faceDetectorName);
-    if (diffusion) runtime.diffusionModelFileId = diffusion.id;
-    if (textEncoder) runtime.textEncoderFileId = textEncoder.id;
-    if (vae) runtime.vaeFileId = vae.id;
-    if (faceDetector) runtime.faceDetectorFileId = faceDetector.id;
+    // File IDs are workspace-local opaque handles. An imported project can carry
+    // IDs from a different Pod, so never retain one unless it was rebound to a
+    // file discovered in this workspace.
+    runtime.diffusionModelFileId = diffusion?.id ?? "";
+    runtime.textEncoderFileId = textEncoder?.id ?? "";
+    runtime.vaeFileId = vae?.id ?? "";
+    runtime.faceDetectorFileId = faceDetector?.id ?? "";
     setMode("generation");
     setActiveLayer("generation");
     setRegions(loaded.regions);
@@ -1163,6 +1167,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             </label>
           )}
           <div className="popover-actions">
+            <button
+              className="quiet-button workspace-menu-button"
+              onClick={() => {
+                setShowCloud(false);
+                onWorkspaceMenu();
+              }}
+            >
+              <Icon name="layers" /> All workspaces / New workspace
+            </button>
             {canExtend
               ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
               : canStart

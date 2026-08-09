@@ -531,6 +531,13 @@ def main() -> int:
                 CommandKind.REFINE_FACES,
             }:
                 return 1
+        finally:
+            if runtime is not None and kind in {
+                CommandKind.GENERATE_BASELINE,
+                CommandKind.EDIT_IMAGE,
+                CommandKind.REFINE_FACES,
+            }:
+                runtime.release_active_generation_model()
     return 0
 
 

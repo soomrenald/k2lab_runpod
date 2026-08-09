@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import gc
+import hashlib
 import json
 import os
 import platform
@@ -492,6 +493,90 @@ class ComfyBaselineRuntime:
         self.system_ram_guard_enabled = True
         self.cpu_vae = False
         self.oom_recovery = True
+        self._active_generation_model = None
+
+    @staticmethod
+    def _tensor_fingerprints(model, *, limit: int = 8) -> dict[str, dict[str, Any]]:
+        """Return stable fingerprints for representative model parameters.
+
+        This intentionally reads parameters without applying or loading patches.  It is
+        diagnostic-only and keeps the sample small enough to emit in worker events.
+        """
+        state_dict = getattr(model, "state_dict", lambda: {})()
+        fingerprints: dict[str, dict[str, Any]] = {}
+        for name in sorted(state_dict)[:limit]:
+            tensor = state_dict[name]
+            try:
+                raw = tensor.detach().cpu().contiguous().numpy().tobytes()
+                digest = hashlib.sha256(raw).hexdigest()
+                shape = list(tensor.shape)
+                dtype = str(tensor.dtype)
+            except Exception as error:  # pragma: no cover - defensive runtime diagnostic
+                digest = f"error:{type(error).__name__}"
+                shape = []
+                dtype = "unknown"
+            fingerprints[name] = {"sha256": digest, "shape": shape, "dtype": dtype}
+        return fingerprints
+
+    @staticmethod
+    def _runtime_state_snapshot(model) -> dict[str, Any]:
+        """Inspect adapter/patch/hook state without relying on project metadata."""
+        patcher = model
+        module = getattr(model, "model", None)
+        modules = getattr(module, "modules", lambda: ())()
+        forward_hooks = 0
+        pre_forward_hooks = 0
+        hooked_modules: list[str] = []
+        for child in modules:
+            hooks = getattr(child, "_forward_hooks", {})
+            pre_hooks = getattr(child, "_forward_pre_hooks", {})
+            forward_hooks += len(hooks)
+            pre_forward_hooks += len(pre_hooks)
+            if hooks or pre_hooks:
+                hooked_modules.append(type(child).__name__)
+        injections = getattr(patcher, "injections", None)
+        if isinstance(injections, dict):
+            injection_names = sorted(str(key) for key in injections)
+        else:
+            injection_names = []
+        attachments = getattr(patcher, "attachments", None)
+        if isinstance(attachments, dict):
+            attachment_names = sorted(str(key) for key in attachments)
+        else:
+            attachment_names = []
+        patches = getattr(patcher, "patches", None)
+        patch_names = sorted(str(key) for key in patches) if isinstance(patches, dict) else []
+        return {
+            "patch_count": len(patch_names),
+            "patch_names": patch_names[:32],
+            "injection_names": injection_names,
+            "attachment_names": attachment_names,
+            "forward_hook_count": forward_hooks,
+            "pre_forward_hook_count": pre_forward_hooks,
+            "hooked_module_types": hooked_modules[:32],
+        }
+
+    def runtime_state_snapshot(self, model=None) -> dict[str, Any]:
+        target = self.model if model is None else model
+        if target is None:
+            return {"loaded": False, "model": {}, "weights": {}}
+        underlying = getattr(target, "model", target)
+        return {
+            "loaded": True,
+            "model": self._runtime_state_snapshot(target),
+            "weights": self._tensor_fingerprints(underlying),
+        }
+
+    def _emit_runtime_state(self, event, stage: str, model=None) -> None:
+        if event is not None:
+            event("LoRA runtime state: " + stage, self.runtime_state_snapshot(model))
+
+    def release_active_generation_model(self) -> None:
+        """Release a generation clone left behind by an exceptional command."""
+        generation_model = getattr(self, "_active_generation_model", None)
+        self._active_generation_model = None
+        if generation_model is not None:
+            self._release_generation_model(generation_model)
 
     def load(
         self,
@@ -675,6 +760,7 @@ class ComfyBaselineRuntime:
         bound_plan: BoundRegionalPromptPlan | None,
         event: Callable[[str, dict[str, Any]], None] | None,
     ):
+        self._emit_runtime_state(event, "before application", base_model)
         routes = compile_lora_delta_routes(
             specifications,
             width=width,
@@ -761,10 +847,12 @@ class ComfyBaselineRuntime:
 
         statistics = LoraDeltaStatistics(routes)
         if not target_entries:
+            self._emit_runtime_state(event, "after application (no adapters)", base_model)
             return base_model, reports, statistics
         generation_model, installed_targets = self._install_routed_lora_bypass(
             base_model, target_entries, statistics
         )
+        self._active_generation_model = generation_model
         expected_targets = len(target_entries)
         if installed_targets != expected_targets:
             raise ValueError(
@@ -783,6 +871,7 @@ class ComfyBaselineRuntime:
                     f"Applied LoRA {report['display_name']} to {scope} at {report['strength']:.2f}",
                     {"lora": report},
                 )
+        self._emit_runtime_state(event, "after application", generation_model)
         return generation_model, reports, statistics
 
     def _apply_global_projector_vector(
@@ -1102,6 +1191,9 @@ class ComfyBaselineRuntime:
         """
 
         self._release_generation_model(generation_model)
+        if getattr(self, "_active_generation_model", None) is generation_model:
+            self._active_generation_model = None
+        self._emit_runtime_state(event, "after teardown")
         if event is not None:
             event(
                 "Transformer offloaded before VAE decode",
@@ -1113,6 +1205,14 @@ class ComfyBaselineRuntime:
         import comfy.model_management
 
         comfy.model_management.unload_all_models()
+        unload_clones = getattr(comfy.model_management, "unload_model_and_clones", None)
+        if callable(unload_clones):
+            try:
+                unload_clones(generation_model, all_devices=True)
+            except (AttributeError, RuntimeError, TypeError):
+                # Some Comfy versions do not register cloned patchers.  The explicit
+                # injection/patch cleanup below remains necessary in that case.
+                pass
         generation_model.remove_injections("k2_routed_loras")
         generation_model.remove_injections("k2_projector_delta")
         remove_attachments = getattr(generation_model, "remove_attachments", None)
