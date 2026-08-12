@@ -47,6 +47,7 @@ from k2_region_lab.web.domain import (
     MigrationState,
     NetworkVolumeOption,
     StorageTier,
+    WorkspaceAdoptRequest,
     WorkspaceCreateRequest,
     WorkspaceConnectPodRequest,
     WorkspaceError,
@@ -434,6 +435,122 @@ class RunPodPersistentPodBackend:
 
     async def list_workspaces(self) -> list[WorkspaceRecord]:
         return await self.state_store.list_workspaces()
+
+    async def adopt_workspace(self, request: WorkspaceAdoptRequest) -> WorkspaceRecord:
+        """Attach a running K2-enabled Pod that was created outside this controller."""
+        api = await self._api()
+        provider = await api.get_pod(request.pod_id)
+        environment = provider.get("env")
+        if not isinstance(environment, dict):
+            environment = {}
+        if not environment and not request.workspace_id:
+            raise WorkspaceError(
+                "pod_identity_unverifiable",
+                "This Pod does not expose K2 workspace environment values.",
+                status_code=409,
+            )
+        workspace_id = request.workspace_id or environment.get("K2LAB_WORKSPACE_ID")
+        agent_secret = request.agent_token or environment.get("K2LAB_AGENT_SESSION_TOKEN")
+        if not workspace_id and request.agent_token:
+            workspace_id = request.pod_id
+        if not isinstance(workspace_id, str) or not workspace_id:
+            raise WorkspaceError(
+                "pod_workspace_id_missing",
+                "The Pod is not configured with a K2 workspace identity.",
+                status_code=409,
+            )
+        if not isinstance(agent_secret, str) or len(agent_secret) < 32:
+            raise WorkspaceError(
+                "pod_agent_credential_missing",
+                "The Pod is not configured with a K2 agent credential.",
+                status_code=409,
+            )
+        existing = await self.state_store.get_workspace(workspace_id)
+        if existing is not None and existing.state != WorkspaceState.DELETED:
+            raise WorkspaceError(
+                "workspace_already_registered",
+                "That Pod is already registered as a K2 workspace.",
+                status_code=409,
+            )
+        gpu_id = request.gpu_id
+        machine = provider.get("machine")
+        if isinstance(machine, dict):
+            gpu_id = gpu_id or machine.get("gpuTypeId")
+        gpu_id = gpu_id or provider.get("gpuTypeId") or provider.get("gpuType")
+        if isinstance(gpu_id, dict):
+            gpu_id = gpu_id.get("id") or gpu_id.get("name")
+        options = {item.id: item for item in await self.list_gpu_options()}
+        gpu = options.get(gpu_id)
+        if gpu is None:
+            if not isinstance(gpu_id, str) or not gpu_id:
+                raise WorkspaceError(
+                    "pod_gpu_unrecognized",
+                    "RunPod did not report the GPU type for this Pod.",
+                    status_code=409,
+                )
+            gpu_name = str(
+                (machine or {}).get("gpuType")
+                or (machine or {}).get("displayName")
+                or gpu_id
+            )
+            gpu_memory = int((machine or {}).get("gpuMemoryInGb") or 24)
+            gpu = GpuOption(
+                id=gpu_id,
+                display_name=gpu_name,
+                memory_gb=max(1, gpu_memory),
+                secure_available=False,
+                community_available=False,
+                on_demand_price_per_hour=0,
+                available=False,
+            )
+        status = str(provider.get("desiredStatus", "RUNNING"))
+        now = utc_now()
+        container_disk = int(provider.get("containerDiskInGb") or 50)
+        workspace_disk = int(provider.get("volumeInGb") or 50)
+        plan_request = WorkspacePlanRequest(
+            gpu_priority_ids=[gpu.id],
+            cloud_type=CloudType.SECURE,
+            container_disk_gb=max(30, min(container_disk, 500)),
+            workspace_disk_gb=max(50, min(workspace_disk, 4_000)),
+        )
+        candidate = WorkspaceRecord(
+            id=workspace_id,
+            name=request.name.strip(),
+            mode=WorkspaceMode.PERSISTENT_POD,
+            state=self._state_from_provider(status),
+            gpu=gpu,
+            cloud_type=CloudType.SECURE,
+            interruptible=bool(provider.get("interruptible", False)),
+            container_disk_gb=plan_request.container_disk_gb,
+            workspace_disk_gb=plan_request.workspace_disk_gb,
+            estimated_compute_per_hour=float(provider.get("adjustedCostPerHr") or provider.get("costPerHr") or 0),
+            estimated_storage_per_month=self._storage_price(plan_request),
+            idle_timeout_seconds=900,
+            hard_deadline_seconds=28_800,
+            lease_expires_at=now + timedelta(seconds=900),
+            hard_expires_at=now + timedelta(seconds=28_800),
+            created_at=now,
+            updated_at=now,
+            provider_resource_id=request.pod_id,
+            readiness=self._readiness(status),
+            gpu_priority_ids=[gpu.id],
+            datacenter_id=provider.get("dataCenterId"),
+            storage_tier=StorageTier.POD_VOLUME,
+        )
+        await self._vault.store(f"agent:{workspace_id}", agent_secret)
+        try:
+            adopted = await self._workspace_from_provider(candidate, provider)
+            await self.state_store.save_workspace(adopted, image_digest=self._image_digest)
+        except Exception:
+            await self._vault.delete(f"agent:{workspace_id}")
+            raise
+        await self.state_store.append_audit(
+            action="runpod.workspace.adopt",
+            result="success",
+            workspace_id=workspace_id,
+            context={"provider_resource_id": request.pod_id},
+        )
+        return adopted.model_copy(deep=True)
 
     async def get_workspace_status(self, workspace_id: str) -> WorkspaceRecord:
         workspace = await self._workspace(workspace_id)
@@ -1274,6 +1391,9 @@ class RunPodPersistentPodBackend:
 
     async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord:
         return await (await self._workspace_agent(workspace_id)).delete_file(file_id)
+
+    async def move_file(self, workspace_id: str, file_id: str, destination_kind: FileKind) -> FileRecord:
+        return await (await self._workspace_agent(workspace_id)).move_file(file_id, destination_kind)
 
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest

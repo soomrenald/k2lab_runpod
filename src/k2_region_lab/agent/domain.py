@@ -92,6 +92,10 @@ class FileRecord(BaseModel):
     modified_at: datetime
 
 
+class FileMoveRequest(BaseModel):
+    destination_kind: FileKind
+
+
 class FilePage(BaseModel):
     items: list[FileRecord]
     next_cursor: str | None = None

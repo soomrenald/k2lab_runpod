@@ -37,6 +37,11 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
   const lastReportedStates = useRef(new Map<string, string>());
   const pollFailures = useRef(0);
   const pollError = useRef<string | null>(null);
+  const batchFileInput = useRef<HTMLInputElement>(null);
+  const batchCancelRequested = useRef(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchText, setBatchText] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
 
   function remember(next: RemoteTransfer) {
     setTransfer(next);
@@ -165,6 +170,125 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
     finally { setBusy(false); }
   }
 
+  function batchUrls() {
+    return batchText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function saveBatch() {
+    const payload = JSON.stringify({
+      version: 1,
+      provider,
+      urls: batchUrls(),
+      destination,
+      patterns,
+    }, null, 2);
+    const blob = new Blob([payload], { type: "application/json" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `k2lab-${provider}-batch.json`;
+    link.click();
+    URL.revokeObjectURL(href);
+  }
+
+  function loadBatch(file: File) {
+    void file.text().then((text) => {
+      const parsed = JSON.parse(text) as {
+        version?: number;
+        provider?: RemoteProvider;
+        urls?: unknown;
+        destination?: FileKind;
+        patterns?: string;
+      };
+      if (parsed.version !== 1 || !Array.isArray(parsed.urls) || !parsed.urls.every((item) => typeof item === "string")) {
+        throw new Error("This is not a K2 Lab batch file.");
+      }
+      if (parsed.provider && parsed.provider !== "civitai" && parsed.provider !== "huggingface") {
+        throw new Error("The batch file has an unsupported provider.");
+      }
+      setProvider(parsed.provider ?? provider);
+      setBatchText(parsed.urls.join("\n"));
+      if (parsed.destination && destinations.some((item) => item.value === parsed.destination)) setDestination(parsed.destination);
+      if (typeof parsed.patterns === "string") setPatterns(parsed.patterns);
+      setError("");
+    }).catch((caught) => setError(message(caught)));
+  }
+
+  async function waitForTransfer(id: string) {
+    for (;;) {
+      if (batchCancelRequested.current) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      const next = await controlPlane.transfer(workspaceId, id);
+      remember(next);
+      if (terminal(next.state)) {
+        if (next.state !== "completed") throw new Error(next.error_message || `Transfer ${next.state}.`);
+        return;
+      }
+    }
+  }
+
+  async function runBatch() {
+    const urls = batchUrls();
+    if (!urls.length) return;
+    setBatchBusy(true); setBusy(true); setError(""); batchCancelRequested.current = false;
+    try {
+      for (let index = 0; index < urls.length; index += 1) {
+        if (batchCancelRequested.current) return;
+        const url = urls[index];
+        setSourceUrl(url);
+        onEvent?.(`Inspecting batch item ${index + 1} of ${urls.length}.`, "info");
+        if (provider === "civitai") {
+          const previewResult = await controlPlane.previewCivitai(workspaceId, url);
+          const selected = previewResult.files.find((file) => file.preferred) ?? previewResult.files[0];
+          if (!selected) throw new Error(`Civitai returned no downloadable files for ${url}.`);
+          if (selected.requires_unsafe_confirmation && !allowUnsafe) {
+            throw new Error(`Batch item ${index + 1} requires unsafe-format confirmation.`);
+          }
+          const batchDestination = inferDestination(selected.filename, previewResult.model_type);
+          const next = await controlPlane.startCivitai(workspaceId, {
+            source_url: url,
+            file_id: selected.id,
+            destination_kind: batchDestination,
+            allow_unsafe_format: allowUnsafe,
+          });
+          remember(next); onEvent?.(`Batch item ${index + 1} routed to ${batchDestination.replaceAll("_", " ")}.`, "info"); await waitForTransfer(next.id);
+        } else {
+          const previewResult = await controlPlane.previewHuggingFace(workspaceId, url, patternList(patterns));
+          if (previewResult.files.some((file) => unsafeName(file.filename)) && !allowUnsafe) {
+            throw new Error(`Batch item ${index + 1} requires unsafe-format confirmation.`);
+          }
+          const batchDestination = inferDestination(
+            previewResult.files.map((file) => file.filename).join(" "),
+            previewResult.repo_id,
+          );
+          const next = await controlPlane.startHuggingFace(workspaceId, {
+            source_url: url,
+            destination_kind: batchDestination,
+            allow_patterns: patternList(patterns),
+            allow_unsafe_format: allowUnsafe,
+          });
+          remember(next); onEvent?.(`Batch item ${index + 1} routed to ${batchDestination.replaceAll("_", " ")}.`, "info"); await waitForTransfer(next.id);
+        }
+      }
+      onEvent?.(`Completed ${urls.length} ${provider} batch download${urls.length === 1 ? "" : "s"}.`, "info");
+    } catch (caught) {
+      const detail = message(caught); setError(detail); onEvent?.(detail, "error");
+    } finally { setBatchBusy(false); setBusy(false); }
+  }
+
+  async function cancelBatch() {
+    batchCancelRequested.current = true;
+    if (transfer && !terminal(transfer.state)) {
+      try { remember(await controlPlane.cancelTransfer(workspaceId, transfer.id)); } catch (caught) { setError(message(caught)); }
+    }
+    setBatchBusy(false); setBusy(false);
+  }
+
+  function exitBatch() {
+    if (batchBusy) void cancelBatch();
+    setBatchMode(false); setBatchText("");
+  }
+
   async function cancel() {
     if (!transfer) return;
     setBusy(true);
@@ -183,17 +307,29 @@ export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
     <div className="asset-backdrop">
       <section className="asset-panel transfer-panel glass-card" aria-label="Provider downloads">
         <header><div><p className="kicker">Provider-side transfer</p><h2>Download models</h2></div><button className="quiet-button" onClick={onClose}>Close</button></header>
-        <div className="asset-kind-tabs"><button className={provider === "civitai" ? "active" : ""} onClick={() => { setProvider("civitai"); setTransfer(history.find((item) => item.provider === "civitai") ?? null); }}>Civitai</button><button className={provider === "huggingface" ? "active" : ""} onClick={() => { setProvider("huggingface"); setTransfer(history.find((item) => item.provider === "huggingface") ?? null); }}>Hugging Face</button></div>
+        <div className="asset-kind-tabs"><button className={provider === "civitai" ? "active" : ""} onClick={() => { setProvider("civitai"); setTransfer(history.find((item) => item.provider === "civitai") ?? null); }}>Civitai</button><button className={provider === "huggingface" ? "active" : ""} onClick={() => { setProvider("huggingface"); setTransfer(history.find((item) => item.provider === "huggingface") ?? null); }}>Hugging Face</button><button className="quiet-button" onClick={() => { setBatchMode(true); setBatchText(""); setError(""); }}>Batch load</button></div>
         <div className="provider-credential">
           <span>{credential?.configured ? `Token connected ${credential.key_hint ?? ""}` : "Public files work without a token. Add one for private or gated files."}</span>
           {credential?.configured ? <button className="danger-text-button" disabled={busy} onClick={() => void disconnectToken()}>Remove token</button> : <><input className="text-input secret-input" type="password" autoComplete="off" placeholder={provider === "civitai" ? "Download-only token" : "Read-only token"} value={token} onChange={(event) => setToken(event.target.value)} /><button className="quiet-button" disabled={busy || token.length < 8} onClick={() => void saveToken()}>Save encrypted token</button></>}
         </div>
-        <div className="download-form">
+        {batchMode ? <div className="batch-download-editor">
+          <div><p className="kicker">{provider === "civitai" ? "Civitai" : "Hugging Face"} batch</p><h3>Sequential model downloads</h3><p className="field-help">Enter one URL per line. Each item is inspected and downloaded completely before the next begins.</p></div>
+          <textarea className="text-input batch-url-input" value={batchText} onChange={(event) => setBatchText(event.target.value)} placeholder={provider === "civitai" ? "https://civitai.com/api/download/models/..." : "https://huggingface.co/owner/repository"} rows={8} />
+          {provider === "huggingface" && <label><span>Repository file filters</span><input className="text-input" value={patterns} onChange={(event) => setPatterns(event.target.value)} placeholder="*.safetensors, *.json" /></label>}
+          {(provider === "civitai" || provider === "huggingface") && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}
+          <div className="batch-actions">
+            <button className="quiet-button" disabled={batchBusy} onClick={saveBatch}>Save batch</button>
+            <button className="quiet-button" disabled={batchBusy} onClick={() => batchFileInput.current?.click()}>Load batch</button>
+            <input ref={batchFileInput} type="file" accept="application/json,.json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) loadBatch(file); }} />
+            <button className="quiet-button" onClick={exitBatch}>Cancel</button>
+            <button className="primary-button" disabled={batchBusy || !batchUrls().length} onClick={() => void runBatch()}>{batchBusy ? "Downloading…" : "Download"}</button>
+          </div>
+        </div> : <div className="download-form">
           <label><span>{provider === "civitai" ? "Civitai model download" : "Canonical Hugging Face repository or file"} URL</span><input className="text-input" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder={provider === "civitai" ? "https://civitai.red/api/download/models/...?fileId=..." : "https://huggingface.co/owner/repo/..."} /></label>
           <label><span>Install into</span><select className="select-input" value={destination} onChange={(event) => setDestination(event.target.value as FileKind)}>{destinations.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           {provider === "huggingface" && <label><span>Repository file filters</span><input className="text-input" value={patterns} onChange={(event) => setPatterns(event.target.value)} placeholder="*.safetensors, *.json" /><small>Comma-separated allow patterns. File URLs ignore this field.</small></label>}
           <button className="primary-button" disabled={busy || !sourceUrl} onClick={() => void preview()}>Inspect before download</button>
-        </div>
+        </div>}
         {civitaiPreview && <div className="download-preview"><strong>{civitaiPreview.model_name} · {civitaiPreview.version_name}</strong><small>{civitaiPreview.model_type ?? "Model"} · {civitaiPreview.base_model ?? "Unknown base"}</small><select className="select-input" value={fileId} onChange={(event) => { setFileId(event.target.value); setAllowUnsafe(false); }}>{civitaiPreview.files.map((file) => <option key={file.id} value={file.id}>{file.filename} · {formatBytes(file.size_bytes ?? 0)}{file.preferred ? " · preferred" : ""}</option>)}</select>{selectedFile?.requires_unsafe_confirmation && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}</div>}
         {huggingFacePreview && <div className="download-preview"><strong>{huggingFacePreview.repo_id}</strong><small>{huggingFacePreview.mirror_repository ? `Repository mirror · ${huggingFacePreview.files.length} files` : huggingFacePreview.filename} · {formatBytes(huggingFacePreview.required_bytes)} required</small>{requiresUnsafe && <UnsafeConfirmation checked={allowUnsafe} onChange={setAllowUnsafe} />}</div>}
         {canStart && !active && transfer?.state !== "completed" && <button className="primary-button" disabled={busy || (requiresUnsafe && !allowUnsafe)} onClick={() => void start(Boolean(transfer))}>{transfer ? "Retry / resume transfer" : "Start provider download"}</button>}
@@ -210,6 +346,15 @@ function UnsafeConfirmation({ checked, onChange }: { checked: boolean; onChange:
 function terminal(state: string) { return ["completed", "failed", "cancelled", "paused"].includes(state); }
 function patternList(value: string) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
 function unsafeName(value: string) { return [".bin", ".ckpt", ".pt", ".pth", ".pkl", ".pickle"].some((suffix) => value.toLowerCase().endsWith(suffix)); }
+function inferDestination(filename: string, hint?: string | null): FileKind {
+  const value = `${hint ?? ""} ${filename}`.toLowerCase();
+  if (/\b(lora|locon|loha|lycoris|adapter)\b/.test(value)) return "loras";
+  if (/\b(vae|variational autoencoder)\b/.test(value) || /(^|[._-])vae([._-]|$)/.test(value)) return "vae";
+  if (/\b(upscale|upscaler|esrgan|realesrgan|4x|8x)\b/.test(value)) return "upscale_models";
+  if (/\b(clip|text[-_ ]?encoder|t5|llama|qwen|gemma)\b/.test(value)) return "text_encoders";
+  if (/\b(face[-_ ]?det|insightface|yolo)\b/.test(value) || /\.(onnx|pb)(?:$|[?#])/.test(value)) return "face_detection";
+  return "diffusion_models";
+}
 function message(caught: unknown) { return caught instanceof Error ? caught.message : "Provider transfer failed"; }
 function transferStateLabel(state: string) { return state === "pending" ? "queued" : state; }
 function sourceLabel(value: string) { try { return decodeURIComponent(new URL(value).pathname.split("/").filter(Boolean).at(-1) ?? value); } catch { return value; } }

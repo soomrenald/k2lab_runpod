@@ -42,6 +42,7 @@ from k2_region_lab.web.domain import (
     NetworkVolumeOption,
     StorageTier,
     WorkspaceCreateRequest,
+    WorkspaceAdoptRequest,
     WorkspaceConnectPodRequest,
     WorkspaceError,
     WorkspaceMode,
@@ -399,6 +400,13 @@ class DevelopmentWorkspaceBackend:
             status_code=409,
         )
 
+    async def adopt_workspace(self, request: WorkspaceAdoptRequest) -> WorkspaceRecord:
+        raise WorkspaceError(
+            "pod_adoption_unavailable",
+            "Existing Pod adoption is available only with the RunPod backend.",
+            status_code=409,
+        )
+
     async def stop_workspace(self, workspace_id: str) -> WorkspaceRecord:
         async with self._lock:
             workspace = self._workspace(workspace_id)
@@ -735,6 +743,10 @@ class DevelopmentWorkspaceBackend:
 
     async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord:
         del file_id
+        self._transfer_unavailable(workspace_id)
+
+    async def move_file(self, workspace_id: str, file_id: str, destination_kind: FileKind) -> FileRecord:
+        del file_id, destination_kind
         self._transfer_unavailable(workspace_id)
 
     async def save_project(

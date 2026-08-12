@@ -63,6 +63,11 @@ export function CloudOnboarding({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
+  const [showAdopt, setShowAdopt] = useState(false);
+  const [adoptPodId, setAdoptPodId] = useState("");
+  const [adoptName, setAdoptName] = useState("Existing K2 workspace");
+  const [adoptAgentToken, setAdoptAgentToken] = useState("");
+  const [adoptGpuId, setAdoptGpuId] = useState("NVIDIA RTX A6000");
 
   const selectedGpus = useMemo(
     () => request.gpu_priority_ids
@@ -186,6 +191,20 @@ export function CloudOnboarding({
           ? caught.message
           : "Could not connect to the existing workspace",
       );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function adoptWorkspace() {
+    setBusy(true);
+    setWorkspaceError("");
+    try {
+      onWorkspace(await controlPlane.adoptWorkspace(
+        adoptPodId.trim(), adoptName.trim(), adoptAgentToken.trim(), adoptGpuId.trim(),
+      ));
+    } catch (caught) {
+      setWorkspaceError(caught instanceof Error ? caught.message : "Could not add the existing Pod");
     } finally {
       setBusy(false);
     }
@@ -323,6 +342,68 @@ export function CloudOnboarding({
           {workspaceError && <div className="error-banner">{workspaceError}</div>}
         </section>
       )}
+
+      <section className="existing-workspaces glass-card">
+        <div className="existing-workspaces-heading">
+          <div>
+            <p className="kicker">Existing RunPod Pod</p>
+            <h2>Add a Pod created elsewhere</h2>
+            <p>
+              Use this for a Pod that already has the K2 agent and workspace environment
+              installed. K2 will verify it before taking over lifecycle management.
+            </p>
+          </div>
+          <button className="quiet-button" disabled={busy} onClick={() => setShowAdopt((value) => !value)}>
+            {showAdopt ? "Cancel" : "Add existing Pod"}
+          </button>
+        </div>
+        {showAdopt && (
+          <div className="missing-workspace-connect">
+            <label className="field-label" htmlFor="existing-pod-id">RunPod Pod ID</label>
+            <input
+              id="existing-pod-id"
+              className="text-input"
+              autoComplete="off"
+              placeholder="e.g. 5vf6grht4xz2w2"
+              value={adoptPodId}
+              onChange={(event) => setAdoptPodId(event.target.value)}
+            />
+            <label className="field-label" htmlFor="existing-pod-name">Workspace name</label>
+            <input
+              id="existing-pod-name"
+              className="text-input"
+              value={adoptName}
+              onChange={(event) => setAdoptName(event.target.value)}
+            />
+            <label className="field-label" htmlFor="existing-agent-token">K2 agent token</label>
+            <input
+              id="existing-agent-token"
+              className="text-input secret-input"
+              type="password"
+              autoComplete="off"
+              placeholder="The value used for K2LAB_AGENT_SESSION_TOKEN"
+              value={adoptAgentToken}
+              onChange={(event) => setAdoptAgentToken(event.target.value)}
+            />
+            <label className="field-label" htmlFor="existing-gpu-id">GPU type</label>
+            <input
+              id="existing-gpu-id"
+              className="text-input"
+              value={adoptGpuId}
+              onChange={(event) => setAdoptGpuId(event.target.value)}
+            />
+            <p className="field-help">The token is needed only when the Pod was bootstrapped manually. If its K2 identity is not in RunPod metadata, K2 uses this Pod ID as the workspace ID.</p>
+            <button
+              className="primary-button full-button"
+              disabled={busy || adoptPodId.trim().length < 3 || adoptName.trim().length < 1 || adoptAgentToken.trim().length < 32}
+              onClick={() => void adoptWorkspace()}
+            >
+              {busy ? "Verifying Pod…" : "Verify and add Pod"}
+            </button>
+          </div>
+        )}
+        {workspaceError && <div className="error-banner">{workspaceError}</div>}
+      </section>
 
       <div className="provision-grid">
         <section className="config-column">

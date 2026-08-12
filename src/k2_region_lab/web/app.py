@@ -22,6 +22,7 @@ from k2_region_lab.agent.domain import (
     FaceDetectionRequest,
     FaceDetectionResult,
     FileKind,
+    FileMoveRequest,
     FilePage,
     FileRecord,
     GenerationJob,
@@ -53,6 +54,7 @@ from k2_region_lab.web.domain import (
     NetworkVolumeOption,
     WorkspaceBackend,
     WorkspaceCreateRequest,
+    WorkspaceAdoptRequest,
     WorkspaceConnectPodRequest,
     WorkspaceError,
     WorkspacePlan,
@@ -306,6 +308,10 @@ def create_app(
     async def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceRecord:
         return await workspace_backend.create_workspace(request)
 
+    @application.post("/api/v1/workspaces/adopt", response_model=WorkspaceRecord)
+    async def adopt_workspace(request: WorkspaceAdoptRequest) -> WorkspaceRecord:
+        return await workspace_backend.adopt_workspace(request)
+
     @application.get("/api/v1/workspaces", response_model=list[WorkspaceRecord])
     async def list_workspaces() -> list[WorkspaceRecord]:
         return await workspace_backend.list_workspaces()
@@ -411,6 +417,13 @@ def create_app(
     )
     async def delete_file(workspace_id: str, file_id: str) -> FileRecord:
         return await workspace_backend.delete_file(workspace_id, file_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/files/{file_id}/move",
+        response_model=FileRecord,
+    )
+    async def move_file(workspace_id: str, file_id: str, request: FileMoveRequest) -> FileRecord:
+        return await workspace_backend.move_file(workspace_id, file_id, request.destination_kind)
 
     @application.put(
         "/api/v1/workspaces/{workspace_id}/projects/{filename}", response_model=FileRecord

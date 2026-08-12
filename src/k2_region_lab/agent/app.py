@@ -24,6 +24,7 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FaceDetectionRequest,
     FaceDetectionResult,
+    FileMoveRequest,
     FileKind,
     FilePage,
     FileRecord,
@@ -434,6 +435,12 @@ def create_agent_app(
     )
     async def delete_file(file_id: str) -> FileRecord:
         return await transfer_manager.delete_file(file_id)
+
+    @application.post(
+        "/v1/files/{file_id}/move", response_model=FileRecord, dependencies=authentication
+    )
+    async def move_file(file_id: str, request: FileMoveRequest) -> FileRecord:
+        return await transfer_manager.move_file(file_id, request.destination_kind)
 
     @application.put(
         "/v1/projects/{filename}", response_model=FileRecord, dependencies=authentication

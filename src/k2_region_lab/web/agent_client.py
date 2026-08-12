@@ -21,6 +21,7 @@ from k2_region_lab.agent.domain import (
     FileKind,
     FilePage,
     FileRecord,
+    FileMoveRequest,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
@@ -74,6 +75,8 @@ class WorkspaceAgentApi(Protocol):
     async def inventory(self, kind: FileKind, *, cursor: str | None = None) -> FilePage: ...
 
     async def delete_file(self, file_id: str) -> FileRecord: ...
+
+    async def move_file(self, file_id: str, destination_kind: FileKind) -> FileRecord: ...
 
     async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord: ...
 
@@ -258,6 +261,15 @@ class WorkspaceAgentClient:
     async def delete_file(self, file_id: str) -> FileRecord:
         return FileRecord.model_validate(
             await self._request(f"/v1/files/{file_id}", method="DELETE")
+        )
+
+    async def move_file(self, file_id: str, destination_kind: FileKind) -> FileRecord:
+        return FileRecord.model_validate(
+            await self._request(
+                f"/v1/files/{file_id}/move",
+                method="POST",
+                json=FileMoveRequest(destination_kind=destination_kind).model_dump(mode="json"),
+            )
         )
 
     async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord:

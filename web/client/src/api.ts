@@ -410,6 +410,11 @@ export const controlPlane = {
       method: "POST",
       body: JSON.stringify({ plan_id: planId, name }),
     }),
+  adoptWorkspace: (podId: string, name: string, agentToken?: string, gpuId?: string) =>
+    request<WorkspaceRecord>("/api/v1/workspaces/adopt", {
+      method: "POST",
+      body: JSON.stringify({ pod_id: podId, name, agent_token: agentToken || null, gpu_id: gpuId || null }),
+    }),
   startWorkspace: (workspaceId: string, leaseUnlimited = false) =>
     request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}/start`, {
       method: "POST",
@@ -450,6 +455,10 @@ export const controlPlane = {
     request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   deleteFile: (workspaceId: string, fileId: string) =>
     request<FileRecord>(`/api/v1/workspaces/${workspaceId}/files/${fileId}`, { method: "DELETE" }),
+  moveFile: (workspaceId: string, fileId: string, destinationKind: FileKind) =>
+    request<FileRecord>(`/api/v1/workspaces/${workspaceId}/files/${fileId}/move`, {
+      method: "POST", body: JSON.stringify({ destination_kind: destinationKind }),
+    }),
   saveProject: (workspaceId: string, filename: string, project: Record<string, unknown>) =>
     request<FileRecord>(`/api/v1/workspaces/${workspaceId}/projects/${encodeURIComponent(filename)}`, {
       method: "PUT", body: JSON.stringify({ project }),

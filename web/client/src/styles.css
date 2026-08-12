@@ -431,6 +431,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list span { min-width: 0; flex: 1; display: grid; }
 .asset-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.asset-reclassify { width: 150px; height: 32px; padding: 0 8px; font-size: 9px; }
 .asset-file-checkbox { flex: 0 0 auto; accent-color: var(--accent); }
 .asset-download { text-decoration: none; }
 .asset-thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-top: 14px; }
@@ -504,6 +505,10 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .download-preview { display: grid; gap: 7px; margin: 14px 0; padding: 13px; color: var(--muted-bright); background: rgba(169,255,111,.035); border: 1px solid rgba(169,255,111,.13); border-radius: 10px; }
 .download-preview > strong { color: var(--text); font-size: 11px; }
 .download-preview > small { font-size: 9px; }
+.batch-download-editor { display: grid; gap: 10px; margin-top: 12px; padding: 14px; background: #0d1016; border: 1px solid var(--line); border-radius: 10px; }
+.batch-download-editor h3 { margin: 3px 0 0; font-size: 16px; }
+.batch-url-input { width: 100%; min-height: 150px; resize: vertical; font: inherit; line-height: 1.5; }
+.batch-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .warning-check { color: #ead4b3; }
 .lease-limit-option { margin: 12px 0; padding: 10px; border: 1px solid rgba(255,197,111,.22); border-radius: 8px; background: rgba(255,197,111,.05); }
 .remote-transfer { margin-top: 14px; }

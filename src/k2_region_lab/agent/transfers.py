@@ -251,6 +251,52 @@ class TransferManager:
                 return record
         raise TransferError("file_not_found", "The file does not exist.", 404)
 
+    async def move_file(self, file_id: str, destination_kind: FileKind) -> FileRecord:
+        model_kinds = {
+            FileKind.DIFFUSION_MODELS, FileKind.TEXT_ENCODERS, FileKind.VAE,
+            FileKind.LORAS, FileKind.UPSCALE_MODELS, FileKind.FACE_DETECTION,
+        }
+        if destination_kind not in model_kinds:
+            raise TransferError(
+                "invalid_file_destination",
+                "Files can only be reclassified into model categories.",
+                422,
+            )
+        record, source = await self.resolve_file(file_id)
+        if record.kind not in model_kinds:
+            raise TransferError(
+                "invalid_file_source", "Only model assets can be reclassified.", 422
+            )
+        if record.kind == destination_kind:
+            return record
+        async with self._lock:
+            target = self._layout.resolve_relative(
+                destination_kind.value, record.display_name, create=True
+            )
+            if target.exists():
+                raise TransferError(
+                    "file_destination_exists",
+                    "An asset with that name already exists in the destination category.",
+                    409,
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+            index = self._read_index()
+            index.pop(f"{record.kind.value}/{record.display_name}", None)
+            moved = record.model_copy(
+                update={
+                    "kind": destination_kind,
+                    "modified_at": datetime.fromtimestamp(target.stat().st_mtime, UTC),
+                }
+            )
+            index[f"{destination_kind.value}/{moved.display_name}"] = {
+                "size_bytes": target.stat().st_size,
+                "mtime_ns": target.stat().st_mtime_ns,
+                "record": moved.model_dump(mode="json"),
+            }
+            self._write_index(index)
+            return moved
+
     async def index_existing_file(self, kind: FileKind, path: Path) -> FileRecord:
         destination = self._layout.destination(kind.value).resolve(strict=True)
         if path.is_symlink():

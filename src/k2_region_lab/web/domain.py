@@ -165,6 +165,14 @@ class WorkspaceCreateRequest(BaseModel):
     name: str = Field(default="K2 Cloud Workspace", min_length=1, max_length=80)
 
 
+class WorkspaceAdoptRequest(BaseModel):
+    pod_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,190}$")
+    name: str = Field(default="Existing K2 workspace", min_length=1, max_length=80)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=190)
+    agent_token: str | None = Field(default=None, min_length=32, max_length=512)
+    gpu_id: str | None = Field(default=None, min_length=1, max_length=190)
+
+
 class WorkspaceStartRequest(BaseModel):
     lease_unlimited: bool = False
 
@@ -300,6 +308,9 @@ class WorkspaceBackend(Protocol):
     async def clear_credentials(self) -> CredentialStatus: ...
 
     @abstractmethod
+    async def adopt_workspace(self, request: WorkspaceAdoptRequest) -> WorkspaceRecord: ...
+
+    @abstractmethod
     async def list_gpu_options(self) -> list[GpuOption]: ...
 
     @abstractmethod
@@ -369,6 +380,11 @@ class WorkspaceBackend(Protocol):
     ) -> FilePage: ...
 
     async def delete_file(self, workspace_id: str, file_id: str) -> FileRecord: ...
+
+    @abstractmethod
+    async def move_file(
+        self, workspace_id: str, file_id: str, destination_kind: FileKind
+    ) -> FileRecord: ...
 
     async def save_project(
         self, workspace_id: str, filename: str, request: ProjectSaveRequest
