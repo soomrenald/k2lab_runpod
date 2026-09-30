@@ -40,7 +40,7 @@ RUN git clone "${COMFYUI_REPOSITORY}" /opt/ComfyUI \
     && git -C /opt/ComfyUI checkout "${COMFYUI_REF}" \
     && /opt/comfyui-venv/bin/python -m pip install -r /opt/ComfyUI/requirements.txt \
     && /opt/comfyui-venv/bin/python -m pip install \
-        "cryptography>=48.0.1,<49" \
+        "cryptography>=50.0.1,<51" \
         "onnxruntime-gpu>=1.20" \
         "pillow>=12.3.0" \
         "pydantic>=2.10" \
