@@ -234,3 +234,19 @@ assert.deepEqual(parseLoraCompatibility(diagnosticEvent), [{
 assert.match(formatWorkerEvent(diagnosticEvent), /character\.safetensors: incompatible/);
 
 console.log("studio project JSON and PNG round-trip contracts passed");
+
+// Instruction editing has a separate, durable state and excludes every legacy LoRA route.
+const i2iSettings = createStudioSettings();
+i2iSettings.image2image = { ...i2iSettings.image2image, prompt: "make the coat blue",
+  source_name: "source.png", identity_lora_name: "krea2_identity_edit_v1_2.safetensors",
+  identity_lora_file_id: "workspace-only-binding", cfg: 3, steps: 20 };
+const i2iDocument = buildProjectDocument([], { generation: "", reference: "", targets: "" }, i2iSettings, []);
+assert.equal(i2iDocument.image2image.identity_lora_file_id, undefined);
+const restoredI2i = loadStudioProjectDocument(i2iDocument);
+assert.equal(restoredI2i.settings.image2image.prompt, "make the coat blue");
+assert.equal(restoredI2i.settings.image2image.cfg, 3);
+assert.equal(restoredI2i.settings.image2image.identity_lora_file_id, "");
+assert.deepEqual(restoredI2i.settings.edit, createStudioSettings().edit);
+assert.deepEqual(isolatedLorasForMode([newLora], "image2image"), []);
+delete i2iDocument.image2image;
+assert.deepEqual(loadStudioProjectDocument(i2iDocument).settings.image2image, createStudioSettings().image2image);
