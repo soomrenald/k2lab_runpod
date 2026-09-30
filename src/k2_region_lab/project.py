@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from k2_region_lab.image2image import Image2ImageSettings
 from k2_region_lab.image_edit import ImageEditState
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
@@ -223,6 +224,7 @@ class ProjectState:
     runtime: dict[str, Any] | None = None
     background_image: Path | None = None
     image_edit: ImageEditState = field(default_factory=ImageEditState)
+    image2image: Image2ImageSettings = field(default_factory=Image2ImageSettings)
 
     def __post_init__(self) -> None:
         if not 256 <= self.canvas_width <= 4096 or not 256 <= self.canvas_height <= 4096:
@@ -339,6 +341,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
         "schema": PROJECT_SCHEMA,
         "version": PROJECT_VERSION,
         "canvas": {"width": state.canvas_width, "height": state.canvas_height},
+        "image2image": state.image2image.model_dump(),
         "generation": {
             "global_prompt": state.global_prompt,
             "steps": state.steps,
@@ -772,6 +775,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         loras=loras,
         runtime=dict(document.get("runtime", {})),
         background_image=Path(background).expanduser() if background else None,
+        image2image=Image2ImageSettings.model_validate(document.get("image2image", {})),
         image_edit=ImageEditState(
             source_image=(
                 Path(edit_document["source_image"]).expanduser()
