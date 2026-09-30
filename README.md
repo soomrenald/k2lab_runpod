@@ -131,7 +131,7 @@ export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
 export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
 export K2LAB_RUNPOD_IMAGE_DIGEST="registry.example/k2lab@sha256:<64-hex-digest>"
-export K2LAB_RUNPOD_IMAGE_VERSION="0.1.21"
+export K2LAB_RUNPOD_IMAGE_VERSION="0.1.22"
 export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
 export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
 export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"
@@ -243,3 +243,44 @@ The live suite covers both a billable persistent Pod and a portable network-volu
 It verifies upload persistence across persistent stop/start and verifies an allowlisted SHA-256
 manifest across portable Pod termination/recreation. Cleanup permanently deletes every test Pod
 and the explicitly tracked disposable network volume.
+
+## Image2image instruction editing
+
+The **image2image** tab is a separate single-source Krea2Edit pipeline. Existing Generate,
+Edit (masked source-latent img2img), and Faces workflows retain their own controls and worker paths.
+Image2image reuses authenticated source uploads, cloud asset selection, model loading, queued jobs,
+progress/events, cancellation, and PNG output download.
+
+1. Run an updated workspace image built from this checkout. Older Pods cannot run this job type;
+   the control plane reports that an image update is required rather than changing their Edit mode.
+2. Upload `krea2_identity_edit_v1_2.safetensors` to **Assets › LoRAs**, or download it using
+   the existing provider downloader. Weights are separate and are not bundled in the application.
+3. Select the Krea 2 Turbo or Raw transformer, Qwen3-VL encoder **with its vision tower**, and
+   Qwen image VAE in Setup. Load/upload a PNG, JPEG, or WebP source in **image2image**, choose
+   the Identity Edit LoRA, enter an edit instruction, and run.
+4. Start with Turbo, 8 steps, CFG 1, LoRA strength 1, grounding resolution 768, reference fidelity 1,
+   and Fit geometry. For removing prominent content, upstream recommends Raw, 20 steps, CFG 3.
+   Model selection is explicit in Setup; changing CFG does not select a different checkpoint.
+
+The source image is encoded with the instruction through Qwen and independently supplied as
+clean VAE reference tokens. Sampling starts from a separate empty target latent at denoise 1.
+At CFG > 1 the empty-instruction negative is grounded on the same source image. Source encoding
+for the fitted reference is primed before sampling using the target latent, avoiding a mid-sampling
+VAE load. The job uses a clone of the base model and exits its worker after completion. It does
+not install regional attention, generation projectors, or other modes' LoRAs.
+
+Output dimensions must be multiples of 32 with at most 2,097,152 pixels total. The first version
+supports one reference image; two-reference composition and regional masks are not exposed.
+Image2image settings and asset names round-trip through project JSON and PNG metadata; opaque
+LoRA bindings are rebound against the current workspace inventory when a project is reopened.
+
+The unmodified Apache-2.0 node implementation is vendored at
+`src/k2_region_lab/worker/krea2edit/`, pinned to upstream commit
+`86f886dac23013d88996e3a2e99093ba44d322fb`, with its license and provenance.
+The Identity Edit weights carry their own Krea 2 Community license. Upstream:
+<https://github.com/lbouaraba/comfyui-krea2edit>.
+
+Validation: `tests/test_image2image.py` covers settings, legacy-project defaults, isolated agent
+payloads, and mocked pipeline orchestration, including grounded CFG and worker stdout. Browser
+project contracts cover independent image2image state. These tests do not establish GPU execution
+or edit quality; run the upstream-equivalent Turbo and Raw workflows on a GPU before release.
