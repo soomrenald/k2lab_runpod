@@ -1,3 +1,4 @@
+import { Image2ImagePanel } from "./Image2ImagePanel";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
@@ -64,8 +65,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [drawMode, setDrawMode] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
+  const [i2iLocalPreview, setI2iLocalPreview] = useState<string | null>(null);
+  useEffect(() => () => { if (i2iLocalPreview) URL.revokeObjectURL(i2iLocalPreview); }, [i2iLocalPreview]);
   const [cloudSources, setCloudSources] = useState<Record<StudioMode, FileRecord | null>>({
     generation: null,
+    image2image: null,
     edit: null,
     face: null,
   });
@@ -80,7 +84,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [studioSettings, setStudioSettings] = useState(createStudioSettings);
   const [loras, setLoras] = useState<StudioLora[]>([]);
   const [loraCompatibility, setLoraCompatibility] = useState<Record<string, LoraCompatibilityState>>({});
-  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale" | "identity">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [startWithoutTimeLimit, setStartWithoutTimeLimit] = useState(false);
   const [showConnectPod, setShowConnectPod] = useState(false);
@@ -329,6 +333,20 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   }
 
   async function loadImage(file: File) {
+    if (mode === "image2image") {
+      setI2iLocalPreview(URL.createObjectURL(file));
+      setCloudSources((current) => ({ ...current, image2image: null }));
+      setStudioSettings((current) => ({ ...current,
+        image2image: { ...current.image2image, source_name: file.name } }));
+      if (!developmentBackend && workspace.state === "ready") {
+        try {
+          const uploaded = await uploadWorkspaceFile(workspace.id, file, "inputs");
+          setCloudSources((current) => ({ ...current, image2image: uploaded }));
+          report(`Image2image source uploaded: ${file.name}`);
+        } catch (caught) { report(String(caught), "error"); }
+      } else { report("Start the GPU workspace, then upload this source before running image2image."); }
+      return;
+    }
     const targetMode = mode;
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(URL.createObjectURL(file));
@@ -367,6 +385,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   }
 
   function clearImage() {
+    if (mode === "image2image") {
+      setI2iLocalPreview(null);
+      setCloudSources((current) => ({ ...current, image2image: null }));
+      setStudioSettings((current) => ({ ...current,
+        image2image: { ...current.image2image, source_name: "" } }));
+      setResultUrl(null); setResultName(""); return;
+    }
     if (sourceUrl?.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(null);
     setSourceName("");
@@ -383,17 +408,19 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (!window.confirm("Start a new project? Unsaved browser changes will be cleared.")) return;
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     setMode("generation");
+    setI2iLocalPreview(null);
     setActiveLayer("generation");
     setRegions([]);
     setSelectedId(null);
     setDrawMode(false);
     setSourceUrl(null);
     setSourceName("");
-    setCloudSources({ generation: null, edit: null, face: null });
+    setCloudSources({ generation: null, edit: null, face: null, image2image: null });
     setResultUrl(null);
     setResultName("");
     setGlobalPrompts({ generation: "", reference: "", targets: "" });
     setStudioSettings(createStudioSettings());
+    setI2iLocalPreview(null);
     setLoras([]);
     setLoraCompatibility({});
     setProjectName("untitled.k2lab.json");
@@ -443,6 +470,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       (file) => file.display_name.toLocaleLowerCase() === target.toLocaleLowerCase(),
     );
     loaded.loras = bindStudioLoraFiles(loaded.loras, loraFiles);
+    loaded.settings.image2image.identity_lora_file_id = byName(loraFiles,
+      loaded.settings.image2image.identity_lora_name)?.id ?? "";
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     loaded.settings.generation.upscaleModelFileId = upscaler?.id ?? "";
     const runtime = loaded.settings.runtime;
@@ -458,6 +487,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     runtime.vaeFileId = vae?.id ?? "";
     runtime.faceDetectorFileId = faceDetector?.id ?? "";
     setMode("generation");
+    setI2iLocalPreview(null);
     setActiveLayer("generation");
     setRegions(loaded.regions);
     setSelectedId(loaded.regions.find((region) => region.layer === "generation")?.id ?? null);
@@ -470,6 +500,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const restoredSource = byName([...inputFiles, ...outputFiles], loaded.sourceName);
     setCloudSources({
       generation: null,
+      image2image: byName([...inputFiles, ...outputFiles], loaded.settings.image2image.source_name) ?? null,
       edit: restoredSource ?? null,
       face: restoredSource ?? null,
     });
@@ -762,6 +793,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       return;
     }
     const modeLoras = isolatedLorasForMode(loras, mode);
+    if (mode === "image2image" && (!studioSettings.image2image.prompt.trim()
+        || !studioSettings.image2image.identity_lora_file_id)) {
+      report("Enter an edit instruction and select the Identity Edit LoRA.", "error");
+      return;
+    }
     const missingLoras = modeLoras.filter((lora) => !lora.fileId).map((lora) => lora.name);
     if (missingLoras.length) {
       report(`Bind missing cloud LoRA asset(s) before running: ${missingLoras.join(", ")}.`, "error");
@@ -803,10 +839,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMessage("");
     eventCursor.current = undefined;
     try {
-      await controlPlane.previewUnifiedPrompt(
+      if (mode !== "image2image") await controlPlane.previewUnifiedPrompt(
         buildProjectDocument(regions, globalPrompts, studioSettings, modeLoras, cloudSource?.display_name ?? null),
       );
-      const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
+      const kind: JobKind = mode === "image2image" ? "image2image" : mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
       const runCount = mode === "generation" && studioSettings.generation.batchMode
         ? studioSettings.generation.batchCount : 1;
       const submitted: GenerationJob[] = [];
@@ -828,6 +864,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           project_id: `studio-${workspace.id}`,
           project: buildProjectDocument(regions, globalPrompts, jobSettings, modeLoras, cloudSource?.display_name ?? null),
           input_file_id: cloudSource?.id,
+          identity_lora_file_id: mode === "image2image" ? studioSettings.image2image.identity_lora_file_id : undefined,
           diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
           text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
           vae_file_id: studioSettings.runtime.vaeFileId || undefined,
@@ -1203,6 +1240,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         <div className="mode-rail">
           <RailButton icon="spark" label="Generate" active={mode === "generation"} onClick={() => switchMode("generation")} />
           <RailButton icon="edit" label="Edit" active={mode === "edit"} onClick={() => switchMode("edit")} />
+          <RailButton icon="wand" label="image2image" active={mode === "image2image"} onClick={() => switchMode("image2image")} />
           <RailButton icon="face" label="Faces" active={mode === "face"} onClick={() => switchMode("face")} />
         </div>
         <div className="utility-rail">
@@ -1218,7 +1256,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
       <main className="studio-main">
         <div className="mode-context-bar">
-          <div><p className="kicker">Workspace</p><h1>{mode === "generation" ? "Image generation" : mode === "edit" ? "Image editing" : "Face refinement"}</h1></div>
+          <div><p className="kicker">Workspace</p><h1>{mode === "image2image" ? "image2image" : mode === "generation" ? "Image generation" : mode === "edit" ? "Image editing" : "Face refinement"}</h1></div>
           {mode === "edit" && (
             <div className="layer-switcher">
               <button className={activeLayer === "reference" ? "active" : ""} onClick={() => { setActiveLayer("reference"); setSelectedId(null); }}><Icon name="layers" /> Reference layer</button>
@@ -1230,16 +1268,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <RegionCanvas
             mode={mode}
             activeLayer={activeLayer}
-            sourceUrl={sourceUrl}
-            sourceName={sourceName}
+            sourceUrl={mode === "image2image" ? i2iLocalPreview || (cloudSource ? controlPlane.fileUrl(workspace.id, cloudSource.id) : null) : sourceUrl}
+            sourceName={mode === "image2image" ? studioSettings.image2image.source_name : sourceName}
             resultUrl={resultUrl}
             resultName={resultName}
-            regions={regions}
+            regions={mode === "image2image" ? [] : regions}
             selectedId={selectedId}
             drawMode={drawMode}
             comparePosition={comparePosition}
-            canvasWidth={mode === "edit" ? studioSettings.edit.width : mode === "face" ? faceDimensions.width : studioSettings.generation.width}
-            canvasHeight={mode === "edit" ? studioSettings.edit.height : mode === "face" ? faceDimensions.height : studioSettings.generation.height}
+            canvasWidth={mode === "image2image" ? studioSettings.image2image.width : mode === "edit" ? studioSettings.edit.width : mode === "face" ? faceDimensions.width : studioSettings.generation.width}
+            canvasHeight={mode === "image2image" ? studioSettings.image2image.height : mode === "edit" ? studioSettings.edit.height : mode === "face" ? faceDimensions.height : studioSettings.generation.height}
             faces={faceDetections}
             selectedFaceIndices={selectedFaceIndices}
             manualFacePaths={manualFacePaths}
@@ -1253,7 +1291,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onToggleFace={toggleFace}
             onAddManualFacePath={addManualFacePath}
           />
-          <Inspector
+          {mode === "image2image" ? <Image2ImagePanel settings={studioSettings.image2image}
+            onChange={(image2image) => setStudioSettings({ ...studioSettings, image2image })}
+            onChooseLora={() => { setAssetPurpose("identity"); setUtilityPanel("assets"); }} /> : <Inspector
             mode={mode}
             activeLayer={activeLayer}
             regions={regions}
@@ -1293,7 +1333,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             memoryActionsDisabled={busy || !running || developmentBackend}
             onRefreshMemory={() => void refreshWorkerMemory()}
             onReleaseMemory={() => void releaseWorkerMemory()}
-          />
+          />}
         </div>
       </main>
 
@@ -1336,7 +1376,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         <div className="memory-meter"><span>Job</span><div><i style={{ width: job?.progress_total ? `${Math.min(100, job.progress_current / job.progress_total * 100)}%` : "0%" }} /></div><small>{job?.progress_total ? `${job.progress_current}/${job.progress_total}` : running ? "Idle" : "Released"}</small></div>
         <button className="run-button" disabled={!running || developmentBackend || busy} title={developmentBackend ? "Remote generation jobs are disabled in preview mode" : undefined} onClick={() => void (job && !["completed", "failed", "cancelled"].includes(job.state) ? cancelRemoteJob() : runRemoteJob())}>
           <Icon name={job && !["completed", "failed", "cancelled"].includes(job.state) ? "stop" : mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />
-          {job && !["completed", "failed", "cancelled"].includes(job.state) ? "Cancel remote job" : mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine faces"}
+          {job && !["completed", "failed", "cancelled"].includes(job.state) ? "Cancel remote job" : mode === "image2image" ? "Run image2image" : mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine faces"}
         </button>
       </footer>
 
@@ -1478,7 +1518,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelectMany={assetPurpose === "lora" ? (files) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} uploadQueue={uploadQueue} initialKind={assetPurpose === "lora" || assetPurpose === "identity" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setUtilityPanel(null)} onSelectMany={assetPurpose === "lora" ? (files) => {
         const selectedLoras = files.filter((file) => file.kind === "loras");
         if (!selectedLoras.length) return;
         const bindingKey = loraBindingKey(mode, activeLayer);
@@ -1486,6 +1526,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         setLoraCompatibility({});
         report(`Added ${selectedLoras.length} cloud LoRA${selectedLoras.length === 1 ? "" : "s"} to the ${bindingKey} project settings.`, "info");
       } : undefined} onSelect={(file) => {
+        if (assetPurpose === "identity") {
+          if (file.kind === "loras") setStudioSettings({ ...studioSettings,
+            image2image: { ...studioSettings.image2image,
+              identity_lora_file_id: file.id, identity_lora_name: file.display_name } });
+          return;
+        }
         if (assetPurpose === "lora") {
           if (file.kind === "loras") {
             setLoras((current) => addStudioLoraFiles(current, [file], loraBindingKey(mode, activeLayer)));
@@ -1500,6 +1546,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (file.kind === "projects") { void openCloudProject(file); return; }
         if (file.kind !== "inputs" && file.kind !== "outputs") return;
         setCloudSources((current) => ({ ...current, [mode]: file }));
+        if (mode === "image2image") {
+          setI2iLocalPreview(null);
+          setStudioSettings({ ...studioSettings, image2image: { ...studioSettings.image2image,
+            source_name: file.display_name } });
+          return;
+        }
         setSourceName(file.display_name);
         setFaceDetections([]);
         setSelectedFaceIndices([]);

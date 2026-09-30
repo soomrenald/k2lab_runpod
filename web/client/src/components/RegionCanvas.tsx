@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DetectedFaceRecord } from "../api";
 import { Icon } from "./Icon";
 
-export type StudioMode = "generation" | "edit" | "face";
+export type StudioMode = "generation" | "edit" | "face" | "image2image";
 export type RegionLayer = "generation" | "reference" | "targets";
 
 export interface RegionBox {
@@ -266,7 +266,7 @@ export function RegionCanvas({
       <div className="canvas-toolbar">
         <div className="canvas-title">
           <span className="status-dot online" />
-          <span>{mode === "edit" ? (activeLayer === "reference" ? "Reference layout" : "Edit targets") : mode === "face" ? "Face refinement source" : "Generation canvas"}</span>
+          <span>{mode === "image2image" ? "Image2image source" : mode === "edit" ? (activeLayer === "reference" ? "Reference layout" : "Edit targets") : mode === "face" ? "Face refinement source" : "Generation canvas"}</span>
           <small>{sourceName || "1024 × 1024"}</small>
         </div>
         <div className="canvas-actions">
@@ -278,7 +278,7 @@ export function RegionCanvas({
               event.target.value = "";
             }} />
           </label>
-          {mode !== "face" && (
+          {mode !== "face" && mode !== "image2image" && (
             <button
               type="button"
               className={`quiet-button ${regionsHidden ? "active" : ""}`}
@@ -300,7 +300,7 @@ export function RegionCanvas({
             </a>
           )}
           {(sourceUrl || resultUrl) && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear canvas</button>}
-          {mode !== "face" && (
+          {mode !== "face" && mode !== "image2image" && (
             <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={toggleDrawMode}>
               <Icon name="plus" /> {drawMode ? "Drawing…" : "Draw region"}
             </button>
