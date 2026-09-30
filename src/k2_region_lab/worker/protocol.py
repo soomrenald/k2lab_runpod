@@ -15,6 +15,7 @@ class CommandKind(StrEnum):
     INITIALIZE_RUN = "initialize_run"
     GENERATE_BASELINE = "generate_baseline"
     EDIT_IMAGE = "edit_image"
+    IMAGE2IMAGE = "image2image"
     REFINE_FACES = "refine_faces"
     NEXT_BLOCK = "next_block"
     NEXT_STEP = "next_step"
@@ -64,6 +65,7 @@ WORKER_ERROR_MESSAGES = {
         "Generation failed while applying the selected LoRA or sampling settings. "
         "Verify that the LoRA targets Krea 2 and try again."
     ),
+    "image2image_failed": "Image2image failed. Verify the Identity Edit LoRA and runtime compatibility.",
     "image_edit_failed": (
         "Image editing failed while applying the selected models or edit settings."
     ),
@@ -93,6 +95,8 @@ def classify_worker_error(
         code = "lora_validation_failed"
     elif command_kind == CommandKind.GENERATE_BASELINE:
         code = "generation_failed"
+    elif command_kind == CommandKind.IMAGE2IMAGE:
+        code = "image2image_failed"
     elif command_kind == CommandKind.EDIT_IMAGE:
         code = "image_edit_failed"
     elif command_kind == CommandKind.REFINE_FACES:

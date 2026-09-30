@@ -315,6 +315,26 @@ def main() -> int:
                 ):
                     continue
                 return 0
+            elif kind == CommandKind.IMAGE2IMAGE:
+                from k2_region_lab.worker.image2image import run_image2image
+
+                def i2i_progress(step, total, memory):
+                    emit(WorkerState.RUNNING, f"Image2image step {step}/{total}",
+                         command_id=command_id,
+                         payload={"step": step, "total_steps": total, "memory": memory})
+
+                def i2i_event(message, event_payload):
+                    emit(WorkerState.RUNNING, message, command_id=command_id,
+                         payload=event_payload)
+
+                emit(WorkerState.RUNNING, "Image2image started", command_id=command_id)
+                result = run_image2image(runtime, payload, progress=i2i_progress, event=i2i_event)
+                emit(WorkerState.READY, "Image2image complete", command_id=command_id,
+                     payload=result)
+                if finish_job(runtime, command_id=command_id,
+                              completed_label="Image2image complete"):
+                    continue
+                return 0
             elif kind == CommandKind.EDIT_IMAGE:
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before image editing")
