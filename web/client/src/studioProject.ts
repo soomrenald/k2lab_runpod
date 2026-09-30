@@ -160,7 +160,26 @@ export interface StudioLoraFile {
   display_name: string;
 }
 
+export interface Image2ImageSettings {
+  prompt: string;
+  source_name: string;
+  identity_lora_name: string;
+  identity_lora_file_id: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  cfg: number;
+  sampler: string;
+  scheduler: string;
+  lora_strength: number;
+  grounding_px: number;
+  ref_boost: number;
+  fit_mode: "fit" | "crop";
+}
+
 export interface StudioSettings {
+  image2image: Image2ImageSettings;
   generation: GenerationSettings;
   edit: EditSettings;
   face: FaceSettings;
@@ -181,6 +200,10 @@ function defaultProjector(): ProjectorSettings {
 
 export function createStudioSettings(): StudioSettings {
   return {
+    image2image: { prompt: "", source_name: "", identity_lora_name: "",
+      identity_lora_file_id: "", width: 1024, height: 1024, steps: 8, seed: 0,
+      cfg: 1, sampler: "euler", scheduler: "simple", lora_strength: 1,
+      grounding_px: 768, ref_boost: 1, fit_mode: "fit" },
     generation: {
       width: 1024,
       height: 1024,
@@ -318,6 +341,7 @@ export function loraBindingKey(mode: StudioMode, activeLayer: RegionLayer): Lora
 }
 
 export function lorasForMode(loras: StudioLora[], mode: StudioMode): StudioLora[] {
+  if (mode === "image2image") return [];
   return loras.filter((lora) => {
     if (mode === "generation") {
       return lora.generation.enabled && lora.generation.strength !== 0;
@@ -431,6 +455,7 @@ export function buildProjectDocument(
     schema: "k2-region-lab-project",
     version: 20,
     canvas: { width: generation.width, height: generation.height },
+    image2image: Object.fromEntries(Object.entries(settings.image2image).filter(([key]) => key !== "identity_lora_file_id")),
     generation: {
       global_prompt: prompts.generation,
       steps: generation.steps,
@@ -626,6 +651,21 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const edit = objectValue(document.image_edit);
   const runtime = objectValue(document.runtime);
   const settings = createStudioSettings();
+  const i2i = objectValue(document.image2image);
+  settings.image2image = {
+    prompt: stringValue(i2i.prompt, ""),
+    source_name: stringValue(i2i.source_name, ""),
+    identity_lora_name: stringValue(i2i.identity_lora_name, ""),
+    identity_lora_file_id: "",
+    width: integerValue(i2i.width, 1024), height: integerValue(i2i.height, 1024),
+    steps: integerValue(i2i.steps, 8), seed: integerValue(i2i.seed, 0),
+    cfg: numberValue(i2i.cfg, 1), sampler: stringValue(i2i.sampler, "euler"),
+    scheduler: stringValue(i2i.scheduler, "simple"),
+    lora_strength: numberValue(i2i.lora_strength, 1),
+    grounding_px: integerValue(i2i.grounding_px, 768),
+    ref_boost: numberValue(i2i.ref_boost, 1),
+    fit_mode: i2i.fit_mode === "crop" ? "crop" : "fit",
+  };
   const width = integerValue(canvas.width, settings.generation.width);
   const height = integerValue(canvas.height, settings.generation.height);
   const projectorValues = numberList(generation.projector_values, settings.generation.projector.values);

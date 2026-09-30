@@ -235,7 +235,7 @@ export interface RemoteTransfer {
   updated_at: string;
 }
 
-export type JobKind = "generate" | "edit_image" | "refine_faces" | "validate_loras";
+export type JobKind = "generate" | "edit_image" | "image2image" | "refine_faces" | "validate_loras";
 export type JobState = "queued" | "starting" | "running" | "completed" | "cancelled" | "failed";
 
 export interface GenerationJob {
@@ -515,7 +515,7 @@ export const controlPlane = {
   cancelTransfer: (workspaceId: string, transferId: string) =>
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }, { priority: 0 }),
   submitJob: (workspaceId: string, payload: {
-    command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
+    command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string; identity_lora_file_id?: string;
     diffusion_model_file_id?: string; text_encoder_file_id?: string; vae_file_id?: string;
     face_detector_file_id?: string; filename_prefix: string;
     lora_file_ids?: string[]; upscale_model_file_id?: string; selected_face_indices?: number[];
