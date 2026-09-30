@@ -1554,7 +1554,16 @@ class RunPodPersistentPodBackend:
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
 
     async def submit_job(self, workspace_id: str, request: JobSubmitRequest) -> GenerationJob:
-        job = await (await self._workspace_agent(workspace_id)).submit_job(request)
+        agent = await self._workspace_agent(workspace_id)
+        if request.kind.value == "image2image":
+            capabilities = await agent.capabilities()
+            if "image2image" not in capabilities.supported_job_kinds:
+                raise WorkspaceError(
+                    "image2image_runtime_required",
+                    "This Pod uses an older runtime. Update the workspace image to use image2image.",
+                    409,
+                )
+        job = await agent.submit_job(request)
         await self.state_store.save_generation_job(workspace_id, job)
         await self._touch_workspace_lease(workspace_id)
         await self.state_store.append_audit(
