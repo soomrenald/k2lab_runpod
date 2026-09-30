@@ -576,6 +576,19 @@ class JobManager:
             return base
 
         input_path = await self._input_path(request.input_file_id)
+        if request.kind == JobKind.IMAGE2IMAGE:
+            identity_path = await self._optional_file_path(request.identity_lora_file_id, FileKind.LORAS)
+            if identity_path is None:
+                raise JobError("identity_lora_required", "Select an Identity Edit LoRA.")
+            base.update(state.image2image.model_dump())
+            base.update(
+                {
+                    "image_path": str(input_path),
+                    "identity_lora_path": identity_path,
+                    "keep_model_loaded": False,
+                }
+            )
+            return base
         edit = state.image_edit
         if request.kind == JobKind.EDIT_IMAGE:
             base.update(
@@ -808,6 +821,7 @@ class JobManager:
         kind = {
             JobKind.GENERATE: CommandKind.GENERATE_BASELINE,
             JobKind.EDIT_IMAGE: CommandKind.EDIT_IMAGE,
+            JobKind.IMAGE2IMAGE: CommandKind.IMAGE2IMAGE,
             JobKind.REFINE_FACES: CommandKind.REFINE_FACES,
             JobKind.VALIDATE_LORAS: CommandKind.VALIDATE_LORAS,
         }[request.kind]
@@ -841,13 +855,26 @@ class JobManager:
                 f"Remote jobs require {PROJECT_SCHEMA} version {PROJECT_VERSION}.",
                 409,
             )
+        if request.kind == JobKind.IMAGE2IMAGE:
+            if not state.image2image.prompt.strip():
+                raise JobError("instruction_required", "Enter an image2image edit instruction.")
+            if not request.identity_lora_file_id:
+                raise JobError("identity_lora_required", "Select an Identity Edit LoRA.")
+            if state.loras or request.lora_file_ids:
+                raise JobError(
+                    "image2image_loras_invalid",
+                    "Image2image uses only its dedicated Identity Edit LoRA.",
+                )
         if len(request.lora_file_ids) != len(state.loras):
             raise JobError(
                 "lora_binding_mismatch",
                 "Every project LoRA must have one opaque cloud file binding.",
                 409,
             )
-        if request.kind in {JobKind.EDIT_IMAGE, JobKind.REFINE_FACES} and not request.input_file_id:
+        if (
+            request.kind in {JobKind.EDIT_IMAGE, JobKind.IMAGE2IMAGE, JobKind.REFINE_FACES}
+            and not request.input_file_id
+        ):
             raise JobError(
                 "input_file_required",
                 "Image editing and face refinement require an input file.",
@@ -875,7 +902,7 @@ class JobManager:
                 if index < len(request.lora_file_ids)
                 else "opaque:unbound"
             )
-        if isinstance(project.get("image_edit"), dict):
+        if request.kind != JobKind.IMAGE2IMAGE and isinstance(project.get("image_edit"), dict):
             project["image_edit"]["source_image"] = (
                 f"opaque:{request.input_file_id}" if request.input_file_id else None
             )

@@ -36,7 +36,7 @@ class AgentCapabilities(BaseModel):
     cuda_version: str | None = None
     pytorch_version: str | None = None
     supported_job_kinds: list[str] = Field(
-        default_factory=lambda: ["generate", "edit_image", "refine_faces"]
+        default_factory=lambda: ["generate", "edit_image", "image2image", "refine_faces"]
     )
 
 
@@ -241,6 +241,7 @@ class RemoteTransfer(BaseModel):
 class JobKind(StrEnum):
     GENERATE = "generate"
     EDIT_IMAGE = "edit_image"
+    IMAGE2IMAGE = "image2image"
     REFINE_FACES = "refine_faces"
     VALIDATE_LORAS = "validate_loras"
 
@@ -260,6 +261,7 @@ class JobSubmitRequest(BaseModel):
     project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     project: dict
     input_file_id: str | None = Field(default=None, max_length=64)
+    identity_lora_file_id: str | None = Field(default=None, max_length=64)
     diffusion_model_file_id: str | None = Field(default=None, max_length=64)
     text_encoder_file_id: str | None = Field(default=None, max_length=64)
     vae_file_id: str | None = Field(default=None, max_length=64)
