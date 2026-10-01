@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, RemoteTransfer, UnifiedPromptPreview, WorkerMemoryStatus, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
-import { Inspector } from "./Inspector";
+import { Inspector, GpuMemoryControls, MemoryControls, LoraPanel, ProjectorPanel, SeedField } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
 import { SetupPanel } from "./SetupPanel";
@@ -843,21 +843,21 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         buildProjectDocument(regions, globalPrompts, studioSettings, modeLoras, cloudSource?.display_name ?? null),
       );
       const kind: JobKind = mode === "image2image" ? "image2image" : mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
-      const runCount = mode === "generation" && studioSettings.generation.batchMode
+      const runCount = (mode === "generation" || mode === "image2image") && studioSettings.generation.batchMode
         ? studioSettings.generation.batchCount : 1;
       const submitted: GenerationJob[] = [];
       let lastSeed = studioSettings.generation.seed;
       for (let index = 0; index < runCount; index += 1) {
-        let seed = studioSettings.generation.seed;
-        if (mode === "generation" && studioSettings.generation.seedMode === "random") {
+        let seed = mode === "image2image" ? studioSettings.image2image.seed : studioSettings.generation.seed;
+        if ((mode === "generation" || mode === "image2image") && studioSettings.generation.seedMode === "random") {
           seed = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
-        } else if (mode === "generation" && studioSettings.generation.seedMode === "increment") {
-          seed = (studioSettings.generation.seed + index) % 2147483648;
+        } else if ((mode === "generation" || mode === "image2image") && studioSettings.generation.seedMode === "increment") {
+          seed = (seed + index) % 2147483648;
         }
         lastSeed = seed;
         const jobSettings = mode === "generation"
           ? { ...studioSettings, generation: { ...studioSettings.generation, seed } }
-          : studioSettings;
+          : mode === "image2image" ? { ...studioSettings, image2image: { ...studioSettings.image2image, seed } } : studioSettings;
         submitted.push(await controlPlane.submitJob(workspace.id, {
           command_id: crypto.randomUUID(),
           kind,
@@ -882,6 +882,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         const nextSeed = studioSettings.generation.seedMode === "increment"
           ? (studioSettings.generation.seed + runCount) % 2147483648 : lastSeed;
         setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, seed: nextSeed } });
+      }
+      if (mode === "image2image") {
+        const seed = studioSettings.generation.seedMode === "increment"
+          ? (studioSettings.image2image.seed + runCount) % 2147483648 : lastSeed;
+        setStudioSettings({ ...studioSettings, image2image: { ...studioSettings.image2image, seed } });
       }
       setJob(submitted[0]);
       setQueuedJobs(submitted.slice(1));
@@ -1293,7 +1298,39 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           />
           {mode === "image2image" ? <Image2ImagePanel settings={studioSettings.image2image}
             onChange={(image2image) => setStudioSettings({ ...studioSettings, image2image })}
-            onChooseLora={() => { setAssetPurpose("identity"); setUtilityPanel("assets"); }} /> : <Inspector
+            onChooseLora={() => { setAssetPurpose("identity"); setUtilityPanel("assets"); }}>
+            <LoraPanel mode="image2image" activeLayer="generation" regions={[]}
+              loras={loras} compatibility={loraCompatibility}
+              checkRunning={job?.kind === "validate_loras" && !["completed", "failed", "cancelled"].includes(job.state)}
+              onLoras={(items) => { setLoras(items); setLoraCompatibility({}); }}
+              onChoose={() => { setAssetPurpose("lora"); setUtilityPanel("assets"); }}
+              onCheck={() => void checkLoraCompatibility()} />
+            <ProjectorPanel spatial={false} projector={studioSettings.generation.projector}
+              onChange={(projector) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, projector } })} />
+            <SeedField value={studioSettings.image2image.seed} mode={studioSettings.generation.seedMode}
+              batchMode={studioSettings.generation.batchMode}
+              onSeed={(seed) => setStudioSettings({ ...studioSettings, image2image: { ...studioSettings.image2image, seed } })}
+              onMode={(seedMode) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, seedMode } })} />
+            <label className="check-row"><input type="checkbox" checked={studioSettings.generation.batchMode}
+              onChange={(event) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, batchMode: event.target.checked, seedMode: event.target.checked && studioSettings.generation.seedMode === "fixed" ? "random" : studioSettings.generation.seedMode } })} />Batch runs</label>
+            {studioSettings.generation.batchMode && <label className="field-label">Batch runs<DraftNumberInput value={studioSettings.generation.batchCount} min={1} max={100} step={1}
+              onCommit={(batchCount) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, batchCount } })} /></label>}
+            <label className="check-row"><input type="checkbox" checked={studioSettings.generation.postUpscale}
+              onChange={(event) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, postUpscale: event.target.checked } })} />Post-upscale after releasing Krea VRAM</label>
+            {studioSettings.generation.postUpscale && <>
+              <label className="field-label">Output scale<select value={studioSettings.generation.upscaleScale} onChange={(event) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleScale: Number(event.target.value) as 2 | 4 } })}><option value={2}>2×</option><option value={4}>4×</option></select></label>
+              <label className="field-label">Upscaler<select value={studioSettings.generation.upscaleMethod} onChange={(event) => setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleMethod: event.target.value as "lanczos" | "model" } })}><option value="lanczos">CPU Lanczos</option><option value="model">Neural model (tiled GPU)</option></select></label>
+              {studioSettings.generation.upscaleMethod === "model" && <button className="quiet-button" onClick={() => { setAssetPurpose("upscale"); setUtilityPanel("assets"); }}>{studioSettings.generation.upscaleModelName || "Choose cloud upscaler model…"}</button>}
+            </>}
+            <GpuMemoryControls settings={studioSettings}
+              updateRuntime={(patch) => setStudioSettings({ ...studioSettings, runtime: { ...studioSettings.runtime, ...patch } })} />
+            <MemoryControls settings={studioSettings}
+              updateRuntime={(patch) => setStudioSettings({ ...studioSettings, runtime: { ...studioSettings.runtime, ...patch } })}
+              status={workerMemory} refreshing={memoryRefreshing}
+              actionsDisabled={busy || !running || developmentBackend}
+              onRefresh={() => void refreshWorkerMemory()}
+              onRelease={() => void releaseWorkerMemory()} />
+          </Image2ImagePanel> : <Inspector
             mode={mode}
             activeLayer={activeLayer}
             regions={regions}

@@ -255,6 +255,7 @@ class MemoryPolicyTests(unittest.TestCase):
         self,
     ) -> None:
         runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.system_ram_guard_enabled = True
         runtime.model = object()
         runtime.keep_model_loaded = True
         runtime.vram_mode = "high_vram"

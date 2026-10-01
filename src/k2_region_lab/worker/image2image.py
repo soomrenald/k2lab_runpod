@@ -77,11 +77,31 @@ def run_image2image(runtime, payload, *, progress=None, event=None):
         )
         if not patches:
             raise ValueError("Identity Edit LoRA has no compatible Krea 2 targets")
-        model = runtime.model.clone()
+        global_loras = payload.get("loras", [])
+        if any(not spec.get("global", True) or spec.get("region_ids") for spec in global_loras):
+            raise ValueError("image2image supports global LoRAs only")
+        model, projector_summary = runtime._apply_global_projector_vector(
+            enabled=payload.get("projector_enabled", False),
+            preset=payload.get("projector_preset", "filter_bypass2"),
+            values=payload.get("projector_values"),
+            multiplier=payload.get("projector_multiplier", 1.0),
+            identity_protection=payload.get("projector_identity_protection", 1.0),
+            bound_plan=None,
+            event=event,
+        )
+        token_counts = {int(condition[0].shape[1]) for condition in positive}
+        if len(token_counts) != 1:
+            raise RuntimeError("Krea conditioning must use one text sequence length")
+        model, lora_reports, _ = runtime._apply_routed_loras(
+            global_loras, base_model=model, width=options.width, height=options.height,
+            text_token_count=token_counts.pop(), regional_plan=None, bound_plan=None, event=event,
+        )
+        model = model.clone()
         applied = model.add_patches(patches, options.lora_strength)
         if not applied:
             raise ValueError("Identity Edit LoRA could not be applied")
-        # Match the pinned ComfyUI EmptySD3LatentImage geometry directly.
+        # Match EmptySD3LatentImage followed by KSampler's model-specific
+        # normalization. Krea's VAE needs a singleton temporal dimension.
         target = {
             "samples": torch.zeros(
                 [1, 16, options.height // 8, options.width // 8],
@@ -90,6 +110,9 @@ def run_image2image(runtime, payload, *, progress=None, event=None):
             ),
             "downscale_ratio_spacial": 8,
         }
+        target["samples"] = comfy.sample.fix_empty_latent_channels(
+            model, target["samples"], downscale_ratio_spacial=8
+        )
         runtime._ensure_memory("before image2image source encoding", event)
         source_latent = {"samples": runtime._encode_vae(pixels)}
         model = Krea2EditModelPatch().patch(
@@ -101,6 +124,10 @@ def run_image2image(runtime, payload, *, progress=None, event=None):
             fit_mode=options.fit_mode,
             ref_boost=options.ref_boost,
         )[0]
+
+        # Track the final clone, including reference and Identity Edit patches,
+        # so both successful VAE handoff and failed-job teardown release it.
+        runtime._active_generation_model = model
 
         def callback(step, denoised, current, total):
             del denoised, current
@@ -138,12 +165,24 @@ def run_image2image(runtime, payload, *, progress=None, event=None):
         .astype(np.uint8)
     )
     image = Image.fromarray(array)
+    upscale_summary = {"enabled": False}
+    if payload.get("post_upscale", False):
+        runtime._release_gpu_for_post_upscale(event)
+        image, upscale_summary = runtime._post_upscale_image(
+            image, scale=payload.get("upscale_scale", 2),
+            method=payload.get("upscale_method", "lanczos"),
+            model_path=Path(payload["upscale_model_path"]) if payload.get("upscale_model_path") else None,
+            event=event,
+        )
     destination = Path(payload["output_directory"]).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = destination / f"{prefix}_image2image_{stamp}_{uuid4().hex[:8]}_seed-{options.seed}.png"
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("k2lab_mode", "krea2_identity_image2image")
+    metadata.add_text("loras", json.dumps(lora_reports))
+    metadata.add_text("projector", json.dumps(projector_summary))
+    metadata.add_text("post_upscale", json.dumps(upscale_summary))
     metadata.add_text(
         "image2image", json.dumps({**options.model_dump(), "upstream_commit": UPSTREAM_COMMIT})
     )

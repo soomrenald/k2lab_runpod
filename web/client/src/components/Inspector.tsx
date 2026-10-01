@@ -382,7 +382,7 @@ function FaceSelectionPanel({ faces, selectedFaceIndices, manualFacePaths, lasso
   </div>;
 }
 
-function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunning, onLoras, onChoose, onCheck }: {
+export function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunning, onLoras, onChoose, onCheck }: {
   mode: StudioMode;
   activeLayer: RegionLayer;
   regions: RegionBox[];
@@ -410,14 +410,14 @@ function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunn
     }
   }
   return <div className="inspector-section lora-panel">
-    <div className="section-inline-title"><span>{mode === "generation" ? "Generation LoRAs" : mode === "edit" ? activeLayer === "reference" ? "Image-edit reference LoRAs" : "Image-edit target LoRAs" : "Face-refinement LoRAs"}</span></div>
+    <div className="section-inline-title"><span>{mode === "image2image" ? "Global image2image LoRAs" : mode === "generation" ? "Generation LoRAs" : mode === "edit" ? activeLayer === "reference" ? "Image-edit reference LoRAs" : "Image-edit target LoRAs" : "Face-refinement LoRAs"}</span></div>
     <div className="inline-actions lora-actions">
       <button className="tiny-button" onClick={onChoose}><Icon name="plus" /> Add cloud LoRA</button>
       <button className="tiny-button" disabled={checkRunning || !loras.some((lora) => lora[bindingKey].enabled)} onClick={onCheck}>
         {checkRunning ? "Checking…" : "Check compatibility"}
       </button>
     </div>
-    {loras.map((lora) => {
+    {loras.filter((lora) => mode !== "image2image" || lora.generation.global).map((lora) => {
       const binding = lora[bindingKey];
       const sameFile = loras.filter((item) => item.fileId === lora.fileId && item.name === lora.name);
       const assignmentNumber = sameFile.findIndex((item) => item.id === lora.id) + 1;
@@ -443,10 +443,10 @@ function LoraPanel({ mode, activeLayer, regions, loras, compatibility, checkRunn
         {compatibilityState && <p className={`lora-compatibility ${compatibilityState.status}`}>{compatibilityState.summary}</p>}
         {binding.enabled ? <div className="lora-binding-controls">
           <LinkedValue label="Strength" value={binding.strength} min={-4} max={4} step={0.05} onChange={(strength) => updateBinding(lora, { strength })} />
-          <label className="check-row compact-check"><input type="checkbox" checked={binding.global} onChange={(event) => updateBinding(lora, { global: event.target.checked, regionIds: event.target.checked ? [] : binding.regionIds, routingMode: event.target.checked ? "standard" : binding.routingMode })} /><span><strong>Global</strong></span></label>
+          {mode !== "image2image" && <><label className="check-row compact-check"><input type="checkbox" checked={binding.global} onChange={(event) => updateBinding(lora, { global: event.target.checked, regionIds: event.target.checked ? [] : binding.regionIds, routingMode: event.target.checked ? "standard" : binding.routingMode })} /><span><strong>Global</strong></span></label>
           {!binding.global && <div className="region-assignment-list">{regions.map((region) => <label className="check-row compact-check" key={region.id}><input type="checkbox" checked={binding.regionIds.includes(region.id)} onChange={(event) => toggleRegion(lora, region.id, event.target.checked)} /><span>{region.name}</span></label>)}</div>}
           <label className="field-label">Routing</label><select className="select-input compact-select" value={binding.routingMode} disabled={binding.global || binding.regionIds.length === 0} onChange={(event) => updateBinding(lora, { routingMode: event.target.value as LoraLayerBinding["routingMode"] })}><option value="standard">Standard regional</option><option value="character_identity">Character identity (face)</option></select>
-          {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} onBlur={() => { if (!binding.triggerPhrase.trim()) updateBinding(lora, { triggerPhrase: defaultLoraTrigger(lora.name) }); }} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}
+          {binding.routingMode === "character_identity" && !binding.global && <><label className="field-label">Training trigger</label><input className="text-input compact-input" value={binding.triggerPhrase} placeholder="For example lface" onChange={(event) => updateBinding(lora, { triggerPhrase: event.target.value })} onBlur={() => { if (!binding.triggerPhrase.trim()) updateBinding(lora, { triggerPhrase: defaultLoraTrigger(lora.name) }); }} /><p className="field-help">Inserted automatically into the assigned region identity anchor; do not duplicate it in the visible prompt.</p></>}</>}
         </div> : <p className="lora-disabled-note">This assignment is off. Its strength and region settings are preserved.</p>}
       </div>;
     })}
@@ -511,7 +511,28 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
       ["Inside boost", edit.insideBoost, 0.1, 10, 0.1, (insideBoost) => updateEdit({ insideBoost })], ["Outside penalty", edit.outsidePenalty, 0, 10, 0.1, (outsidePenalty) => updateEdit({ outsidePenalty })],
       ["Spatial falloff", edit.spatialFalloff, 0, 2048, 1, (spatialFalloff) => updateEdit({ spatialFalloff })], ["Late-step scale", edit.lateStepScale, 0, 1, 0.01, (lateStepScale) => updateEdit({ lateStepScale })],
     ]} />}
-    {mode === "generation" && <>
+    {mode === "generation" && <GpuMemoryControls settings={settings} updateRuntime={updateRuntime} />}
+    <MemoryControls settings={settings} updateRuntime={updateRuntime} status={workerMemory} refreshing={memoryRefreshing} actionsDisabled={memoryActionsDisabled} onRefresh={onRefreshMemory} onRelease={onReleaseMemory} />
+    {mode === "generation" && <Check label="Run generation in batch mode" checked={generation.batchMode} onChange={(batchMode) => updateGeneration({ batchMode, seedMode: batchMode && generation.seedMode === "fixed" ? "random" : generation.seedMode })} />}
+    {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
+    {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
+    {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
+    <Check label="Separate overlapping subject targets" checked={values.subjectCompetition} onChange={(subjectCompetition) => update({ subjectCompetition })} />
+    <Check label="Make subjects fill their boxes" checked={values.subjectFill} onChange={(subjectFill) => update({ subjectFill })} />
+    {mode === "generation" && <Check label="Relax spatial guidance during late steps" checked={generation.relaxation} onChange={(relaxation) => updateGeneration({ relaxation })} />}
+    <Check label="Adapt spatial guidance from regional LoRA delta" checked={values.loraAdaptation} onChange={(loraAdaptation) => update({ loraAdaptation })} />
+    {values.loraAdaptation && <LinkedValue label="LoRA delta response" value={values.loraResponse} min={0} max={1} step={0.05} onChange={(loraResponse) => update({ loraResponse })} />}
+    {mode === "edit" && <><Check label="Preserve reference identity" checked={edit.preserveIdentity} onChange={(preserveIdentity) => updateEdit({ preserveIdentity })} /><Check label="Edit entire image" checked={edit.editEntireImage} onChange={(editEntireImage) => updateEdit({ editEntireImage })} /></>}
+    {mode === "generation" && <><SectionTitle text="Post-upscale" /><Check label="Post-upscale after releasing Krea VRAM" checked={generation.postUpscale} onChange={(postUpscale) => updateGeneration({ postUpscale })} />{generation.postUpscale && <><Choice label="Output scale" value={generation.upscaleScale} options={[[2, "2×"], [4, "4×"]]} onChange={(upscaleScale) => updateGeneration({ upscaleScale: upscaleScale as 2 | 4 })} /><Choice label="Upscaler" value={generation.upscaleMethod} options={[["lanczos", "CPU Lanczos"], ["model", "Neural model (tiled GPU)"]]} onChange={(upscaleMethod) => updateGeneration({ upscaleMethod: upscaleMethod as GenerationSettings["upscaleMethod"] })} />{generation.upscaleMethod === "model" && <button className="quiet-button full-button" onClick={onChooseUpscaleModel}>{generation.upscaleModelName || "Choose cloud upscaler model…"}</button>}</>}</>}
+    {(mode === "generation" || activeLayer === "reference") && <ProjectorPanel projector={mode === "generation" ? generation.projector : edit.referenceProjector} onChange={(projector) => mode === "generation" ? updateGeneration({ projector }) : updateEdit({ referenceProjector: projector })} />}
+  </div>;
+}
+
+export function GpuMemoryControls({ settings, updateRuntime }: {
+  settings: StudioSettings;
+  updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
+}) {
+  return <>
       <SectionTitle text="GPU memory" />
       <Choice
         label="Execution mode"
@@ -542,24 +563,10 @@ function AdvancedPanel({ mode, activeLayer, settings, updateGeneration, updateEd
         transformer only while the configured reserve remains free. Other modes, memory pressure,
         model changes, OOM recovery, and Release memory safely discard the cache.
       </p>
-    </>}
-    <MemoryControls settings={settings} updateRuntime={updateRuntime} status={workerMemory} refreshing={memoryRefreshing} actionsDisabled={memoryActionsDisabled} onRefresh={onRefreshMemory} onRelease={onReleaseMemory} />
-    {mode === "generation" && <Check label="Run generation in batch mode" checked={generation.batchMode} onChange={(batchMode) => updateGeneration({ batchMode, seedMode: batchMode && generation.seedMode === "fixed" ? "random" : generation.seedMode })} />}
-    {mode === "generation" && generation.batchMode && <LinkedValue label="Batch runs" value={generation.batchCount} min={1} max={100} step={1} onChange={(batchCount) => updateGeneration({ batchCount })} />}
-    {mode === "generation" && <Check label="Use unified spatial prompting" checked={generation.regionalPrompting} onChange={(regionalPrompting) => updateGeneration({ regionalPrompting })} />}
-    {mode === "generation" && <button className="quiet-button full-button" onClick={onPreviewUnifiedPrompt}>Preview unified prompt…</button>}
-    <Check label="Separate overlapping subject targets" checked={values.subjectCompetition} onChange={(subjectCompetition) => update({ subjectCompetition })} />
-    <Check label="Make subjects fill their boxes" checked={values.subjectFill} onChange={(subjectFill) => update({ subjectFill })} />
-    {mode === "generation" && <Check label="Relax spatial guidance during late steps" checked={generation.relaxation} onChange={(relaxation) => updateGeneration({ relaxation })} />}
-    <Check label="Adapt spatial guidance from regional LoRA delta" checked={values.loraAdaptation} onChange={(loraAdaptation) => update({ loraAdaptation })} />
-    {values.loraAdaptation && <LinkedValue label="LoRA delta response" value={values.loraResponse} min={0} max={1} step={0.05} onChange={(loraResponse) => update({ loraResponse })} />}
-    {mode === "edit" && <><Check label="Preserve reference identity" checked={edit.preserveIdentity} onChange={(preserveIdentity) => updateEdit({ preserveIdentity })} /><Check label="Edit entire image" checked={edit.editEntireImage} onChange={(editEntireImage) => updateEdit({ editEntireImage })} /></>}
-    {mode === "generation" && <><SectionTitle text="Post-upscale" /><Check label="Post-upscale after releasing Krea VRAM" checked={generation.postUpscale} onChange={(postUpscale) => updateGeneration({ postUpscale })} />{generation.postUpscale && <><Choice label="Output scale" value={generation.upscaleScale} options={[[2, "2×"], [4, "4×"]]} onChange={(upscaleScale) => updateGeneration({ upscaleScale: upscaleScale as 2 | 4 })} /><Choice label="Upscaler" value={generation.upscaleMethod} options={[["lanczos", "CPU Lanczos"], ["model", "Neural model (tiled GPU)"]]} onChange={(upscaleMethod) => updateGeneration({ upscaleMethod: upscaleMethod as GenerationSettings["upscaleMethod"] })} />{generation.upscaleMethod === "model" && <button className="quiet-button full-button" onClick={onChooseUpscaleModel}>{generation.upscaleModelName || "Choose cloud upscaler model…"}</button>}</>}</>}
-    {(mode === "generation" || activeLayer === "reference") && <ProjectorPanel projector={mode === "generation" ? generation.projector : edit.referenceProjector} onChange={(projector) => mode === "generation" ? updateGeneration({ projector }) : updateEdit({ referenceProjector: projector })} />}
-  </div>;
+  </>;
 }
 
-function MemoryControls({ settings, updateRuntime, status, refreshing, actionsDisabled, onRefresh, onRelease }: {
+export function MemoryControls({ settings, updateRuntime, status, refreshing, actionsDisabled, onRefresh, onRelease }: {
   settings: StudioSettings;
   updateRuntime: (patch: Partial<StudioSettings["runtime"]>) => void;
   status: WorkerMemoryStatus | null;
@@ -604,18 +611,18 @@ function formatGib(value: number | null): string {
   return `${(value / 1024 ** 3).toFixed(2)} GiB`;
 }
 
-function ProjectorPanel({ projector, onChange }: { projector: ProjectorSettings; onChange: (value: ProjectorSettings) => void }) {
+export function ProjectorPanel({ projector, onChange, spatial = true }: { projector: ProjectorSettings; onChange: (value: ProjectorSettings) => void; spatial?: boolean }) {
   return <><SectionTitle text="Projector" /><Check label="Apply global projector vector" checked={projector.enabled} onChange={(enabled) => onChange({ ...projector, enabled })} />{projector.enabled && <>
     <Choice label="Preset" value={projector.preset} options={[["filter_bypass2", "FilterBypass2"], ["filter_bypass3", "FilterBypass3"], ["skc3vo", "skc3vo"], ["z0jglf", "z0jglf"], ["custom", "Custom values"]]} onChange={(preset) => onChange({ ...projector, preset, values: PROJECTOR_PRESETS[preset] ? [...PROJECTOR_PRESETS[preset]] : projector.values })} />
     <div className="projector-grid">{projector.values.map((value, index) => <DraftNumberInput key={index} ariaLabel={`Projector vector ${index + 1}`} step={0.0001} min={-1000} max={1000} value={value} onCommit={(next) => { const values = [...projector.values]; values[index] = next; onChange({ ...projector, preset: "custom", values }); }} />)}</div>
     <LinkedValue label="Global multiplier" value={projector.multiplier} min={-20} max={20} step={0.1} onChange={(multiplier) => onChange({ ...projector, multiplier })} />
-    <LinkedValue label="Face identity protection" value={projector.identityProtection} min={0} max={1} step={0.05} onChange={(identityProtection) => onChange({ ...projector, identityProtection })} />
+    {spatial && <LinkedValue label="Face identity protection" value={projector.identityProtection} min={0} max={1} step={0.05} onChange={(identityProtection) => onChange({ ...projector, identityProtection })} />}
   </>}</>;
 }
 
 type NumberItem = [string, number, number, number, number, (value: number) => void];
 function NumberGrid({ items }: { items: NumberItem[] }) { return <div className="settings-grid">{items.map(([label, value, min, max, step, onChange]) => <LinkedValue key={label} label={label} value={value} min={min} max={max} step={step} onChange={onChange} />)}</div>; }
-function SeedField({ value, mode, batchMode, onSeed, onMode }: {
+export function SeedField({ value, mode, batchMode, onSeed, onMode }: {
   value: number;
   mode: GenerationSettings["seedMode"];
   batchMode: boolean;

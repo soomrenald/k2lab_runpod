@@ -218,7 +218,7 @@ class ProjectState:
     vram_mode: str = "auto"
     reserve_vram_gb: float = 1.0
     keep_model_loaded: bool = False
-    system_ram_guard_enabled: bool = True
+    system_ram_guard_enabled: bool = False
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -769,7 +769,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             document.get("runtime", {}).get("keep_model_loaded", False)
         ),
         system_ram_guard_enabled=bool(
-            document.get("runtime", {}).get("system_ram_guard_enabled", True)
+            document.get("runtime", {}).get("system_ram_guard_enabled", False)
         ),
         regions=regions,
         loras=loras,

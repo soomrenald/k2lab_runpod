@@ -131,7 +131,7 @@ export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
 export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
 export K2LAB_RUNPOD_IMAGE_DIGEST="registry.example/k2lab@sha256:<64-hex-digest>"
-export K2LAB_RUNPOD_IMAGE_VERSION="0.1.23"
+export K2LAB_RUNPOD_IMAGE_VERSION="0.1.25"
 export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
 export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
 export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"
@@ -266,8 +266,19 @@ The source image is encoded with the instruction through Qwen and independently 
 clean VAE reference tokens. Sampling starts from a separate empty target latent at denoise 1.
 At CFG > 1 the empty-instruction negative is grounded on the same source image. Source encoding
 for the fitted reference is primed before sampling using the target latent, avoiding a mid-sampling
-VAE load. The job uses a clone of the base model and exits its worker after completion. It does
-not install regional attention, generation projectors, or other modes' LoRAs.
+VAE load. The job uses a clone of the base model. Global LoRAs from the Generation bindings
+and the global projector vector are shared with regular generation; regional assignments are
+excluded. Identity Edit remains a separate required adapter. No regional attention or masks
+are installed. LoRA/projector changes are recorded in PNG metadata and removed before VAE decode.
+
+The image2image inspector includes global LoRA selection, compatibility checking and strength,
+projector presets/custom vectors and multiplier, seed modes and batch runs, post-upscaling,
+VRAM mode/reserve, model retention, and memory diagnostics/release. These common controls share
+Generation settings; the edit instruction, dimensions, steps, CFG and reference controls stay
+specific to image2image. System RAM safeguard defaults to **off** for new projects and missing
+legacy settings; an explicitly saved preference remains respected. Keeping the model loaded
+retains only the clean baseline between runs in High VRAM mode when the GPU reserve is met.
+The transformer is still offloaded before VAE decode, then the clean baseline can be reloaded.
 
 Output dimensions must be multiples of 32 with at most 2,097,152 pixels total. The first version
 supports one reference image; two-reference composition and regional masks are not exposed.

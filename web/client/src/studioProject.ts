@@ -272,7 +272,7 @@ export function createStudioSettings(): StudioSettings {
       vramMode: "auto",
       reserveVramGb: 1,
       keepModelLoaded: false,
-      systemRamGuardEnabled: true,
+      systemRamGuardEnabled: false,
       filenamePrefix: "baseline",
       diffusionModelFileId: "",
       diffusionModelName: "",
@@ -337,11 +337,11 @@ export function addStudioLoraFiles(
 }
 
 export function loraBindingKey(mode: StudioMode, activeLayer: RegionLayer): LoraBindingKey {
-  return mode === "face" ? "face" : activeLayer;
+  return mode === "image2image" ? "generation" : mode === "face" ? "face" : activeLayer;
 }
 
 export function lorasForMode(loras: StudioLora[], mode: StudioMode): StudioLora[] {
-  if (mode === "image2image") return [];
+  if (mode === "image2image") return loras.filter((lora) => lora.generation.enabled && lora.generation.global && lora.generation.strength !== 0);
   return loras.filter((lora) => {
     if (mode === "generation") {
       return lora.generation.enabled && lora.generation.strength !== 0;
@@ -362,7 +362,7 @@ export function isolatedLorasForMode(loras: StudioLora[], mode: StudioMode): Stu
     ...lora,
     generation: {
       ...lora.generation,
-      enabled: mode === "generation" && lora.generation.enabled,
+      enabled: (mode === "generation" || mode === "image2image") && lora.generation.enabled,
       regionIds: [...lora.generation.regionIds],
     },
     reference: {

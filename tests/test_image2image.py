@@ -16,7 +16,8 @@ from k2_region_lab.agent.jobs import JobError, JobManager
 from k2_region_lab.agent.storage import WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferManager
 from k2_region_lab.image2image import Image2ImageSettings
-from k2_region_lab.project import ProjectState, project_document, project_state
+from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.project import ProjectState, SavedLora, project_document, project_state
 from k2_region_lab.worker.image2image import run_image2image
 
 
@@ -73,7 +74,8 @@ def test_invalid_settings_fail_before_sampling(patch):
         Image2ImageSettings(**patch)
 
 
-def test_agent_routes_new_job_without_edit_settings_or_loras(tmp_path):
+@pytest.mark.parametrize("keep_loaded", [False, True])
+def test_agent_routes_new_job_without_edit_settings_or_loras(tmp_path, keep_loaded):
     async def check():
         layout = WorkspaceLayout(tmp_path / "workspace")
         layout.initialize()
@@ -90,7 +92,7 @@ def test_agent_routes_new_job_without_edit_settings_or_loras(tmp_path):
         state = ProjectState(
             canvas_width=1024,
             canvas_height=1024,
-            keep_model_loaded=True,
+            keep_model_loaded=keep_loaded,
             image2image=Image2ImageSettings(prompt="make the coat blue"),
         )
         state = replace(
@@ -113,8 +115,24 @@ def test_agent_routes_new_job_without_edit_settings_or_loras(tmp_path):
         assert payload["prompt"] == "make the coat blue"
         assert payload["identity_lora_path"] == str(lora)
         assert payload["image_path"] == str(source)
-        assert payload["keep_model_loaded"] is False
-        assert "regions" not in payload and "denoise" not in payload and "loras" not in payload
+        assert payload["keep_model_loaded"] is keep_loaded
+        assert "regions" not in payload and "denoise" not in payload
+        assert payload["loras"] == []
+        assert payload["system_ram_guard_enabled"] is False
+        enriched = replace(state, loras=(SavedLora(path=lora, strength=0.7),),
+                           projector_enabled=True, projector_multiplier=1.5)
+        enriched_request = request.model_copy(update={
+            "project": project_document(enriched), "lora_file_ids": [lora_record.id]})
+        enriched_state, enriched_document = manager._validate_request(enriched_request)
+        enriched_payload = await manager._job_payload("job", enriched_request, enriched_state, enriched_document)
+        assert enriched_payload["loras"][0]["path"] == str(lora)
+        assert enriched_payload["loras"][0]["strength"] == 0.7
+        assert enriched_payload["loras"][0]["global"] is True
+        assert enriched_payload["projector_enabled"] is True
+        assert enriched_payload["projector_multiplier"] == 1.5
+        regional = replace(enriched, regions=(RegionDefinition("region", "Region", PixelBox(0, 0, 256, 256), "subject"),), loras=(replace(enriched.loras[0], global_scope=False, region_ids=("region",)),))
+        with pytest.raises(JobError, match="global LoRAs only"):
+            manager._validate_request(enriched_request.model_copy(update={"project": project_document(regional)}))
         assert [item["kind"] for item in manager._commands("job", request, payload)] == [
             "probe",
             "load_model",
@@ -157,25 +175,41 @@ class FakeTensor:
 
 
 @pytest.mark.parametrize("cfg", [1, 3])
+@pytest.mark.parametrize("post_upscale", [False, True])
 def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
     tmp_path,
     monkeypatch,
     capsys,
     cfg,
+    post_upscale,
 ):
     """Exercise orchestration without claiming to test actual GPU inference."""
     source = tmp_path / "source.png"
     Image.new("RGB", (256, 256)).save(source)
     encodings, patches, samples = [], [], []
-    target_tensor = FakeTensor(np.zeros((1, 16, 32, 32), dtype=np.float32))
+    empty_tensor = FakeTensor(np.zeros((1, 16, 32, 32), dtype=np.float32))
+    target_tensor = FakeTensor(np.zeros((1, 16, 1, 32, 32), dtype=np.float32))
     source_latent = object()
     base_model = SimpleNamespace(clone=lambda: model)
     model = SimpleNamespace(add_patches=lambda weights, strength: ["matched"])
+    model.clone = lambda: model
+    applications = []
+
+    def projector(**kwargs):
+        applications.append(("projector", kwargs))
+        return base_model, {"enabled": kwargs["enabled"]}
+
+    def global_loras(specs, **kwargs):
+        applications.append(("loras", specs, kwargs))
+        assert kwargs["base_model"] is base_model
+        assert kwargs["text_token_count"] == 5
+        assert kwargs["regional_plan"] is None and kwargs["bound_plan"] is None
+        return model, [{"id": spec["id"]} for spec in specs], None
 
     class Encoder:
         def encode(self, clip, prompt, image, **kwargs):
             encodings.append((prompt, image, kwargs))
-            return ([prompt],)
+            return ([[FakeTensor(np.zeros((1, 5, 4))), {}]],)
 
     class Patch:
         def patch(self, supplied_model, reference, **kwargs):
@@ -187,11 +221,26 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
     def sample(*args, **kwargs):
         samples.append((args, kwargs))
         kwargs["callback"](0, None, None, 8)
-        return object()
+        return args[-1]
+
+    def normalize_latent(supplied_model, latent, **kwargs):
+        assert supplied_model is model
+        assert latent is empty_tensor
+        assert kwargs == {"downscale_ratio_spacial": 8}
+        return target_tensor
+
+    def decode_latent(latent):
+        # A missing temporal axis is interpreted as multiple frames by the VAE.
+        frames = 1 if latent.ndim == 5 and latent.shape[2] == 1 else 61
+        return FakeTensor(np.zeros((1, frames, 256, 256, 3)))
 
     comfy = ModuleType("comfy")
     comfy.__path__ = []
-    comfy.sample = SimpleNamespace(sample=sample, prepare_noise=lambda tensor, seed: "noise")
+    comfy.sample = SimpleNamespace(
+        sample=sample,
+        prepare_noise=lambda tensor, seed: "noise",
+        fix_empty_latent_channels=normalize_latent,
+    )
     comfy.model_management = SimpleNamespace(
         intermediate_device=lambda: "cpu", intermediate_dtype=lambda: "float32"
     )
@@ -206,7 +255,7 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
             from_numpy=FakeTensor,
             float32="float32",
             no_grad=nullcontext,
-            zeros=lambda *args, **kwargs: target_tensor,
+            zeros=lambda *args, **kwargs: empty_tensor,
         ),
         "comfy.model_management": comfy.model_management,
         "k2_region_lab.worker.krea2edit": SimpleNamespace(
@@ -227,6 +276,12 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", noisy_import)
+    upscale_calls = []
+
+    def upscale(image, **kwargs):
+        upscale_calls.append(kwargs)
+        return image.resize((image.width * kwargs["scale"], image.height * kwargs["scale"])), {"enabled": True, "scale": kwargs["scale"]}
+
     snapshot = {"gpu_free_bytes": 100, "critical_free_bytes": 1}
     runtime = SimpleNamespace(
         loaded=True,
@@ -234,10 +289,14 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
         vae=object(),
         model=base_model,
         _ensure_memory=lambda *args: None,
+        _apply_global_projector_vector=projector,
+        _apply_routed_loras=global_loras,
         _load_lora_patches=lambda spec: ({"weights": object()}, None, {}),
         _encode_vae=lambda pixels: source_latent,
         _prepare_vae_handoff=lambda *args: None,
-        _decode_vae=lambda tensor: FakeTensor(np.zeros((1, 1, 256, 256, 3))),
+        _release_gpu_for_post_upscale=lambda *args: None,
+        _post_upscale_image=upscale,
+        _decode_vae=decode_latent,
         memory_snapshot=lambda stage: snapshot,
     )
     options = Image2ImageSettings(prompt="make it blue", width=256, height=256, cfg=cfg)
@@ -247,6 +306,12 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
             **options.model_dump(),
             "image_path": str(source),
             "identity_lora_path": "identity",
+            "loras": [{"id": "style", "path": "style", "strength": 0.7, "global": True}],
+            "projector_enabled": True,
+            "projector_multiplier": 1.5,
+            "post_upscale": post_upscale,
+            "upscale_scale": 2,
+            "upscale_method": "lanczos",
             "output_directory": str(tmp_path),
             "project_json": {"image2image": options.model_dump()},
         },
@@ -263,10 +328,21 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
     assert samples[0][0][-1] is target_tensor
     assert samples[0][1]["denoise"] == 1
     assert "noise_mask" not in samples[0][1]
+    assert result["width"] == (512 if post_upscale else 256)
+    assert bool(upscale_calls) is post_upscale
+    if post_upscale:
+        assert upscale_calls[0]["method"] == "lanczos"
+        assert upscale_calls[0]["model_path"] is None
     assert runtime.model is base_model
+    assert applications[0][0] == "projector"
+    assert applications[0][1]["enabled"] is True
+    assert applications[0][1]["multiplier"] == 1.5
+    assert applications[1][1][0]["id"] == "style"
     output = capsys.readouterr()
     assert '"step": 1' in output.out and "upstream diagnostic" not in output.out
     assert "upstream diagnostic" in output.err
     with Image.open(result["image_path"]) as image:
         assert image.info["k2lab_mode"] == "krea2_identity_image2image"
+        assert json.loads(image.info["loras"]) == [{"id": "style"}]
+        assert json.loads(image.info["projector"])["enabled"] is True
         assert json.loads(image.info["k2lab_project"])["image2image"]["prompt"] == "make it blue"

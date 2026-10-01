@@ -490,7 +490,7 @@ class ComfyBaselineRuntime:
         self.warning_free_gb = 4.0
         self.critical_free_gb = 2.0
         self.minimum_system_ram_gb = 14.0
-        self.system_ram_guard_enabled = True
+        self.system_ram_guard_enabled = False
         self.cpu_vae = False
         self.oom_recovery = True
         self._active_generation_model = None
@@ -587,7 +587,7 @@ class ComfyBaselineRuntime:
         reserve_vram_gb: float = 4.0,
         keep_model_loaded: bool = False,
         minimum_system_ram_gb: float = 14.0,
-        system_ram_guard_enabled: bool = True,
+        system_ram_guard_enabled: bool = False,
         cpu_vae: bool = False,
         oom_recovery: bool = True,
     ) -> dict[str, Any]:

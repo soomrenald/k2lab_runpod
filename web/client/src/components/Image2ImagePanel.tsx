@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
 import { COMFYUI_SAMPLERS, COMFYUI_SCHEDULERS, type Image2ImageSettings } from "../studioProject";
 import { DraftNumberInput } from "./DraftNumberInput";
 
-export function Image2ImagePanel({ settings, onChange, onChooseLora }: {
+export function Image2ImagePanel({ settings, onChange, onChooseLora, children }: {
+  children?: ReactNode;
   settings: Image2ImageSettings;
   onChange: (settings: Image2ImageSettings) => void;
   onChooseLora: () => void;
@@ -28,7 +30,6 @@ export function Image2ImagePanel({ settings, onChange, onChooseLora }: {
       {number("Output height", "height", 256, Math.floor(Math.min(2048, 2097152 / settings.width) / 32) * 32, 32)}
       <p className="field-help">Dimensions must be multiples of 32, at most 2 megapixels total.</p>
       {number("Steps", "steps", 1, 100)}
-      {number("Seed", "seed", 0, 2147483647)}
       {number("CFG", "cfg", 1, 10, 0.1)}
       <p className="field-help">Turbo: 8 steps / CFG 1. For removals, select Raw in Setup and try 20 steps / CFG 3. This tab uses the model selected in Setup.</p>
       {number("Identity Edit LoRA strength", "lora_strength", 0.01, 2, 0.05)}
@@ -45,6 +46,7 @@ export function Image2ImagePanel({ settings, onChange, onChooseLora }: {
       <label className="field-label">Scheduler<select value={settings.scheduler} onChange={(event) => update({ scheduler: event.target.value })}>
         {COMFYUI_SCHEDULERS.map((value) => <option key={value}>{value}</option>)}
       </select></label>
+      {children}
     </div>
   </aside>;
 }

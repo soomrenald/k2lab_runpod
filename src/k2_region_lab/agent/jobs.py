@@ -585,7 +585,18 @@ class JobManager:
                 {
                     "image_path": str(input_path),
                     "identity_lora_path": identity_path,
-                    "keep_model_loaded": False,
+                    "loras": self._generation_loras(loras, state),
+                    "projector_enabled": state.projector_enabled,
+                    "projector_preset": state.projector_preset,
+                    "projector_values": list(state.projector_values),
+                    "projector_multiplier": state.projector_multiplier,
+                    "projector_identity_protection": state.projector_identity_protection,
+                    "post_upscale": state.post_upscale,
+                    "upscale_scale": state.upscale_scale,
+                    "upscale_method": state.upscale_method,
+                    "upscale_model_path": await self._optional_file_path(
+                        request.upscale_model_file_id, FileKind.UPSCALE_MODELS
+                    ),
                 }
             )
             return base
@@ -860,11 +871,8 @@ class JobManager:
                 raise JobError("instruction_required", "Enter an image2image edit instruction.")
             if not request.identity_lora_file_id:
                 raise JobError("identity_lora_required", "Select an Identity Edit LoRA.")
-            if state.loras or request.lora_file_ids:
-                raise JobError(
-                    "image2image_loras_invalid",
-                    "Image2image uses only its dedicated Identity Edit LoRA.",
-                )
+            if any(lora.generation_enabled and not lora.global_scope for lora in state.loras):
+                raise JobError("image2image_loras_invalid", "Image2image supports global LoRAs only.")
         if len(request.lora_file_ids) != len(state.loras):
             raise JobError(
                 "lora_binding_mismatch",

@@ -173,7 +173,7 @@ def main() -> int:
                         payload.get("minimum_system_ram_gb", 14.0)
                     ),
                     system_ram_guard_enabled=bool(
-                        payload.get("system_ram_guard_enabled", True)
+                        payload.get("system_ram_guard_enabled", False)
                     ),
                     cpu_vae=bool(payload.get("cpu_vae", False)),
                     oom_recovery=bool(payload.get("oom_recovery", True)),
