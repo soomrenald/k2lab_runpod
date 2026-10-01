@@ -94,6 +94,7 @@ jobs:
           image: ${{ steps.target.outputs.image }}
           artifact-name: workspace-image.spdx.json
           output-file: workspace-image.spdx.json
+          upload-release-assets: false
 
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/v')
