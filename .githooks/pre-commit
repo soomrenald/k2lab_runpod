@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+if test -n "$(git ls-files --cached -- docs/)"; then
+    echo 'Commit blocked: /docs/ contains private, local-only files.' >&2
+    exit 1
+fi
