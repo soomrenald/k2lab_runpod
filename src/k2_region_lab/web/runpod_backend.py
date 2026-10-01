@@ -1561,7 +1561,7 @@ class RunPodPersistentPodBackend:
                 raise WorkspaceError(
                     "image2image_runtime_required",
                     "This Pod uses an older runtime. Update the workspace image to use image2image.",
-                    409,
+                    status_code=409,
                 )
         job = await agent.submit_job(request)
         await self.state_store.save_generation_job(workspace_id, job)
