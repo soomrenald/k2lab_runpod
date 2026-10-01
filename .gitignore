@@ -15,3 +15,6 @@ artifacts/
 /krea_region_project/
 /outputs/*
 !/outputs/.gitkeep
+
+# Private local documents must never be published.
+/docs/
