@@ -30,7 +30,7 @@ def run_image2image(runtime, payload, *, progress=None, event=None):
     import comfy.sample
     import comfy.samplers
     import comfy.model_management
-        # The upstream module also prints a banner during its first import.
+    # The upstream module also prints a banner during its first import.
     with redirect_stdout(sys.stderr):
         from k2_region_lab.worker.krea2edit import Krea2EditGroundedEncode, Krea2EditModelPatch
     from k2_region_lab.sampling import register_bong_tangent_scheduler
