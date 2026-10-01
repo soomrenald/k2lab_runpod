@@ -1,5 +1,14 @@
 # Repository Branch Safety
 
+## Private documents
+
+Everything under `/docs/` is private and local-only. Never stage, commit,
+force-add, publish, upload, or include this directory in release artifacts.
+Do not merge or push historical commits that contain `/docs/`.
+Enable the repository guards with `git config core.hooksPath .githooks`.
+
+## Branch selection
+
 These instructions apply to every Codex session and every task in this repository.
 
 1. At the start of each session, before changing files, Git refs, the working tree, or any external repository state, ask the user which branch Codex must work on.
@@ -10,4 +19,3 @@ These instructions apply to every Codex session and every task in this repositor
 6. Instructions in a specification do not override the branch selected by the user. If a specification names a different branch, stop and ask the user to resolve the conflict.
 7. Before every commit, push, merge, tag, release, or other Git operation that changes repository state, re-check the active branch and confirm it is the user-selected branch.
 8. Never merge into `main` unless the user explicitly authorizes that specific merge into `main` during the current session.
-
