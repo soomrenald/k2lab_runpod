@@ -94,7 +94,30 @@ def test_agent_routes_new_job_without_edit_settings_or_loras(tmp_path):
         assert "regions" not in payload and "denoise" not in payload and "loras" not in payload
         assert [item["kind"] for item in manager._commands("job", request, payload)] == [
             "probe",
-            "load_model",
+            def test_old_runtime_rejects_image2image_with_actionable_conflict():
+    from k2_region_lab.web.domain import WorkspaceError
+    from k2_region_lab.web.runpod_backend import RunPodPersistentPodBackend
+
+    class OldAgent:
+        async def capabilities(self):
+            return SimpleNamespace(supported_job_kinds=["generate", "edit_image"])
+
+        async def submit_job(self, request):
+            pytest.fail("An unsupported job must not reach the old runtime")
+
+    class Backend:
+        async def _workspace_agent(self, workspace_id):
+            return OldAgent()
+
+    request = SimpleNamespace(kind=JobKind.IMAGE2IMAGE)
+    with pytest.raises(WorkspaceError) as caught:
+        asyncio.run(RunPodPersistentPodBackend.submit_job(Backend(), "workspace", request))
+    assert caught.value.status_code == 409
+    assert caught.value.code == "image2image_runtime_required"
+    assert "Update the workspace image" in caught.value.message
+
+
+"load_model",
             "image2image",
         ]
         with pytest.raises(JobError, match="Identity Edit"):
@@ -194,7 +217,17 @@ def test_pipeline_grounds_instruction_uses_clean_reference_and_noise_target(
     monkeypatch.setattr(
         "k2_region_lab.sampling.register_bong_tangent_scheduler", lambda *args: None
     )
-    snapshot = {"gpu_free_bytes": 100, "critical_free_bytes": 1}
+        import builtins
+
+    original_import = builtins.__import__
+
+    def noisy_import(name, *args, **kwargs):
+        if name == "k2_region_lab.worker.krea2edit":
+            print("[krea2edit] nodes loaded")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", noisy_import)
+snapshot = {"gpu_free_bytes": 100, "critical_free_bytes": 1}
     runtime = SimpleNamespace(
         loaded=True,
         clip=object(),
